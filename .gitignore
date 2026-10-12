@@ -1,0 +1,8 @@
+/dist/
+/.local/
+*.exe
+*.sealed
+*.key
+*.env
+/state/
+__pycache__/
