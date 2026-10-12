@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -15,6 +17,20 @@ import (
 
 	"golang.org/x/net/html"
 )
+
+var errChapterRedirect = errors.New("chapter redirect not permitted")
+
+// chapterLabel maps a fixed set of upstream endpoints to a stable label so
+// diagnostics never record raw URLs or request signatures.
+func chapterLabel(u *url.URL) string {
+	switch {
+	case u.Hostname() == "mooc1.chaoxing.com" && u.Path == "/visit/stucoursemiddle":
+		return "course_middle"
+	case u.Hostname() == "mooc2-ans.chaoxing.com" && u.Path == "/mooc2-ans/mycourse/studentcourse":
+		return "chapter_catalog"
+	}
+	return "unrecognized"
+}
 
 // Protocol reference: DanMo661/Xuexitong-mcp client.py, revision
 // ebce2cc735bc7acc45fac7ccf32bcefe1a6b2a54 (fetch_chapters).
@@ -107,8 +123,8 @@ func chapterInteger(args map[string]any, key string, def, min, max int) (int, er
 	return n, nil
 }
 
-// A copy of the HTTP client prevents catalog redirects from reaching learning
-// or logging endpoints without changing the shared client's redirect policy.
+// A copied HTTP client keeps the chapter chain's own redirect policy, so the
+// catalog read never inherits an unrelated transport setting.
 func (c *Client) chapterGET(ctx context.Context, endpoint string) ([]byte, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		b, err := c.chapterGETAttempt(ctx, endpoint)
@@ -125,7 +141,18 @@ func (c *Client) chapterGET(ctx context.Context, endpoint string) ([]byte, error
 
 func (c *Client) chapterGETAttempt(ctx context.Context, endpoint string) ([]byte, error) {
 	h := *c.http
-	h.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	redirects := 0
+	// The upstream catalog chain depends on its own redirects, so those are
+	// followed - but only to endpoints that pass safeURL. Learning, logging and
+	// task-entry paths stay blocked, so a redirect cannot turn this read into
+	// progress, answer or attendance state.
+	h.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		redirects = len(via)
+		if len(via) >= 8 || !safeURL(r.URL) {
+			return errChapterRedirect
+		}
+		return nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fault("INVALID_URL", "invalid chapter endpoint")
@@ -133,6 +160,9 @@ func (c *Client) chapterGETAttempt(ctx context.Context, endpoint string) ([]byte
 	req.Header.Set("User-Agent", ua)
 	resp, err := h.Do(req)
 	if err != nil {
+		if errors.Is(err, errChapterRedirect) {
+			return nil, fault("INVALID_URL", "chapter redirect not permitted")
+		}
 		return nil, fault("UPSTREAM_UNAVAILABLE", "chapter transport failed")
 	}
 	defer resp.Body.Close()
@@ -144,7 +174,8 @@ func (c *Client) chapterGETAttempt(ctx context.Context, endpoint string) ([]byte
 		return nil, fault("RESPONSE_TOO_LARGE", "chapter response exceeds limit")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fault("UPSTREAM_HTTP", "chapter response rejected; redirects disabled")
+		log.Printf("chapters read status=%d endpoint=%s redirects=%d", resp.StatusCode, chapterLabel(resp.Request.URL), redirects)
+		return nil, fault("UPSTREAM_HTTP", "chapter endpoint rejected the read")
 	}
 	if loginRequired(b, resp) {
 		return nil, fault("AUTH_REQUIRED", "chapter session rejected")

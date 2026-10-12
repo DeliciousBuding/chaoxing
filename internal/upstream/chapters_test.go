@@ -148,3 +148,29 @@ func TestChapterGETRedirectAndAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestChapterGETFollowsAllowlistedRedirect(t *testing.T) {
+	c := testClient(t)
+	// The upstream catalog chain legitimately redirects. An allowlisted target
+	// must be followed, otherwise the live read fails before any parsing.
+	c.http.Transport = roundtrip(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/visit/stucoursemiddle":
+			resp := response(r, "")
+			resp.StatusCode = 302
+			resp.Header.Set("Location", "https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse?enc=synthetic")
+			return resp, nil
+		case "/mooc2-ans/mycourse/studentcourse":
+			return response(r, chapterFixture), nil
+		}
+		t.Fatal("unexpected endpoint", r.URL.Path)
+		return nil, nil
+	})
+	b, err := c.chapterGET(context.Background(), "https://mooc1.chaoxing.com/visit/stucoursemiddle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "chapter_item") {
+		t.Fatal("allowlisted redirect was not followed")
+	}
+}

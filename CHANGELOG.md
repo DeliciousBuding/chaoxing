@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 — 2026-10-13
+
+- Fix `list_chapters` against the live service: the upstream chapter chain depends on its own redirects, so allowlisted redirects are followed again while learning, logging, task-entry and API paths stay blocked. The previous build refused every redirect and failed before parsing.
+- Log only a fixed endpoint label, status and redirect count for a rejected chapter response, so diagnostics carry no raw URL or request signature.
+
 ## 0.2.0 — 2026-10-13
 
 - One operation registry drives MCP and CLI input validation, discoverable schemas and additive coverage metadata; retain legacy tool names and fields.
