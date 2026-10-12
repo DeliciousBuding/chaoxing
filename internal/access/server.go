@@ -150,7 +150,10 @@ func (s *Server) bounded(next http.Handler) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
+		// Chromium serializes a same-origin form POST's Origin as "null" under
+		// no-referrer. Keep the origin for local forms, but suppress cross-origin
+		// referrers so authorization query parameters never reach callbacks.
+		w.Header().Set("Referrer-Policy", "same-origin")
 		next.ServeHTTP(w, r)
 	})
 }

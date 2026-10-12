@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 — 2026-10-12
+
+- Fix browser owner login: use a same-origin referrer policy so Chromium sends the real Origin for form POSTs rather than `null`. Cross-origin referrers remain suppressed; origin validation and CSRF checks remain enforced.
+
 ## 0.1.0 — 2026-10-12
 
 - Public English and Chinese product documentation, tool contracts, configuration and security boundaries.
