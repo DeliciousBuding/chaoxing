@@ -80,14 +80,18 @@ var tools = []tool{
 }
 
 type endpoint struct {
-	call  func(context.Context, string, map[string]any) (any, error)
-	slots chan struct{}
+	call    func(context.Context, string, map[string]any) (any, error)
+	slots   chan struct{}
+	version string
 }
 
 // New returns an HTTP handler, not a listener. Authentication is the caller's
 // responsibility. The callback receives only allowlisted, validated tool calls.
 func New(call func(context.Context, string, map[string]any) (any, error)) http.Handler {
-	return &endpoint{call: call, slots: make(chan struct{}, 4)}
+	return NewWithVersion(call, "dev")
+}
+func NewWithVersion(call func(context.Context, string, map[string]any) (any, error), version string) http.Handler {
+	return &endpoint{call: call, slots: make(chan struct{}, 4), version: version}
 }
 
 type rpcRequest struct {
@@ -220,7 +224,7 @@ func (e *endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !protocol(version) {
 			version = "2025-11-25"
 		}
-		respond(w, 200, req.ID, map[string]any{"protocolVersion": version, "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}}, "serverInfo": map[string]string{"name": "chaoxing", "version": "1.0.0"}}, 0, "")
+		respond(w, 200, req.ID, map[string]any{"protocolVersion": version, "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}}, "serverInfo": map[string]string{"name": "chaoxing", "version": e.version}}, 0, "")
 	case "ping":
 		respond(w, 200, req.ID, map[string]any{}, 0, "")
 	case "tools/list":

@@ -40,7 +40,7 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 
 The eight tools are `get_connection_status`, `list_courses`, `list_assignments`, `get_assignment`, `list_exams`, `list_notices`, `get_schedule` and `list_materials`. Core tools never submit assignments, answer exams, check in or change learning progress. Authentication writes session state; read endpoints may use HTTP POST without mutating coursework.
 
-Owner OAuth uses a 60-second authorization code, 15-minute access tokens and 30-day refresh tokens. Tokens are opaque and persisted only as hashed identifiers in private file-backed state, with no database, JWT or JWKS.
+Owner OAuth uses a 60-second authorization code, 15-minute random opaque access tokens and 30-day refresh families. Refresh proofs authenticate the family, counter and nonce, keeping rotation state bounded while recognizing replay. Raw access/refresh tokens are never persisted; this file-backed design uses no database, JWT or JWKS. DCR is enabled by default; CIMD is an explicit opt-in.
 
 Upstream login follows Chaoxing's AES login protocol over HTTPS. On a detected expired session, the GET helper automatically reauthenticates once and retries the read once. Verification requirements remain user actions on the official site. Upstream credentials and persisted cookies use AES-GCM at rest, with a separately stored, root-only key. Encryption cannot protect against root or a process that can read the key. The owner OAuth password is stored as a salted password hash, distinct from the recoverable upstream password.
 

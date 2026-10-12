@@ -8,7 +8,7 @@ Report vulnerabilities using [GitHub private vulnerability reporting](https://gi
 
 The public MCP listener requires owner OAuth authorization. Its password is stored as a salted PBKDF2-SHA256 hash and is distinct from the upstream password. The upstream password and cookie state are encrypted with AES-GCM because unattended login needs recoverable credentials. Keep the encryption key separately stored and root-only, with equivalently restrictive ACLs on Windows. Root or a compromised service process with key access can decrypt the vault.
 
-Authorization codes expire in 60 seconds, access tokens in 15 minutes and refresh tokens in 30 days. Tokens are opaque and stored only as SHA-256 identifiers in private file-backed state. This database-free design uses neither JWT nor JWKS.
+Authorization codes expire in 60 seconds, access tokens in 15 minutes and refresh families in 30 days. Access tokens are random opaque values; refresh proofs authenticate issuer-bound family/counter/nonce values. Only active token digests and bounded family state are persisted, not raw tokens. This database-free design uses neither JWT nor JWKS.
 
 Publish only loopback port 8792 through an HTTPS tunnel. Port 8793 is a private CLI listener protected by a local bearer token; never expose it through a tunnel, public bind or port forward. Protect configuration, OAuth state and backups as private data.
 

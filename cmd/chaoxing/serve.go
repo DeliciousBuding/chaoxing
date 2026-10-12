@@ -35,7 +35,7 @@ func serve() error {
 	}
 	mux := http.NewServeMux()
 	a.Register(mux)
-	mux.Handle("/mcp", a.Protect(mcphttp.New(x.Call)))
+	mux.Handle("/mcp", a.Protect(mcphttp.NewWithVersion(x.Call, version)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version})
 	})
