@@ -17,6 +17,8 @@ Only port 8792 enters the tunnel. Port 8793 is private to the host; it carries a
 
 ## Authentication boundaries
 
+Public DCR registrations last 90 days so connector setup retries can reuse their cached client IDs. Registration alone grants no permission: every authorization requires owner login and consent. The pool is capped at 128 and reclaims the oldest unapproved registration first at capacity; approved registrations are not evicted by anonymous registrations. Login/consent challenges still expire after 10 minutes and authorization codes after 60 seconds.
+
 The public owner authorization layer grants the `chaoxing.read` OAuth scope. Its password uses a salted PBKDF2-SHA256 hash with 600,000 iterations. This owner credential is separate from the upstream credential, which must be recoverable for automatic login. Use different passwords.
 
 Authorization codes expire after 60 seconds and use S256 PKCE. Random opaque access tokens last 15 minutes; refresh families have a 30-day lifetime. Refresh rotation preserves the original expiry. Issuer-bound MAC proofs authenticate family/counter/nonce values so old replay can revoke a family without retaining every historical token. State stores only active digests and one bounded record per family. The authorization server is database-free and does not issue JWTs or publish JWKS. DCR is the default registration flow; optional CIMD requires explicit opt-in and external metadata reachability.

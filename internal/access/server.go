@@ -247,7 +247,10 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 		}
 		delete(s.state.Clients, oldest)
 	}
-	c := client{ID: randomToken(), Name: req.Name, Redirects: req.Redirects, Expires: time.Now().Add(10 * time.Minute).Unix(), Created: time.Now().Unix()}
+	// A connector caches its public registration before the owner logs in.
+	// Registration is not authorization: keep it usable across setup retries;
+	// the bounded pool reclaims unapproved entries first when capacity is full.
+	c := client{ID: randomToken(), Name: req.Name, Redirects: req.Redirects, Expires: time.Now().Add(clientTTL).Unix(), Created: time.Now().Unix()}
 	s.state.Clients[c.ID] = c
 	if s.saveLocked() != nil {
 		oauthError(w, 503, "server_error")

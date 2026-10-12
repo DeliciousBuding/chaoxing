@@ -47,7 +47,7 @@ func TestPendingDCRReclaimsOldestNotApproved(t *testing.T) {
 		t.Fatal("approved client evicted")
 	}
 	c := s.state.Clients[id]
-	if c.Approved || c.Expires-c.Created != 600 {
+	if c.Approved || c.Expires-c.Created != int64(clientTTL.Seconds()) {
 		t.Fatal("pending TTL", c)
 	}
 	s.mu.Unlock()
@@ -57,8 +57,8 @@ func TestPendingDCRReclaimsOldestNotApproved(t *testing.T) {
 	}
 	s.mu.Lock()
 	c = s.state.Clients[id]
-	c.Created = time.Now().Add(-11 * time.Minute).Unix()
-	c.Expires = c.Created + 600
+	c.Created = time.Now().Add(-clientTTL - time.Minute).Unix()
+	c.Expires = c.Created + int64(clientTTL.Seconds())
 	s.state.Clients[id] = c
 	s.pruneLocked()
 	if _, ok := s.state.Clients[id]; ok {

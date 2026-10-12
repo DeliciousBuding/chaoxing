@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2 — 2026-10-12
+
+- Keep public OAuth client registrations for 90 days across setup retries. A registration does not grant access: owner consent, PKCE and exact redirect matching remain required. The 128-client pool still evicts unapproved registrations first to prevent anonymous capacity exhaustion.
+
 ## 0.1.1 — 2026-10-12
 
 - Fix browser owner login: use a same-origin referrer policy so Chromium sends the real Origin for form POSTs rather than `null`. Cross-origin referrers remain suppressed; origin validation and CSRF checks remain enforced.

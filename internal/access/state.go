@@ -25,6 +25,7 @@ const (
 	maxStateBytes = 2 << 20
 	accessTTL     = 15 * time.Minute
 	refreshTTL    = 30 * 24 * time.Hour
+	clientTTL     = 90 * 24 * time.Hour
 )
 
 type client struct {
@@ -205,11 +206,7 @@ func loadState(path string) (diskState, error) {
 		return st, errors.New("OAuth state issuer is missing or invalid")
 	}
 	for id, c := range st.Clients {
-		ttl := 10 * time.Minute
-		if c.Approved {
-			ttl = 90 * 24 * time.Hour
-		}
-		if !randomIDShape(id) || c.ID != id || len(c.Name) > 120 || len(c.Redirects) < 1 || len(c.Redirects) > 8 || !lifetimeOK(c.Created, c.Expires, ttl) {
+		if !randomIDShape(id) || c.ID != id || len(c.Name) > 120 || len(c.Redirects) < 1 || len(c.Redirects) > 8 || !lifetimeOK(c.Created, c.Expires, clientTTL) {
 			return st, errors.New("invalid persisted OAuth client")
 		}
 		for _, uri := range c.Redirects {
