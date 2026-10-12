@@ -3,7 +3,9 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -24,14 +26,84 @@ type Course struct {
 	Retired bool   `json:"retired"`
 }
 type Assignment struct {
-	ID        string `json:"id"`
-	CourseID  string `json:"course_id"`
-	ClassID   string `json:"class_id"`
-	Title     string `json:"title"`
-	Course    string `json:"course"`
-	Status    string `json:"status"`
-	Remaining string `json:"remaining,omitempty"`
-	DetailURL string `json:"-"`
+	ID                string `json:"id"`
+	CourseID          string `json:"course_id"`
+	ClassID           string `json:"class_id"`
+	Title             string `json:"title"`
+	Course            string `json:"course"`
+	Status            string `json:"status"`
+	Remaining         string `json:"remaining,omitempty"`
+	DetailURL         string `json:"-"`
+	SubmissionState   string `json:"submission_state"`
+	AvailabilityState string `json:"availability_state"`
+	RawStatus         string `json:"raw_status"`
+}
+
+// Only explicit evidence establishes submission; closed is not submitted.
+func academicStates(raw string) (string, string) {
+	submission, availability := "unknown", "unknown"
+	switch strings.TrimSpace(raw) {
+	case "未交", "未提交":
+		submission = "pending"
+	case "已交", "已提交", "已批阅":
+		submission = "submitted"
+	}
+	switch strings.TrimSpace(raw) {
+	case "未开始", "未开放":
+		availability = "not_open"
+	case "已截止", "已结束", "已关闭":
+		availability = "closed"
+	case "进行中", "可提交":
+		availability = "open"
+	}
+	return submission, availability
+}
+
+type AcademicCoverage struct {
+	CourseID string `json:"course_id"`
+	ClassID  string `json:"class_id"`
+	Complete bool   `json:"complete"`
+	Code     string `json:"code,omitempty"`
+}
+
+func academicCode(e error) string {
+	var f *Fault
+	if errors.As(e, &f) {
+		return f.Code
+	}
+	if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
+		return "BUDGET_EXHAUSTED"
+	}
+	return "UPSTREAM_UNAVAILABLE"
+}
+
+func academicSelection(courses []Course, a map[string]any) ([]Course, error) {
+	selected := []Course{}
+	seen := map[string]bool{}
+	for _, co := range courses {
+		if s := str(a, "course"); s != "" && !strings.Contains(co.Name, s) {
+			continue
+		}
+		if s := str(a, "course_id"); s != "" && co.ID != s {
+			continue
+		}
+		if s := str(a, "class_id"); s != "" && co.ClassID != s {
+			continue
+		}
+		key := co.ID + ":" + co.ClassID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		selected = append(selected, co)
+		if len(selected) > 4 {
+			return nil, fault("AMBIGUOUS_COURSE", "query matches >4 classes; specify course_id/class_id or a more specific name")
+		}
+	}
+	if len(selected) == 0 {
+		return nil, fault("NOT_FOUND", "no enrolled course matches query")
+	}
+	return selected, nil
 }
 
 func id(v any) string {
@@ -170,7 +242,8 @@ func parseAssignments(b []byte) ([]Assignment, error) {
 		title := text(first(n, func(v *html.Node) bool { return v.Data == "p" }))
 		status := text(first(n, func(v *html.Node) bool { return hasClass(v, "status") }))
 		rem := text(first(n, func(v *html.Node) bool { return hasClass(v, "fr") }))
-		rows = append(rows, Assignment{ID: cid + ":" + cl + ":" + workID, CourseID: cid, ClassID: cl, Title: title, Status: status, Remaining: rem, DetailURL: raw})
+		submission, availability := academicStates(status)
+		rows = append(rows, Assignment{ID: cid + ":" + cl + ":" + workID, CourseID: cid, ClassID: cl, Title: title, Status: status, RawStatus: status, SubmissionState: submission, AvailabilityState: availability, Remaining: rem, DetailURL: raw})
 	})
 	if len(rows) == 0 && !strings.Contains(text(doc), "暂无") && !strings.Contains(text(doc), "没有") {
 		return nil, fault("UPSTREAM_SCHEMA", "assignment list structure not recognized")
@@ -209,57 +282,68 @@ func (c *Client) fetchAssignments(ctx context.Context) error {
 	return nil
 }
 func (c *Client) listAssignments(ctx context.Context, a map[string]any) (any, error) {
-	if e := c.fetchAssignments(ctx); e != nil {
-		return nil, e
-	}
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
 	rows := []Assignment{}
 	course, status := str(a, "course"), str(a, "status")
+	if status != "" && status != "all" && status != "pending" && status != "submitted" && status != "unknown" {
+		return nil, fault("INVALID_ARGUMENT", "status must be all, pending, submitted, or unknown")
+	}
+	lim, off := number(a, "limit", 50), number(a, "offset", 0)
+	if lim < 1 || lim > 100 || off < 0 {
+		return nil, fault("INVALID_ARGUMENT", "limit 1..100; offset >=0")
+	}
 	source := c.assignments
 	complete := false
 	coverage := c.coverage
-	if course != "" {
+	fetchedAt := c.assignmentsAt.UTC()
+	details := []AcademicCoverage{}
+	warnings := []string{}
+	if course != "" || str(a, "course_id") != "" || str(a, "class_id") != "" {
 		courses, e := c.fetchCourses(ctx)
 		if e != nil {
 			return nil, e
 		}
 		source = []Assignment{}
-		matched := 0
-		complete = true
-		for _, co := range courses {
-			if strings.Contains(co.Name, course) {
-				matched++
-				if matched > 4 {
-					return nil, fault("AMBIGUOUS_COURSE", "course query matches >4 classes; use a more specific name")
-				}
-				rr, ok, e := c.scanCourse(ctx, co)
-				if e != nil {
-					return nil, e
-				}
-				source = append(source, rr...)
-				complete = complete && ok
-			}
+		selected, e := academicSelection(courses, a)
+		if e != nil {
+			return nil, e
 		}
-		if matched == 0 {
-			return nil, fault("NOT_FOUND", "no enrolled course matches query")
+		complete = true
+		for _, co := range selected {
+			rr, ok, e := c.scanCourse(ctx, co)
+			d := AcademicCoverage{CourseID: co.ID, ClassID: co.ClassID, Complete: ok && e == nil}
+			if e != nil {
+				d.Code = academicCode(e)
+			} else if !ok {
+				d.Code = "INCOMPLETE_SCAN"
+			}
+			details = append(details, d)
+			if d.Code != "" {
+				warnings = append(warnings, "assignment class scan incomplete: "+d.Code)
+			}
+			source = append(source, rr...)
+			complete = complete && d.Complete
 		}
 		coverage = "matched_course_classes; completeness requires upstream total-count agreement"
-	}
-	if status != "" && status != "all" && status != "pending" && status != "submitted" {
-		return nil, fault("INVALID_ARGUMENT", "status must be all, pending, or submitted")
+		fetchedAt = time.Now().UTC()
+	} else {
+		if e := c.fetchAssignments(ctx); e != nil {
+			return nil, e
+		}
+		source, coverage, fetchedAt = c.assignments, c.coverage, c.assignmentsAt.UTC()
+		warnings = append(warnings, "global assignment feed is not full account coverage")
 	}
 	for _, r := range source {
 		if course != "" && !strings.Contains(r.Course, course) {
 			continue
 		}
-		pending := r.Status == "未交" || r.Status == "未提交"
-		if status == "pending" && !pending || status == "submitted" && pending {
+		r.RawStatus = r.Status
+		r.SubmissionState, r.AvailabilityState = academicStates(r.Status)
+		if status != "" && status != "all" && r.SubmissionState != status {
 			continue
 		}
 		rows = append(rows, r)
-	}
-	lim, off := number(a, "limit", 50), number(a, "offset", 0)
-	if lim < 1 || lim > 100 || off < 0 {
-		return nil, fault("INVALID_ARGUMENT", "limit 1..100; offset >=0")
 	}
 	total := len(rows)
 	if off > total {
@@ -269,10 +353,25 @@ func (c *Client) listAssignments(ctx context.Context, a map[string]any) (any, er
 	if end > total {
 		end = total
 	}
-	return map[string]any{"items": rows[off:end], "total_in_feed": total, "offset": off, "has_more": end < total, "coverage": coverage, "complete": complete, "fetched_at": time.Now().UTC(), "timezone": "Asia/Shanghai"}, nil
+	return map[string]any{"items": rows[off:end], "total_in_feed": total, "offset": off, "has_more": end < total, "coverage": coverage, "coverage_details": academicCoverageDetails(details), "warnings": warnings, "complete": complete, "fetched_at": fetchedAt, "timezone": "Asia/Shanghai"}, nil
+}
+
+func academicCoverageDetails(details []AcademicCoverage) map[string]any {
+	checked, failed := 0, 0
+	for _, d := range details {
+		if d.Code != "" && d.Code != "INCOMPLETE_SCAN" {
+			failed++
+		} else {
+			checked++
+		}
+	}
+	return map[string]any{"classes": details, "sources_checked": checked, "sources_failed": failed}
 }
 
 func (c *Client) scanCourse(ctx context.Context, co Course) ([]Assignment, bool, error) {
+	if e := ctx.Err(); e != nil {
+		return []Assignment{}, false, e
+	}
 	q := url.Values{"courseid": {co.ID}, "clazzid": {co.ClassID}, "cpi": {co.CPI}, "ismooc2": {"1"}, "v": {"2"}}
 	b, e := c.get(ctx, "https://mooc1.chaoxing.com/visit/stucoursemiddle?"+q.Encode())
 	if e != nil {
@@ -295,26 +394,39 @@ func (c *Client) scanCourse(ctx context.Context, co Course) ([]Assignment, bool,
 	rows := []Assignment{}
 	seen := map[string]bool{}
 	expected := -1
+	consistentTotal := true
 	for page := 1; page <= 20; page++ {
+		if e := ctx.Err(); e != nil {
+			return rows, false, e
+		}
 		q.Set("pageNum", strconv.Itoa(page))
 		b, e = c.get(ctx, "https://mooc1.chaoxing.com/mooc-ans/mooc2/work/list?"+q.Encode())
 		if e != nil {
-			return nil, false, e
+			return rows, false, e
 		}
 		dd, _ := html.Parse(bytes.NewReader(b))
 		ratio := regexp.MustCompile(`(?:^|\s)([0-9]+)/([0-9]+)(?:\s|$)`).FindStringSubmatch(text(dd))
 		if len(ratio) == 3 {
-			expected, _ = strconv.Atoi(ratio[2])
+			total, err := strconv.Atoi(ratio[2])
+			if err == nil {
+				if expected >= 0 && total != expected {
+					consistentTotal = false
+				}
+				expected = total
+			}
 		}
 		rr, e := parseAssignments(b)
 		if e != nil {
-			if expected == 0 {
+			if expected == 0 && len(rows) == 0 && consistentTotal {
 				return []Assignment{}, true, nil
 			}
-			return nil, false, e
+			return rows, false, e
 		}
 		added := 0
 		for _, r := range rr {
+			if r.CourseID != co.ID || r.ClassID != co.ClassID {
+				return rows, false, fault("UPSTREAM_SCHEMA", "assignment row does not match requested course/class")
+			}
 			if !seen[r.ID] {
 				r.Course = co.Name
 				seen[r.ID] = true
@@ -332,7 +444,7 @@ func (c *Client) scanCourse(ctx context.Context, co Course) ([]Assignment, bool,
 			}
 		}
 		if expected >= 0 && len(rows) >= expected {
-			return rows, len(rows) == expected, nil
+			return rows, len(rows) == expected && consistentTotal, nil
 		}
 		if added == 0 {
 			return rows, false, nil
@@ -426,12 +538,29 @@ func (c *Client) detail(ctx context.Context, aid string) (any, error) {
 	}
 	return out, nil
 }
+
+type Exam struct {
+	Title             string   `json:"title"`
+	Course            string   `json:"course"`
+	SubmissionState   string   `json:"submission_state"`
+	AvailabilityState string   `json:"availability_state"`
+	RawStatus         string   `json:"raw_status"`
+	RawColumns        []string `json:"raw_columns"`
+	Provenance        string   `json:"provenance"`
+}
+
 func parseExams(b []byte) (any, error) {
 	doc, e := html.Parse(bytes.NewReader(b))
 	if e != nil {
 		return nil, e
 	}
 	rows := [][]string{}
+	headers := []string{}
+	walk(doc, func(n *html.Node) {
+		if n.Data == "th" {
+			headers = append(headers, text(n))
+		}
+	})
 	walk(doc, func(n *html.Node) {
 		if n.Data == "tr" && hasClass(n, "dataTr") {
 			r := []string{}
@@ -446,22 +575,270 @@ func parseExams(b []byte) (any, error) {
 	if len(rows) == 0 && !strings.Contains(text(doc), "暂无") {
 		return nil, fault("UPSTREAM_SCHEMA", "exam table not recognized")
 	}
-	return map[string]any{"items": rows, "fetched_at": time.Now().UTC()}, nil
+	exams := []Exam{}
+	for _, columns := range rows {
+		exam := Exam{RawColumns: columns, SubmissionState: "unknown", AvailabilityState: "unknown", Provenance: "exam_list_table"}
+		// Header evidence only: table positions are not an upstream contract.
+		if len(columns) == len(headers) {
+			for i, header := range headers {
+				switch header {
+				case "考试名称", "考试标题":
+					exam.Title = columns[i]
+				case "课程名称", "所属课程":
+					exam.Course = columns[i]
+				case "状态", "考试状态":
+					exam.RawStatus = columns[i]
+				}
+			}
+		}
+		exam.SubmissionState, exam.AvailabilityState = academicStates(exam.RawStatus)
+		exams = append(exams, exam)
+	}
+	return map[string]any{"items": rows, "exams": exams, "raw_headers": headers, "complete": false, "coverage": "exam_list_page_only; account coverage and pagination not established", "warnings": []string{"exam coverage incomplete; unmapped columns remain raw"}, "fetched_at": time.Now().UTC()}, nil
 }
-func (c *Client) notices(ctx context.Context) (any, error) {
+
+type Notice struct {
+	ID           string         `json:"id"`
+	Title        string         `json:"title"`
+	Content      string         `json:"content"`
+	SendTime     string         `json:"send_time"`
+	InsertTime   string         `json:"insert_time"`
+	SourceType   string         `json:"source_type"`
+	RawSource    any            `json:"raw_source"`
+	RawReadState any            `json:"raw_read_state"`
+	Raw          map[string]any `json:"raw"`
+	Provenance   string         `json:"provenance"`
+}
+
+type noticePageCursor struct {
+	Upstream string `json:"u"`
+	Offset   int    `json:"o"`
+}
+
+func decodeNoticeCursor(cursor string) (noticePageCursor, error) {
+	if len(cursor) > 256 {
+		return noticePageCursor{}, fault("INVALID_ARGUMENT", "cursor must be <=256 bytes")
+	}
+	if !strings.HasPrefix(cursor, "page:") {
+		return noticePageCursor{Upstream: cursor}, nil
+	}
+	b, e := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(cursor, "page:"))
+	var p noticePageCursor
+	if e != nil || json.Unmarshal(b, &p) != nil || p.Offset < 0 || len(p.Upstream) > 256 {
+		return p, fault("INVALID_ARGUMENT", "invalid notice page cursor")
+	}
+	return p, nil
+}
+
+func encodeNoticeCursor(p noticePageCursor) string {
+	b, _ := json.Marshal(p)
+	s := "page:" + base64.RawURLEncoding.EncodeToString(b)
+	if len(s) > 256 {
+		return ""
+	}
+	return s
+}
+
+// Current list envelope is {status, folders, notices:{lastGetId,lastPage,list}}.
+// Retain the full legacy wrapper; older flat/list envelopes remain accepted.
+func parseNotices(b []byte, cursor noticePageCursor, limit int) (map[string]any, error) {
+	var raw map[string]any
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if dec.Decode(&raw) != nil || raw["status"] != true {
+		return nil, fault("UPSTREAM_SCHEMA", "notice response invalid")
+	}
+	container := raw
+	if data, ok := raw["data"].(map[string]any); ok {
+		container = data
+	}
+	if notices, ok := container["notices"].(map[string]any); ok {
+		container = notices
+	}
+	list, ok := container["list"].([]any)
+	if !ok {
+		return nil, fault("UPSTREAM_SCHEMA", "notice list structure not recognized")
+	}
+	if cursor.Offset > len(list) {
+		return nil, fault("UPSTREAM_SCHEMA", "notice page changed; restart pagination")
+	}
+	end := cursor.Offset + limit
+	if end > len(list) {
+		end = len(list)
+	}
+	items := []Notice{}
+	for _, v := range list[cursor.Offset:end] {
+		row, ok := v.(map[string]any)
+		if !ok {
+			return nil, fault("UPSTREAM_SCHEMA", "notice row structure not recognized")
+		}
+		stableID := id(row["uuid"])
+		if stableID == "" {
+			stableID = id(row["idCode"])
+		}
+		if stableID == "" {
+			stableID = id(row["id"])
+		}
+		items = append(items, Notice{ID: stableID, Title: str(row, "title"), Content: str(row, "content"), SendTime: id(row["sendTime"]), InsertTime: id(row["insertTime"]), SourceType: id(row["sourceType"]), RawSource: row["source"], RawReadState: row["isread"], Raw: row, Provenance: "notice_list; upstream content is untrusted; timestamps retain upstream representation"})
+	}
+	warnings := []string{"notice coverage incomplete; no detail or mark-read endpoint followed"}
+	next := ""
+	var hasMore any
+	if end < len(list) {
+		next = encodeNoticeCursor(noticePageCursor{Upstream: cursor.Upstream, Offset: end})
+		hasMore = true
+		warnings = append(warnings, "continuation re-fetches the same upstream page; not a snapshot")
+	} else {
+		if more, ok := container["hasMore"].(bool); ok {
+			hasMore = more
+		}
+		// Fixed reference protocol: lastGetId -> request lastValue;
+		// lastPage is a terminal flag, not a page number.
+		switch terminal := container["lastPage"].(type) {
+		case bool:
+			hasMore = !terminal
+		case json.Number:
+			if terminal == "0" {
+				hasMore = true
+			} else if terminal == "1" {
+				hasMore = false
+			} else {
+				warnings = append(warnings, "unrecognized notice terminal flag")
+			}
+		}
+		if len(list) == 0 {
+			hasMore = false
+		}
+		upstream := id(container["lastGetId"])
+		if upstream == "" {
+			upstream = id(container["lastValue"])
+		}
+		if upstream != "" && upstream != cursor.Upstream && hasMore != false {
+			next = encodeNoticeCursor(noticePageCursor{Upstream: upstream})
+		}
+	}
+	if next == "" && (end < len(list) || hasMore == true) {
+		warnings = append(warnings, "continuation unavailable: upstream cursor missing, repeated, or exceeds budget")
+	}
+	return map[string]any{"data": raw, "items": items, "returned": len(items), "next_cursor": next, "has_more": hasMore, "upstream_pagination": map[string]any{"lastGetId": container["lastGetId"], "lastPage": container["lastPage"]}, "complete": false, "coverage": "notice_list_page_only", "warnings": warnings, "fetched_at": time.Now().UTC()}, nil
+}
+
+func (c *Client) notices(ctx context.Context, a map[string]any) (any, error) {
+	limit := number(a, "limit", 50)
+	if limit < 1 || limit > 100 {
+		return nil, fault("INVALID_ARGUMENT", "limit must be 1..100")
+	}
+	cursor, e := decodeNoticeCursor(str(a, "cursor"))
+	if e != nil {
+		return nil, e
+	}
 	// Establish session with a read first; only POST the documented read endpoint.
 	if _, e := c.fetchCourses(ctx); e != nil {
 		return nil, e
 	}
-	b, e := c.authenticatedRead(ctx, "POST", "https://notice.chaoxing.com/pc/notice/getNoticeList", url.Values{"type": {"0"}, "notice_type": {"0"}, "lastValue": {""}, "sort": {"0"}})
+	b, e := c.authenticatedRead(ctx, "POST", "https://notice.chaoxing.com/pc/notice/getNoticeList", url.Values{"type": {"0"}, "notice_type": {"0"}, "lastValue": {cursor.Upstream}, "sort": {"0"}})
 	if e != nil {
 		return nil, e
 	}
-	var v map[string]any
-	if json.Unmarshal(b, &v) != nil || v["status"] != true {
-		return nil, fault("UPSTREAM_SCHEMA", "notice response not JSON")
+	return parseNotices(b, cursor, limit)
+}
+
+// Overview is deliberately assignment-only until other sources have verified
+// course identity/coverage. No implicit semester and no notice-derived tasks.
+func (c *Client) studyOverview(ctx context.Context, a map[string]any) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	courses, e := c.fetchCourses(ctx)
+	if e != nil {
+		return nil, e
 	}
-	return map[string]any{"data": v, "complete": false, "fetched_at": time.Now().UTC()}, nil
+	selected, e := academicSelection(courses, a)
+	if e != nil {
+		return nil, e
+	}
+	return c.academicOverviewSelected(ctx, selected, number(a, "limit", 50))
+}
+
+func (c *Client) academicOverviewSelected(ctx context.Context, selected []Course, limit int) (any, error) {
+	if limit < 1 || limit > 100 {
+		return nil, fault("INVALID_ARGUMENT", "limit must be 1..100")
+	}
+	items := []Assignment{}
+	details := []AcademicCoverage{}
+	warnings := []string{"overview covers assignments only; exams/task points/notices not established"}
+	complete := true
+	total := 0
+	for _, co := range selected {
+		rows, ok, e := c.scanCourse(ctx, co)
+		d := AcademicCoverage{CourseID: co.ID, ClassID: co.ClassID, Complete: ok && e == nil}
+		if e != nil {
+			d.Code = academicCode(e)
+		} else if !ok {
+			d.Code = "INCOMPLETE_SCAN"
+		}
+		if d.Code != "" {
+			warnings = append(warnings, "assignment class scan incomplete: "+d.Code)
+		}
+		details = append(details, d)
+		complete = complete && d.Complete
+		total += len(rows)
+		for _, row := range rows {
+			if len(items) < limit {
+				items = append(items, row)
+			}
+		}
+	}
+	return map[string]any{"items": items, "courses": selected, "complete": false, "assignments_complete": complete, "total_in_feed": total, "has_more": total > len(items), "coverage": "selected_course_assignment_lists_only", "coverage_details": academicCoverageDetails(details), "warnings": warnings, "provenance": "course_assignment_lists; no inferred tasks", "unsupported_sources": []string{"course_exams", "task_points", "notice_action_extraction"}, "fetched_at": time.Now().UTC()}, nil
+}
+
+func (c *Client) actionItems(ctx context.Context, a map[string]any) (any, error) {
+	// Filter before the result limit, so submitted work cannot hide pending work.
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	courses, e := c.fetchCourses(ctx)
+	if e != nil {
+		return nil, e
+	}
+	selected, e := academicSelection(courses, a)
+	if e != nil {
+		return nil, e
+	}
+	limit := number(a, "limit", 50)
+	if limit < 1 || limit > 100 {
+		return nil, fault("INVALID_ARGUMENT", "limit must be 1..100")
+	}
+	items := []map[string]any{}
+	details := []AcademicCoverage{}
+	warnings := []string{"action items cover assignments only; unknown states require review, not presumed submitted"}
+	total := 0
+	for _, co := range selected {
+		rows, ok, e := c.scanCourse(ctx, co)
+		d := AcademicCoverage{CourseID: co.ID, ClassID: co.ClassID, Complete: ok && e == nil}
+		if e != nil {
+			d.Code = academicCode(e)
+		} else if !ok {
+			d.Code = "INCOMPLETE_SCAN"
+		}
+		if d.Code != "" {
+			warnings = append(warnings, "assignment class scan incomplete: "+d.Code)
+		}
+		details = append(details, d)
+		for _, row := range rows {
+			if row.SubmissionState == "submitted" {
+				continue
+			}
+			total++
+			if len(items) >= limit {
+				continue
+			}
+			action := "review_state"
+			if row.SubmissionState == "pending" {
+				action = "review_assignment"
+			}
+			items = append(items, map[string]any{"kind": "assignment", "action": action, "assignment": row, "inferred": false, "provenance": map[string]string{"source": "course_assignment_list", "course_id": row.CourseID, "class_id": row.ClassID, "id": row.ID}})
+		}
+	}
+	return map[string]any{"items": items, "total_in_feed": total, "has_more": total > len(items), "complete": false, "coverage": "selected_course_assignment_lists_only; other action sources unsupported", "coverage_details": academicCoverageDetails(details), "warnings": warnings, "fetched_at": time.Now().UTC()}, nil
 }
 func (c *Client) schedule(ctx context.Context, a map[string]any) (any, error) {
 	if _, e := c.fetchCourses(ctx); e != nil {

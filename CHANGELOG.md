@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 — 2026-10-13
+
+- One operation registry drives MCP and CLI input validation, discoverable schemas and additive coverage metadata; retain legacy tool names and fields.
+- Add daemon-backed domain commands, capability discovery, bounded study overview and source-backed assignment action items.
+- Add pure-HTML chapter summaries and explicitly reported aggregate task-point counts, without entering learning pages or fetching task cards.
+- Support exact course/class selection, conservative submission states and partial source failures; improve exam and notice result structure without starting exams or marking messages read.
+- Declare MCP output schemas and account-bounded annotations; safe structured errors share transport-independent codes.
+- Successful JSON stays on stdout; complete CLI failures move to stderr and partial results return exit code 3.
+- Publish new release tags instead of overwriting existing release artifacts. Group messages, inbox and task points remain explicitly unsupported until safe read endpoints are verified.
+
 ## 0.1.2 — 2026-10-12
 
 - Keep public OAuth client registrations for 90 days across setup retries. A registration does not grant access: owner consent, PKCE and exact redirect matching remain required. The 128-client pool still evicts unapproved registrations first to prevent anonymous capacity exhaustion.

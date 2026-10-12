@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/DeliciousBuding/chaoxing/internal/operation"
 )
 
 func rpc(h http.Handler, body string) *httptest.ResponseRecorder {
@@ -42,7 +44,7 @@ func TestInitializeListCall(t *testing.T) {
 	}
 	w = rpc(h, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 	list := result(t, w)["result"].(map[string]any)["tools"].([]any)
-	if len(list) != 8 {
+	if len(list) != len(operation.All()) {
 		t.Fatal(len(list))
 	}
 	for _, v := range list {

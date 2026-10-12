@@ -13,70 +13,46 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/DeliciousBuding/chaoxing/internal/operation"
+	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
 
 const maxBody = 64 << 10
 const maxResult = 2 << 20
 
-type field struct {
-	kind             string
-	minimum, maximum int
-	required         bool
-}
 type tool struct {
 	Name            string           `json:"name"`
 	Description     string           `json:"description"`
 	InputSchema     map[string]any   `json:"inputSchema"`
+	OutputSchema    map[string]any   `json:"outputSchema"`
 	Annotations     map[string]any   `json:"annotations"`
 	SecuritySchemes []map[string]any `json:"securitySchemes"`
 	Meta            map[string]any   `json:"_meta"`
-	fields          map[string]field
+	definition      operation.Definition
 }
 
-func makeTool(name, description string, fields map[string]field) tool {
-	props := map[string]any{}
-	required := []string{}
-	// Stable order makes tool descriptions and schema snapshots reproducible.
-	for _, key := range []string{"course", "status", "limit", "offset", "id", "week", "course_id", "class_id", "cpi", "folder_id"} {
-		f, ok := fields[key]
-		if !ok {
-			continue
-		}
-		p := map[string]any{"type": f.kind}
-		if f.kind == "integer" {
-			p["minimum"] = f.minimum
-			p["maximum"] = f.maximum
-		} else {
-			p["maxLength"] = 256
-			if f.required {
-				p["minLength"] = 1
-			}
-		}
-		props[key] = p
-		if key == "status" {
-			p["enum"] = []string{"all", "pending", "submitted"}
-		}
-		if f.required {
-			required = append(required, key)
-		}
+func toolCatalog() []tool {
+	definitions := operation.All()
+	catalog := make([]tool, 0, len(definitions))
+	for _, d := range definitions {
+		security := []map[string]any{{"type": "oauth2", "scopes": []string{"chaoxing.read"}}}
+		catalog = append(catalog, tool{
+			Name: d.Name, Description: d.Description,
+			InputSchema: d.InputSchema(), OutputSchema: d.OutputSchema(),
+			Annotations:     map[string]any{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+			SecuritySchemes: security, Meta: map[string]any{"securitySchemes": security},
+			definition: d,
+		})
 	}
-	schema := map[string]any{"type": "object", "properties": props, "additionalProperties": false}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	security := []map[string]any{{"type": "oauth2", "scopes": []string{"chaoxing.read"}}}
-	return tool{Name: name, Description: description, InputSchema: schema, Annotations: map[string]any{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true}, SecuritySchemes: security, Meta: map[string]any{"securitySchemes": security}, fields: fields}
+	return catalog
 }
 
-var tools = []tool{
-	makeTool("get_connection_status", "查询上游连接状态。", nil),
-	makeTool("list_courses", "列出可访问的课程。", nil),
-	makeTool("list_assignments", "查询作业；按上游返回的 complete 和 coverage 判断覆盖范围。", map[string]field{"course": {kind: "string"}, "status": {kind: "string"}, "limit": {kind: "integer", minimum: 1, maximum: 100}, "offset": {kind: "integer", minimum: 0, maximum: 100000}}),
-	makeTool("get_assignment", "读取指定作业详情。", map[string]field{"id": {kind: "string", required: true}}),
-	makeTool("list_exams", "列出考试；保留上游覆盖范围标记。", nil),
-	makeTool("list_notices", "列出通知；保留上游覆盖范围标记。", nil),
-	makeTool("get_schedule", "读取指定周课表。", map[string]field{"week": {kind: "integer", minimum: 1, maximum: 30}}),
-	makeTool("list_materials", "读取课程资料目录，不执行下载或写操作。", map[string]field{"course_id": {kind: "string", required: true}, "class_id": {kind: "string", required: true}, "cpi": {kind: "string", required: true}, "folder_id": {kind: "string"}}),
+var tools = toolCatalog()
+
+// safeToolError uses the shared upstream error contract without disclosing raw errors.
+func safeToolError(err error) *upstream.Fault {
+	return upstream.SafeFault(err)
 }
 
 type endpoint struct {
@@ -243,43 +219,6 @@ func (e *endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, req.ID, nil, -32601, "Method not found")
 	}
 }
-func validate(t tool, args map[string]any) bool {
-	for key, f := range t.fields {
-		v, ok := args[key]
-		if !ok {
-			if f.required {
-				return false
-			}
-			continue
-		}
-		if f.kind == "string" {
-			s, ok := v.(string)
-			if !ok || len(s) > 256 || (f.required && strings.TrimSpace(s) == "") || strings.ContainsAny(s, "\x00\r\n") {
-				return false
-			}
-			if key == "status" && s != "all" && s != "pending" && s != "submitted" {
-				return false
-			}
-		} else {
-			n, ok := v.(json.Number)
-			if !ok {
-				return false
-			}
-			i, err := n.Int64()
-			if err != nil || i < int64(f.minimum) || i > int64(f.maximum) {
-				return false
-			}
-			// Keep the normal encoding/json numeric convention used by Client.Call.
-			args[key] = float64(i)
-		}
-	}
-	for key := range args {
-		if _, ok := t.fields[key]; !ok {
-			return false
-		}
-	}
-	return true
-}
 func (e *endpoint) callTool(w http.ResponseWriter, r *http.Request, req rpcRequest) {
 	var p struct {
 		Name      string          `json:"name"`
@@ -305,7 +244,7 @@ func (e *endpoint) callTool(w http.ResponseWriter, r *http.Request, req rpcReque
 		respond(w, 200, req.ID, nil, -32602, "Arguments must be an object")
 		return
 	}
-	if !validate(*selected, args) {
+	if operation.Validate(selected.definition, args) != nil {
 		respond(w, 200, req.ID, nil, -32602, "Invalid tool arguments")
 		return
 	}
@@ -317,18 +256,20 @@ func (e *endpoint) callTool(w http.ResponseWriter, r *http.Request, req rpcReque
 	defer cancel()
 	value, err := e.call(ctx, p.Name, args)
 	if err != nil { // Upstream errors may contain credentials or private URLs: do not echo.
-		respond(w, 200, req.ID, map[string]any{"content": []map[string]string{{"type": "text", "text": "Upstream read failed."}}, "isError": true}, 0, "")
+		safe := safeToolError(err)
+		b, _ := json.Marshal(safe)
+		respond(w, 200, req.ID, map[string]any{"content": []map[string]string{{"type": "text", "text": string(b)}}, "structuredContent": map[string]any{"error": safe}, "isError": true}, 0, "")
 		return
 	}
-	b, err := json.Marshal(value)
-	if err != nil || len(b) > maxResult {
+	structured, err := operation.Result(p.Name, value)
+	if err != nil {
 		respond(w, 200, req.ID, nil, -32603, "Tool result unavailable or too large")
 		return
 	}
-	var structured any
-	_ = json.Unmarshal(b, &structured)
-	if _, ok := structured.(map[string]any); !ok {
-		structured = map[string]any{"result": structured}
+	b, err := json.Marshal(structured)
+	if err != nil || len(b) > maxResult {
+		respond(w, 200, req.ID, nil, -32603, "Tool result unavailable or too large")
+		return
 	}
 	respond(w, 200, req.ID, map[string]any{"content": []map[string]string{{"type": "text", "text": string(b)}}, "structuredContent": structured, "isError": false}, 0, "")
 }

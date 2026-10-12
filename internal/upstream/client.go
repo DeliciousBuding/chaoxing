@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
 	"golang.org/x/net/publicsuffix"
 )
@@ -26,12 +27,61 @@ const api = "https://mooc1-api.chaoxing.com"
 const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
 type Fault struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Category  string `json:"category,omitempty"`
+	Retryable bool   `json:"retryable"`
+	Hint      string `json:"hint,omitempty"`
 }
 
 func (f *Fault) Error() string     { return f.Code + ": " + f.Message }
-func fault(code, msg string) error { return &Fault{code, msg} }
+func fault(code, msg string) error { return &Fault{Code: code, Message: msg} }
+
+// SafeFault discards arbitrary error strings and supplies a stable recovery hint.
+func SafeFault(err error) *Fault {
+	f := &Fault{Code: "INTERNAL", Message: "Operation failed.", Category: "internal"}
+	var src *Fault
+	if errors.As(err, &src) {
+		f.Code = src.Code
+	}
+	if errors.Is(err, operation.ErrInvalidArgument) {
+		f.Code = "INVALID_ARGUMENT"
+	}
+	if errors.Is(err, operation.ErrUnknownOperation) {
+		f.Code = "INVALID_TOOL"
+	}
+	switch f.Code {
+	case "AUTH_REQUIRED", "AUTH_COOLDOWN", "CREDENTIALS_UNAVAILABLE":
+		f.Category = "authentication"
+		f.Message = "Upstream authentication is unavailable."
+		f.Hint = "Check connection status; complete required verification on the official site."
+	case "INVALID_ARGUMENT", "INVALID_TOOL", "INVALID_URL", "AMBIGUOUS_COURSE":
+		f.Category = "input"
+		f.Message = "Request is not permitted by the operation contract."
+		f.Hint = "Inspect schema and use IDs from list_courses."
+	case "COURSE_ACCESS", "NOT_FOUND":
+		f.Category = "access"
+		f.Message = "Requested resource is not available in the verified accessible source."
+	case "UPSTREAM_SCHEMA":
+		f.Category = "schema"
+		f.Message = "Upstream response is not recognized; no empty-result assumption."
+		f.Hint = "Report parser drift; do not treat this as no work."
+	case "UPSTREAM_UNAVAILABLE", "UPSTREAM_HTTP":
+		f.Category = "upstream"
+		f.Message = "Upstream is temporarily unavailable."
+		f.Retryable = true
+	case "UNSUPPORTED":
+		f.Category = "capability"
+		f.Message = "Capability is not implemented."
+		f.Hint = "Inspect get_capabilities."
+	case "RESPONSE_TOO_LARGE", "STATE_WRITE_FAILED":
+		f.Category = "resource"
+		f.Message = "Response or state resource limit reached."
+	default:
+		f.Code = "INTERNAL"
+	}
+	return f
+}
 
 type Config struct{ CredentialsPath, KeyPath, SessionPath string }
 type SavedCookies struct {
@@ -85,7 +135,18 @@ func New(c Config) (*Client, error) {
 	return x, nil
 }
 func safeURL(u *url.URL) bool {
-	return u.Scheme == "https" && u.User == nil && (u.Port() == "" || u.Port() == "443") && (u.Hostname() == "chaoxing.com" || strings.HasSuffix(u.Hostname(), ".chaoxing.com"))
+	if u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") || !(u.Hostname() == "chaoxing.com" || strings.HasSuffix(u.Hostname(), ".chaoxing.com")) {
+		return false
+	}
+	// GET is not proof of read-only behavior. Block known learning mutations and
+	// task-entry paths even if supplied by a known feed or a server redirect.
+	p := strings.ToLower(u.Path)
+	for _, blocked := range []string{"studentstudyajax", "/knowledge/cards", "/log/setlog", "/ananas/job/", "/multimedia/log/", "/savetimepc", "/mooc-ans/api/work", "/markread", "/setread"} {
+		if strings.Contains(p, blocked) {
+			return false
+		}
+	}
+	return true
 }
 func EncryptLogin(text string) string {
 	k := []byte("u2oh6Vu^HWe4_AES")
@@ -222,9 +283,39 @@ func (c *Client) authenticatedRead(ctx context.Context, method, u string, form u
 	}
 	return b, nil
 }
+func (c *Client) lock(ctx context.Context) error {
+	if c.mu.TryLock() {
+		return nil
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return fault("UPSTREAM_UNAVAILABLE", "request budget expired")
+		case <-ticker.C:
+			if c.mu.TryLock() {
+				return nil
+			}
+		}
+	}
+}
 func (c *Client) Call(ctx context.Context, name string, args map[string]any) (any, error) {
-	c.mu.Lock()
+	d, ok := operation.Find(name)
+	if !ok {
+		return nil, fault("INVALID_TOOL", "unknown tool")
+	}
+	if err := operation.Validate(d, args); err != nil {
+		return nil, fault("INVALID_ARGUMENT", "invalid operation arguments")
+	}
+	name = d.Name
+	if e := c.lock(ctx); e != nil {
+		return nil, e
+	}
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, fault("UPSTREAM_UNAVAILABLE", "request budget expired")
+	}
 	if name == "get_connection_status" {
 		// A status probe must actually validate the session, not timestamp a cache.
 		c.coursesAt = time.Time{}
@@ -240,7 +331,12 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 	}
 	switch name {
 	case "list_courses":
-		return c.fetchCourses(ctx)
+		cached := c.courses != nil && time.Since(c.coursesAt) < 2*time.Minute
+		courses, e := c.fetchCourses(ctx)
+		if e != nil {
+			return nil, e
+		}
+		return map[string]any{"result": courses, "fetched_at": c.coursesAt.UTC(), "cache_hit": cached}, nil
 	case "list_assignments":
 		return c.listAssignments(ctx, args)
 	case "get_assignment":
@@ -252,7 +348,15 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		}
 		return parseExams(b)
 	case "list_notices":
-		return c.notices(ctx)
+		return c.notices(ctx, args)
+	case "get_study_overview":
+		return c.studyOverview(ctx, args)
+	case "list_action_items":
+		return c.actionItems(ctx, args)
+	case "get_capabilities":
+		return operation.Capabilities(), nil
+	case "list_chapters":
+		return c.chapters(ctx, args)
 	case "get_schedule":
 		return c.schedule(ctx, args)
 	case "list_materials":
