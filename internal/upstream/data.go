@@ -323,6 +323,9 @@ func (c *Client) scanCourse(ctx context.Context, co Course) ([]Assignment, bool,
 				if c.extraAssignments == nil {
 					c.extraAssignments = map[string]Assignment{}
 				}
+				if len(c.extraAssignments) >= 2000 {
+					c.extraAssignments = map[string]Assignment{}
+				}
 				if len(c.extraAssignments) < 2000 {
 					c.extraAssignments[r.ID] = r
 				}
@@ -366,9 +369,17 @@ func (c *Client) detail(ctx context.Context, aid string) (any, error) {
 				}
 				for _, co := range courses {
 					if co.ID == parts[0] && co.ClassID == parts[1] {
-						_, _, e = c.scanCourse(ctx, co)
+						var scanned []Assignment
+						scanned, _, e = c.scanCourse(ctx, co)
 						if e != nil {
 							return nil, e
+						}
+						for _, row := range scanned {
+							if row.ID == aid {
+								r := row
+								hit = &r
+								break
+							}
 						}
 						break
 					}

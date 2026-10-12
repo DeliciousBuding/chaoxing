@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -31,7 +32,9 @@ func config(t *testing.T) Config {
 			panic(err)
 		}
 	})
-	return Config{Issuer: "https://mcp.example.com", StateDir: t.TempDir(), OwnerPasswordHash: testHash}
+	// TempDir's parent permissions depend on the runner. New creates this private
+	// child with 0700, exercising the production permission boundary unchanged.
+	return Config{Issuer: "https://mcp.example.com", StateDir: filepath.Join(t.TempDir(), "oauth"), OwnerPasswordHash: testHash}
 }
 func setup(t *testing.T, cfg Config) (*Server, *http.ServeMux) {
 	t.Helper()
@@ -194,7 +197,7 @@ func TestOAuthFlowRestartRefresh(t *testing.T) {
 	if newRefresh == refresh {
 		t.Fatal("refresh did not rotate")
 	}
-	// Used-token tombstones survive restart; replay revokes the entire family.
+	// Signed old-token proofs survive restart; replay revokes the entire family.
 	_, h = setup(t, cfg)
 	w = form(h, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}})
 	if w.Code != 400 {
@@ -357,7 +360,7 @@ func TestMalformedStateFailsClosed(t *testing.T) {
 		"missing issuer":   `{"version":1,"clients":{},"access":{},"refresh":{}}`,
 		"duplicate key":    `{"version":1,"version":1,"issuer":"https://mcp.example.com","clients":{},"access":{},"refresh":{}}`,
 		"unknown field":    string(valid[:len(valid)-1]) + `,"unexpected":true}`,
-		"unknown version":  strings.Replace(string(valid), `"version":1`, `"version":2`, 1),
+		"unknown version":  strings.Replace(string(valid), `"version":2`, `"version":3`, 1),
 		"null collection":  strings.Replace(string(valid), `"clients":{}`, `"clients":null`, 1),
 		"invalid token":    strings.Replace(string(valid), `"access":{}`, `"access":{"not-a-hash":{"client":"x","family":"y","expires":9999999999}}`, 1),
 		"invalid redirect": strings.Replace(string(valid), `"clients":{}`, `"clients":{"`+strings.Repeat("A", 43)+`":{"client_id":"`+strings.Repeat("A", 43)+`","redirect_uris":["https://*.example.com/cb"],"expires":9999999999}}`, 1),
@@ -394,7 +397,7 @@ func TestClientAndTokenCapacity(t *testing.T) {
 	s.mu.Lock()
 	for range maxClients {
 		id := randomToken()
-		s.state.Clients[id] = client{ID: id, Redirects: []string{"https://client.example.com/cb"}, Expires: time.Now().Add(time.Hour).Unix()}
+		s.state.Clients[id] = client{ID: id, Redirects: []string{"https://client.example.com/cb"}, Expires: time.Now().Add(time.Hour).Unix(), Approved: true}
 	}
 	s.mu.Unlock()
 	w := request(h, "POST", "/oauth/register", `{"redirect_uris":["https://client.example.com/cb"]}`, "application/json")

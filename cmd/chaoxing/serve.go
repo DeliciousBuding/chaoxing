@@ -29,7 +29,7 @@ func serve() error {
 	if e != nil {
 		return e
 	}
-	a, e := access.New(access.Config{Issuer: c.Issuer, StateDir: filepath.Join(c.StateDir, "oauth"), OwnerPasswordHash: c.OwnerPasswordHash})
+	a, e := access.New(access.Config{Issuer: c.Issuer, StateDir: filepath.Join(c.StateDir, "oauth"), OwnerPasswordHash: c.OwnerPasswordHash, EnableCIMD: os.Getenv("CHAOXING_ENABLE_CIMD") == "true"})
 	if e != nil {
 		return e
 	}

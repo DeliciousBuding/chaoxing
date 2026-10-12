@@ -31,4 +31,8 @@ ingress:
 
 Keep tunnel credentials outside this repository. Never add an ingress rule or port forward for 8793, and never expose both listeners. Configure the MCP client with `https://mcp.example.com/mcp`, then complete owner login and consent for `chaoxing.read`.
 
+Dynamic client registration (DCR) is enabled by default. CIMD is opt-in with `CHAOXING_ENABLE_CIMD=true`; enable it only after verifying that the host can fetch HTTPS metadata from `chatgpt.com`. Discovery advertises the selected capability truthfully. DCR does not require fetching that external metadata.
+
+OAuth state v2 uses a separate `refresh-proof.key` to authenticate refresh proofs. Keep it with the private OAuth state when backing up; losing or replacing it invalidates refresh families. Pre-release v1 state is not migrated silently. Stop the service, preserve a recovery copy, and explicitly reauthorize clients when initializing v2.
+
 Before use, verify that listeners are loopback-only, 8793 has no public route, and an unauthenticated MCP request cannot call tools.

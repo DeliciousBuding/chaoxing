@@ -1,5 +1,8 @@
 # Chaoxing
 
+[![CI](https://github.com/DeliciousBuding/chaoxing/actions/workflows/ci.yml/badge.svg)](https://github.com/DeliciousBuding/chaoxing/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/DeliciousBuding/chaoxing)](https://github.com/DeliciousBuding/chaoxing/releases)
+
 [简体中文](README.zh-CN.md)
 
 Chaoxing is a self-hosted, read-only client for courses, assignments, exams, notices, schedules and course materials. One Go binary provides an OAuth-protected HTTP MCP endpoint and local JSON commands.

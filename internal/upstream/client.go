@@ -197,6 +197,7 @@ func (c *Client) login(ctx context.Context) error {
 	c.lastLogin = time.Now()
 	c.courses = nil
 	c.assignments = nil
+	c.extraAssignments = nil
 	return nil
 }
 func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
@@ -225,6 +226,8 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if name == "get_connection_status" {
+		// A status probe must actually validate the session, not timestamp a cache.
+		c.coursesAt = time.Time{}
 		_, e := c.fetchCourses(ctx)
 		if e != nil {
 			return nil, e

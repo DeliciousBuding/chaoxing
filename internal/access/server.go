@@ -21,7 +21,10 @@ import (
 
 // Config contains only this service's public issuer, private state location,
 // and salted owner hash. Owner authentication is independent of upstream login.
-type Config struct{ Issuer, StateDir, OwnerPasswordHash string }
+type Config struct {
+	Issuer, StateDir, OwnerPasswordHash string
+	EnableCIMD                          bool
+}
 type session struct{ expires int64 }
 type grant struct {
 	client, redirect, challenge, state, session string
@@ -36,6 +39,7 @@ type Server struct {
 	mu             sync.Mutex
 	state          diskState
 	committed      []byte
+	refreshKey     []byte
 	sessions       map[string]session
 	logins         map[string]int64
 	pending, codes map[string]grant
@@ -78,6 +82,15 @@ func New(cfg Config) (*Server, error) {
 	if s.state.Issuer != "" && s.state.Issuer != cfg.Issuer {
 		return nil, errors.New("state issuer mismatch")
 	}
+	s.refreshKey, err = loadRefreshKey(filepath.Join(cfg.StateDir, "oauth-refresh.key"), s.state.RefreshKeyID != "")
+	if err != nil {
+		return nil, err
+	}
+	keyID := digest(string(s.refreshKey))
+	if s.state.RefreshKeyID != "" && s.state.RefreshKeyID != keyID {
+		return nil, errors.New("OAuth refresh proof key does not match state")
+	}
+	s.state.RefreshKeyID = keyID
 	s.state.Issuer = cfg.Issuer
 	s.committed, _ = json.Marshal(s.state)
 	s.pruneLocked()
@@ -154,7 +167,7 @@ func (s *Server) resourceMetadata(w http.ResponseWriter, _ *http.Request) {
 }
 func (s *Server) serverMetadata(w http.ResponseWriter, _ *http.Request) {
 	i := s.cfg.Issuer
-	writeJSON(w, 200, map[string]any{"issuer": i, "authorization_endpoint": i + "/oauth/authorize", "token_endpoint": i + "/oauth/token", "registration_endpoint": i + "/oauth/register", "revocation_endpoint": i + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"}, "scopes_supported": []string{scopeRead}, "client_id_metadata_document_supported": true})
+	writeJSON(w, 200, map[string]any{"issuer": i, "authorization_endpoint": i + "/oauth/authorize", "token_endpoint": i + "/oauth/token", "registration_endpoint": i + "/oauth/register", "revocation_endpoint": i + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"}, "scopes_supported": []string{scopeRead}, "client_id_metadata_document_supported": s.cfg.EnableCIMD})
 }
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
@@ -217,10 +230,21 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	s.pruneLocked()
 	if len(s.state.Clients) >= maxClients {
-		oauthError(w, 503, "temporarily_unavailable")
-		return
+		oldest := ""
+		var created int64
+		for id, c := range s.state.Clients {
+			if !c.Approved && (oldest == "" || c.Created < created || (c.Created == created && id < oldest)) {
+				oldest = id
+				created = c.Created
+			}
+		}
+		if oldest == "" {
+			oauthError(w, 503, "temporarily_unavailable")
+			return
+		}
+		delete(s.state.Clients, oldest)
 	}
-	c := client{ID: randomToken(), Name: req.Name, Redirects: req.Redirects, Expires: time.Now().Add(90 * 24 * time.Hour).Unix(), Created: time.Now().Unix()}
+	c := client{ID: randomToken(), Name: req.Name, Redirects: req.Redirects, Expires: time.Now().Add(10 * time.Minute).Unix(), Created: time.Now().Unix()}
 	s.state.Clients[c.ID] = c
 	if s.saveLocked() != nil {
 		oauthError(w, 503, "server_error")
@@ -240,7 +264,7 @@ func (s *Server) resolveClient(ctx context.Context, id string) (client, bool) {
 	if ok {
 		return c, true
 	}
-	if !validCIMD(id) {
+	if !s.cfg.EnableCIMD || !validCIMD(id) {
 		return client{}, false
 	}
 	c, err := s.fetch(ctx, id)
@@ -329,15 +353,15 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	// Always ask: no approval memory or silent first-client authorization.
 	u, _ := url.Parse(redirect)
-	s.page(w, pageData{Consent: true, Name: c.Name, Nonce: nonce, CallbackOrigin: u.Scheme + "://" + u.Host})
+	s.page(w, pageData{Consent: true, Name: c.Name, ClientID: c.ID, Nonce: nonce, CallbackOrigin: u.Scheme + "://" + u.Host})
 }
 
 type pageData struct {
-	Consent                           bool
-	Name, Nonce, Next, CallbackOrigin string
+	Consent                                     bool
+	Name, ClientID, Nonce, Next, CallbackOrigin string
 }
 
-var pageTemplate = template.Must(template.New("owner").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><title>MCP authorization</title><h1>{{if .Consent}}Authorize read-only access{{else}}Owner login{{end}}</h1>{{if .Consent}}<p>Client: {{.Name}}</p><p>Permission: chaoxing.read. This does not permit writes.</p><form method="post" action="/oauth/consent"><input type="hidden" name="consent_token" value="{{.Nonce}}"><button name="decision" value="approve">Approve</button><button name="decision" value="deny">Deny</button></form>{{else}}<form method="post" action="/oauth/login"><input type="hidden" name="csrf" value="{{.Nonce}}"><input type="hidden" name="next" value="{{.Next}}"><label>Owner password <input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button>Log in</button></form>{{end}}</html>`))
+var pageTemplate = template.Must(template.New("owner").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><title>MCP authorization</title><h1>{{if .Consent}}Authorize read-only access{{else}}Owner login{{end}}</h1>{{if .Consent}}<p>Self-reported client name (not verified): {{.Name}}</p><p>Client ID: {{.ClientID}}</p><p>Callback origin (receives authorization): {{.CallbackOrigin}}</p><p>Permission: chaoxing.read. This does not permit writes.</p><form method="post" action="/oauth/consent"><input type="hidden" name="consent_token" value="{{.Nonce}}"><button name="decision" value="approve">Approve</button><button name="decision" value="deny">Deny</button></form>{{else}}<form method="post" action="/oauth/login"><input type="hidden" name="csrf" value="{{.Nonce}}"><input type="hidden" name="next" value="{{.Next}}"><label>Owner password <input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button>Log in</button></form>{{end}}</html>`))
 
 func (s *Server) page(w http.ResponseWriter, d pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -459,6 +483,29 @@ func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 503, "temporarily_unavailable")
 		return
 	}
+	if c, exists := s.state.Clients[g.client]; exists {
+		matched := false
+		for _, uri := range c.Redirects {
+			if uri == g.redirect {
+				matched = true
+			}
+		}
+		if !matched {
+			oauthError(w, 400, "invalid_client")
+			return
+		}
+		c.Approved = true
+		c.Created = time.Now().Unix()
+		c.Expires = time.Now().Add(90 * 24 * time.Hour).Unix()
+		s.state.Clients[c.ID] = c
+		if s.saveLocked() != nil {
+			oauthError(w, 503, "server_error")
+			return
+		}
+	} else if !validCIMD(g.client) {
+		oauthError(w, 400, "invalid_client")
+		return
+	}
 	delete(s.pending, key)
 	raw := randomToken()
 	g.expires = time.Now().Add(time.Minute).Unix()
@@ -498,6 +545,7 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	s.pruneLocked()
 	var cid, family string
+	var counter uint64
 	expiry := time.Now().Add(refreshTTL).Unix()
 	switch q.GrantType {
 	case "authorization_code":
@@ -510,13 +558,14 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		cid = g.client
 		family = randomToken()
 	case "refresh_token":
-		key := digest(q.Refresh)
-		t, ok := s.state.Refresh[key]
-		if !ok || (q.Client != "" && q.Client != t.Client) {
+		var verified bool
+		family, counter, verified = s.verifyRefresh(q.Refresh)
+		t, ok := s.state.Refresh[family]
+		if !verified || !ok || (q.Client != "" && q.Client != t.Client) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
-		if t.Used {
+		if counter < t.Counter || (counter == t.Counter && digest(q.Refresh) != t.Digest) {
 			s.revokeFamilyLocked(t.Family)
 			if s.saveLocked() != nil {
 				oauthError(w, 503, "server_error")
@@ -525,8 +574,18 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
-		t.Used = true
-		s.state.Refresh[key] = t
+		if counter != t.Counter || counter == ^uint64(0) {
+			oauthError(w, 400, "invalid_grant")
+			return
+		}
+		counter++
+		if c, exists := s.state.Clients[t.Client]; exists && c.Approved {
+			c.Created = time.Now().Unix()
+			c.Expires = time.Now().Add(90 * 24 * time.Hour).Unix()
+			s.state.Clients[c.ID] = c
+		}
+		delete(s.state.Access, t.AccessID)
+		delete(s.state.Refresh, family)
 		cid = t.Client
 		family = t.Family
 		expiry = t.Expires
@@ -540,9 +599,9 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 503, "temporarily_unavailable")
 		return
 	}
-	a, refresh := randomToken(), randomToken()
+	a, refresh := randomToken(), s.signRefresh(family, counter)
 	s.state.Access[digest(a)] = token{Client: cid, Family: family, Expires: time.Now().Add(accessTTL).Unix(), Created: time.Now().Unix()}
-	s.state.Refresh[digest(refresh)] = token{Client: cid, Family: family, Expires: expiry, Created: time.Now().Unix()}
+	s.state.Refresh[family] = token{Client: cid, Family: family, Expires: expiry, Created: time.Now().Unix(), Digest: digest(refresh), Counter: counter, AccessID: digest(a)}
 	if s.saveLocked() != nil {
 		oauthError(w, 503, "server_error")
 		return
@@ -552,15 +611,9 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"access_token": a, "refresh_token": refresh, "token_type": "Bearer", "expires_in": int(accessTTL.Seconds()), "scope": scopeRead})
 }
 func (s *Server) revokeFamilyLocked(family string) {
-	for k, t := range s.state.Access {
-		if t.Family == family {
-			delete(s.state.Access, k)
-		}
-	}
-	for k, t := range s.state.Refresh {
-		if t.Family == family {
-			delete(s.state.Refresh, k)
-		}
+	if t, ok := s.state.Refresh[family]; ok {
+		delete(s.state.Access, t.AccessID)
+		delete(s.state.Refresh, family)
 	}
 }
 func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
@@ -570,10 +623,12 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := digest(r.PostForm.Get("token"))
-	t, ok := s.state.Refresh[key]
+	raw := r.PostForm.Get("token")
+	family, counter, verified := s.verifyRefresh(raw)
+	t, ok := s.state.Refresh[family]
+	ok = verified && ok && counter <= t.Counter
 	if !ok {
-		t, ok = s.state.Access[key]
+		t, ok = s.state.Access[digest(raw)]
 	}
 	if ok {
 		s.revokeFamilyLocked(t.Family)

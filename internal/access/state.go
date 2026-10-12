@@ -33,24 +33,28 @@ type client struct {
 	Redirects []string `json:"redirect_uris"`
 	Expires   int64    `json:"expires"`
 	Created   int64    `json:"created"`
+	Approved  bool     `json:"approved"`
 }
 type token struct {
-	Client  string `json:"client"`
-	Family  string `json:"family"`
-	Expires int64  `json:"expires"`
-	Created int64  `json:"created"`
-	Used    bool   `json:"used,omitempty"`
+	Client   string `json:"client"`
+	Family   string `json:"family"`
+	Expires  int64  `json:"expires"`
+	Created  int64  `json:"created"`
+	Digest   string `json:"digest,omitempty"`
+	Counter  uint64 `json:"counter,omitempty"`
+	AccessID string `json:"access_id,omitempty"`
 }
 type diskState struct {
-	Version int               `json:"version"`
-	Issuer  string            `json:"issuer"`
-	Clients map[string]client `json:"clients"`
-	Access  map[string]token  `json:"access"`
-	Refresh map[string]token  `json:"refresh"`
+	Version      int               `json:"version"`
+	Issuer       string            `json:"issuer"`
+	RefreshKeyID string            `json:"refresh_key_id"`
+	Clients      map[string]client `json:"clients"`
+	Access       map[string]token  `json:"access"`
+	Refresh      map[string]token  `json:"refresh"`
 }
 
 func emptyState() diskState {
-	return diskState{Version: 1, Clients: map[string]client{}, Access: map[string]token{}, Refresh: map[string]token{}}
+	return diskState{Version: 2, Clients: map[string]client{}, Access: map[string]token{}, Refresh: map[string]token{}}
 }
 func randomToken() string {
 	return base64.RawURLEncoding.EncodeToString(randomBytes(32))
@@ -79,6 +83,7 @@ func (s *Server) pruneLocked() {
 	}
 	for k, v := range s.state.Refresh {
 		if v.Expires <= now {
+			delete(s.state.Access, v.AccessID)
 			delete(s.state.Refresh, k)
 		}
 	}
@@ -190,14 +195,21 @@ func loadState(path string) (diskState, error) {
 	if err = d.Decode(new(any)); err != io.EOF {
 		return st, errors.New("trailing OAuth state data")
 	}
-	if st.Version != 1 || st.Clients == nil || st.Access == nil || st.Refresh == nil || len(st.Clients) > maxClients || len(st.Access) > maxTokens || len(st.Refresh) > maxTokens {
+	if st.Version != 2 {
+		return st, errors.New("unsupported OAuth state version; legacy state requires explicit offline reset")
+	}
+	if st.Clients == nil || st.Access == nil || st.Refresh == nil || len(st.Clients) > maxClients || len(st.Access) > maxTokens || len(st.Refresh) > maxTokens || !hashShape(st.RefreshKeyID) {
 		return st, errors.New("invalid OAuth state version or bounds")
 	}
 	if !validIssuer(st.Issuer) {
 		return st, errors.New("OAuth state issuer is missing or invalid")
 	}
 	for id, c := range st.Clients {
-		if !randomIDShape(id) || c.ID != id || len(c.Name) > 120 || len(c.Redirects) < 1 || len(c.Redirects) > 8 || !lifetimeOK(c.Created, c.Expires, 90*24*time.Hour) {
+		ttl := 10 * time.Minute
+		if c.Approved {
+			ttl = 90 * 24 * time.Hour
+		}
+		if !randomIDShape(id) || c.ID != id || len(c.Name) > 120 || len(c.Redirects) < 1 || len(c.Redirects) > 8 || !lifetimeOK(c.Created, c.Expires, ttl) {
 			return st, errors.New("invalid persisted OAuth client")
 		}
 		for _, uri := range c.Redirects {
@@ -212,14 +224,24 @@ func loadState(path string) (diskState, error) {
 			ttl = refreshTTL
 		}
 		for id, t := range tokens {
-			if !hashShape(id) || (!randomIDShape(t.Client) && !validCIMD(t.Client)) || !randomIDShape(t.Family) || !lifetimeOK(t.Created, t.Expires, ttl) {
+			validID := hashShape(id)
+			if index == 1 {
+				validID = randomIDShape(id) && id == t.Family && hashShape(t.Digest) && hashShape(t.AccessID)
+			}
+			if !validID || (!randomIDShape(t.Client) && !validCIMD(t.Client)) || !randomIDShape(t.Family) || !lifetimeOK(t.Created, t.Expires, ttl) {
 				return st, errors.New("invalid persisted OAuth token")
 			}
 		}
 	}
-	for _, t := range st.Access {
-		if t.Used {
-			return st, errors.New("invalid persisted access token flags")
+	for id, t := range st.Access {
+		f, ok := st.Refresh[t.Family]
+		if t.Digest != "" || t.Counter != 0 || t.AccessID != "" || !ok || f.AccessID != id || f.Client != t.Client {
+			return st, errors.New("invalid persisted access family binding")
+		}
+	}
+	for _, t := range st.Refresh {
+		if a, ok := st.Access[t.AccessID]; ok && (a.Family != t.Family || a.Client != t.Client) {
+			return st, errors.New("invalid persisted refresh family binding")
 		}
 	}
 	return st, nil
@@ -232,7 +254,7 @@ func lifetimeOK(created, expires int64, ttl time.Duration) bool {
 
 func randomIDShape(raw string) bool {
 	b, err := base64.RawURLEncoding.DecodeString(raw)
-	return err == nil && len(raw) == 43 && len(b) == 32
+	return err == nil && len(raw) == 43 && len(b) == 32 && base64.RawURLEncoding.EncodeToString(b) == raw
 }
 func hashShape(raw string) bool {
 	b, err := hex.DecodeString(raw)
