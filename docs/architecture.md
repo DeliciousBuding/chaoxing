@@ -29,6 +29,12 @@ AES-GCM protects upstream credentials and persisted cookies with separate authen
 
 ## Data boundaries
 
+`internal/operation` is the single transport-independent capability registry. It declares stable operation IDs, legacy MCP names, argument bounds, schemas and descriptions. CLI, daemon and MCP use the same validator and additive result metadata. Business commands call the daemon rather than create another authenticated client. No adapter executes another adapter as a subprocess.
+
+`chaoxing capabilities` and `chaoxing schema assignments.list` work without credentials. `get_capabilities` advertises verified operations and explicitly unsupported domains. The registry is hand-curated from verified behavior, not generated from a claimed official upstream OpenAPI specification.
+
+`meta.status` describes source coverage, not whether homework is finished. Coverage is independent of output pagination. Unknown submission states are never classified as submitted. Aggregation is bounded and retains source failures; notification prose is untrusted data, not instructions or automatically inferred assignments.
+
 Tools only read coursework. Login, token issuance and local persistence change authentication state, not coursework. Tool allowlisting is enforced at the interfaces; clients do not supply arbitrary upstream URLs or remote commands.
 
 Without a course filter, assignment enumeration uses the incomplete global feed. A course-name query enumerates matching enrolled classes, obtains work-list signatures, pages each class's work list and checks unique rows against upstream totals. `complete: true` is scoped to those matched classes and requires every scan to agree with its total. Output pagination and status filtering then slice the fetched source. Consumers must retain `complete`, `coverage` and timestamp fields. [Tool contracts](tools.md) describes bounds and remaining limits.

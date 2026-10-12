@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
 	"github.com/DeliciousBuding/chaoxing/internal/mcphttp"
+	"github.com/DeliciousBuding/chaoxing/internal/operation"
+	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
 
 func ownerHash(s string) (string, error) { return access.HashPassword(s) }
@@ -35,7 +38,10 @@ func serve() error {
 	}
 	mux := http.NewServeMux()
 	a.Register(mux)
-	mux.Handle("/mcp", a.Protect(mcphttp.NewWithVersion(x.Call, version)))
+	execute := func(ctx context.Context, name string, args map[string]any) (any, error) {
+		return operation.Execute(ctx, name, args, x.Call)
+	}
+	mux.Handle("/mcp", a.Protect(mcphttp.NewWithVersion(execute, version)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version})
 	})
@@ -62,19 +68,25 @@ func serve() error {
 		var in request
 		d := json.NewDecoder(r.Body)
 		d.DisallowUnknownFields()
-		if d.Decode(&in) != nil {
+		if d.Decode(&in) != nil || d.Decode(new(any)) != io.EOF {
 			w.WriteHeader(400)
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 		defer cancel()
-		v, e := x.Call(ctx, in.Tool, in.Arguments)
+		v, e := execute(ctx, in.Tool, in.Arguments)
 		if e != nil {
 			w.WriteHeader(502)
-			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": e.Error()})
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": upstream.SafeFault(e)})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": v})
+		out, e := operation.Result(in.Tool, v)
+		if e != nil {
+			w.WriteHeader(502)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": upstream.SafeFault(e)})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": out})
 	})
 	secure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")

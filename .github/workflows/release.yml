@@ -76,7 +76,8 @@ jobs:
           cd dist
           sha256sum chaoxing-linux-amd64 chaoxing-linux-arm64 chaoxing-windows-amd64.exe > SHA256SUMS
           if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release upload "$VERSION" ./* --clobber
+            printf '%s\n' 'Release already exists; publish a new tag instead of replacing artifacts.' >&2
+            exit 1
           else
             gh release create "$VERSION" ./* --verify-tag --title "$VERSION" --generate-notes
           fi

@@ -35,7 +35,15 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 | `configure` | 初始化加密凭据和独立的 owner 密码哈希 |
 | `version` | 输出构建版本 |
 
-八个工具为 `get_connection_status`、`list_courses`、`list_assignments`、`get_assignment`、`list_exams`、`list_notices`、`get_schedule` 和 `list_materials`。核心工具不提交作业、不作答考试、不签到、不修改学习进度。认证会更新会话状态；部分只读接口使用 HTTP POST，但不会修改课程内容。
+原有八个工具之外，增加有界学业总览、来源明确的行动项与能力发现。`chaoxing capabilities` 查看已验证能力和未支持范围，`chaoxing schema assignments.list` 查看契约。核心工具不提交作业、不作答考试、不签到、不修改学习进度。
+
+```sh
+chaoxing assignments list --course-id <课程列表返回的ID> --status pending --json
+chaoxing assignments get <作业列表返回的ID> --json
+chaoxing study overview --course-id <课程列表返回的ID> --json
+```
+
+业务命令调用运行中的 daemon，共用会话。默认 JSON；成功数据写 stdout，完全失败的结构化错误写 stderr；覆盖不完整时保留可用数据，并返回退出码 3。`data.meta.status` 表示查询覆盖，不表示作业已完成。群消息、信箱与任务点暂不承诺支持，以能力目录为准。
 
 owner OAuth 授权码有效期为 60 秒，随机 opaque access token 为 15 分钟，refresh family 为 30 天。refresh proof 认证族、计数器与随机值，以有界状态识别重放。不会持久化原始 access/refresh token，不依赖数据库、JWT 或 JWKS。默认启用 DCR，CIMD 需显式开启。
 

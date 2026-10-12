@@ -10,12 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
 )
@@ -38,12 +37,13 @@ type request struct {
 
 func main() {
 	if e := run(); e != nil {
-		f := &upstream.Fault{Code: "ERROR", Message: e.Error()}
-		var v *upstream.Fault
-		if errors.As(e, &v) {
-			f = v
+		if errors.Is(e, errPartial) {
+			os.Exit(3)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"ok": false, "error": f})
+		if errors.Is(e, errHelp) {
+			return
+		}
+		_ = json.NewEncoder(os.Stderr).Encode(map[string]any{"ok": false, "error": upstream.SafeFault(e)})
 		os.Exit(1)
 	}
 }
@@ -80,7 +80,7 @@ func readRequest() (request, error) {
 	d := json.NewDecoder(io.LimitReader(os.Stdin, 65537))
 	d.DisallowUnknownFields()
 	e := d.Decode(&r)
-	if e != nil {
+	if e != nil || d.Decode(new(any)) != io.EOF {
 		return r, errors.New("invalid request JSON")
 	}
 	if r.Tool == "" {
@@ -93,7 +93,29 @@ func readRequest() (request, error) {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: chaoxing version | configure | query | call | serve")
+		return usage()
+	}
+	if os.Args[1] == "help" || os.Args[1] == "--help" {
+		return usage()
+	}
+	if os.Args[1] == "schema" {
+		if len(os.Args) != 3 {
+			return &upstream.Fault{Code: "INVALID_ARGUMENT"}
+		}
+		d, ok := operation.Find(os.Args[2])
+		if !ok {
+			return &upstream.Fault{Code: "INVALID_TOOL"}
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"id": d.ID, "name": d.Name, "input_schema": d.InputSchema(), "output_schema": d.OutputSchema()})
+	}
+	if os.Args[1] == "capabilities" {
+		return json.NewEncoder(os.Stdout).Encode(operation.Capabilities())
+	}
+	if r, matched, e := parseBusiness(os.Args[1:]); matched {
+		if e != nil {
+			return e
+		}
+		return callDaemon(r)
 	}
 	switch os.Args[1] {
 	case "version":
@@ -116,43 +138,17 @@ func run() error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
-		v, e := x.Call(ctx, r.Tool, r.Arguments)
+		v, e := operation.Execute(ctx, r.Tool, r.Arguments, x.Call)
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"ok": true, "data": v})
+		return emitResult(r.Tool, v)
 	case "call":
-		c, e := load()
-		if e != nil {
-			return e
-		}
 		r, e := readRequest()
 		if e != nil {
 			return e
 		}
-		b, _ := json.Marshal(r)
-		req, e := http.NewRequest("POST", "http://"+c.LocalListen+"/call", strings.NewReader(string(b)))
-		if e != nil {
-			return e
-		}
-		req.Header.Set("Authorization", "Bearer "+c.LocalToken)
-		h := http.Client{Timeout: 100 * time.Second}
-		resp, e := h.Do(req)
-		if e != nil {
-			return errors.New("local daemon unavailable")
-		}
-		defer resp.Body.Close()
-		b, e = io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		if e != nil {
-			return errors.New("local response failed")
-		}
-		if _, e = os.Stdout.Write(b); e != nil {
-			return e
-		}
-		if resp.StatusCode != 200 {
-			os.Exit(1)
-		}
-		return nil
+		return callDaemon(r)
 	case "serve":
 		return serve()
 	default:

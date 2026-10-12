@@ -38,7 +38,16 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 | `configure` | Initialize sealed credentials and a separate owner password hash |
 | `version` | Print the build version |
 
-The eight tools are `get_connection_status`, `list_courses`, `list_assignments`, `get_assignment`, `list_exams`, `list_notices`, `get_schedule` and `list_materials`. Core tools never submit assignments, answer exams, check in or change learning progress. Authentication writes session state; read endpoints may use HTTP POST without mutating coursework.
+Use `chaoxing capabilities` for the verified tool catalog and unsupported domains, and `chaoxing schema assignments.list` for the input/output contract. In addition to the original eight tools, bounded study overview, source-backed action items and capability discovery are available. Core tools never submit assignments, answer exams, check in or change learning progress. Authentication writes session state; read endpoints may use HTTP POST without mutating coursework.
+
+```sh
+chaoxing assignments list --course-id <id-from-list-courses> --status pending --json
+chaoxing assignments get <id-from-list-assignments> --json
+chaoxing study overview --course-id <id-from-list-courses> --json
+chaoxing schema assignments.list
+```
+
+Business commands use the running daemon. JSON is the default: successful data goes to stdout, complete failures to stderr, and partial source coverage returns usable stdout with exit code 3. Check `data.meta.coverage` before claiming a source is empty or exhaustive. See [tool contracts](docs/tools.md).
 
 Owner OAuth uses a 60-second authorization code, 15-minute random opaque access tokens and 30-day refresh families. Refresh proofs authenticate the family, counter and nonce, keeping rotation state bounded while recognizing replay. Raw access/refresh tokens are never persisted; this file-backed design uses no database, JWT or JWKS. DCR is enabled by default; CIMD is an explicit opt-in.
 
