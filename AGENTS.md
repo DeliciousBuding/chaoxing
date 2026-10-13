@@ -1,10 +1,11 @@
 # Contributor and agent guidance
 
-Last updated: 2026-10-12
+Last updated: 2026-10-14
 
 Chaoxing is a self-hosted read-only information service, not a task-completion bot.
 
 - Protocol parsing and authenticated requests belong in `internal/upstream`.
+- Transport-independent operation IDs, schemas and validation belong in `internal/operation`; CLI, daemon and MCP must share that registry instead of defining parallel contracts.
 - Recoverable credentials and session encryption belong in `internal/vault`.
 - Connector authorization belongs in `internal/access`; do not mix it with upstream login.
 - `internal/mcphttp` adapts tools to MCP; `cmd/chaoxing` owns process wiring.
