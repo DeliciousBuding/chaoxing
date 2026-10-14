@@ -359,6 +359,24 @@ func TestAcademicOverviewActionsBoundedAndSourceBacked(t *testing.T) {
 	}
 }
 
+func TestDigestSlotsPreserveVisibleSections(t *testing.T) {
+	cases := []struct {
+		limit, notice, exam int
+		want                [3]int
+	}{
+		{1, 5, 10, [3]int{1, 0, 0}},
+		{3, 5, 10, [3]int{1, 1, 1}},
+		{5, 1, 1, [3]int{3, 1, 1}},
+		{20, 5, 10, [3]int{10, 5, 5}},
+		{100, 20, 20, [3]int{60, 20, 20}},
+	}
+	for _, tc := range cases {
+		assignments, exams, notices := digestSlots(tc.limit, tc.notice, tc.exam)
+		if [3]int{assignments, exams, notices} != tc.want || assignments+exams+notices != tc.limit {
+			t.Fatalf("%+v => %d/%d/%d", tc, assignments, exams, notices)
+		}
+	}
+}
 func TestStudyDigestAggregatesSourcesWithoutNoticeInference(t *testing.T) {
 	c := academicClient(t, []Course{}, roundtrip(func(r *http.Request) (*http.Response, error) {
 		switch {

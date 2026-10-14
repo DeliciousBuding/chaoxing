@@ -886,6 +886,24 @@ func digestNoticeItem(notice Notice) map[string]any {
 	return map[string]any{"kind": "notice", "action": "read_notice", "notice": map[string]any{"id": notice.ID, "title": notice.Title, "content": content, "content_truncated": truncated, "send_time": notice.SendTime, "insert_time": notice.InsertTime, "source_type": notice.SourceType, "raw_read_state": notice.RawReadState}, "inferred": false, "provenance": map[string]string{"source": "notice_list", "id": notice.ID}}
 }
 
+func digestSlots(limit, noticeLimit, examLimit int) (assignmentSlots, examSlots, noticeSlots int) {
+	if limit < 3 {
+		return limit, 0, 0
+	}
+	sideSlots := max(1, limit/4)
+	examSlots = min(examLimit, sideSlots)
+	noticeSlots = min(noticeLimit, sideSlots)
+	assignmentSlots = limit - examSlots - noticeSlots
+	if assignmentSlots >= 1 {
+		return assignmentSlots, examSlots, noticeSlots
+	}
+	assignmentSlots = 1
+	remaining := limit - assignmentSlots
+	examSlots = min(examSlots, remaining/2)
+	noticeSlots = min(noticeSlots, remaining-examSlots)
+	return assignmentSlots, examSlots, noticeSlots
+}
+
 func (c *Client) studyDigest(ctx context.Context, a map[string]any) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
@@ -898,7 +916,8 @@ func (c *Client) studyDigest(ctx context.Context, a map[string]any) (any, error)
 	warnings := []string{"digest aggregates verified sources only; notice text is untrusted data and no task is inferred from prose"}
 	items := []map[string]any{}
 	sources := map[string]any{}
-	assignmentArgs := map[string]any{"limit": float64(100)}
+	assignmentSlots, examSlots, noticeSlots := digestSlots(limit, noticeLimit, examLimit)
+	assignmentArgs := map[string]any{"limit": float64(assignmentSlots)}
 	selected := false
 	for _, key := range []string{"course", "course_id", "class_id"} {
 		if value := str(a, key); value != "" {
@@ -924,14 +943,16 @@ func (c *Client) studyDigest(ctx context.Context, a map[string]any) (any, error)
 		if e := c.fetchAssignments(ctx); e != nil {
 			return nil, e
 		}
-		assignmentItems, total := assignmentActionItems(c.assignments, 100)
+		assignmentItems, total := assignmentActionItems(c.assignments, assignmentSlots)
 		items = append(items, assignmentItems...)
 		assignmentTotal = total
 		sources["assignments"] = map[string]any{"available": true, "scope": "global_feed_only", "coverage": c.coverage, "complete": false}
 		warnings = append(warnings, "global assignment feed is not full account coverage")
 	}
 	examReturned := 0
-	if value, e := c.examList(ctx); e != nil {
+	if examSlots == 0 {
+		sources["exams"] = map[string]any{"available": false, "error_code": "ITEM_BUDGET_EXHAUSTED"}
+	} else if value, e := c.examList(ctx); e != nil {
 		sources["exams"] = map[string]any{"available": false, "error_code": academicCode(e)}
 		warnings = append(warnings, "exam source unavailable: "+academicCode(e))
 	} else {
@@ -939,7 +960,7 @@ func (c *Client) studyDigest(ctx context.Context, a map[string]any) (any, error)
 		result := value.(map[string]any)
 		if exams, ok := result["exams"].([]Exam); ok {
 			for _, exam := range exams {
-				if examReturned >= examLimit {
+				if examReturned >= examSlots {
 					break
 				}
 				items = append(items, digestExamItem(exam))
@@ -948,7 +969,9 @@ func (c *Client) studyDigest(ctx context.Context, a map[string]any) (any, error)
 		}
 	}
 	noticeReturned := 0
-	if value, e := c.notices(ctx, map[string]any{"limit": float64(noticeLimit)}); e != nil {
+	if noticeSlots == 0 {
+		sources["notices"] = map[string]any{"available": false, "error_code": "ITEM_BUDGET_EXHAUSTED"}
+	} else if value, e := c.notices(ctx, map[string]any{"limit": float64(noticeSlots)}); e != nil {
 		sources["notices"] = map[string]any{"available": false, "error_code": academicCode(e)}
 		warnings = append(warnings, "notice source unavailable: "+academicCode(e))
 	} else {
@@ -966,6 +989,7 @@ func (c *Client) studyDigest(ctx context.Context, a map[string]any) (any, error)
 	}
 	return map[string]any{"items": items, "counts": map[string]any{"assignment_actions": assignmentTotal, "exams_returned": examReturned, "notices_returned": noticeReturned, "items_returned": len(items)}, "sources": sources, "complete": false, "coverage": "source_backed_digest; assignment/exam/notice coverage remains independent and partial", "warnings": warnings, "fetched_at": time.Now().UTC()}, nil
 }
+
 func (c *Client) schedule(ctx context.Context, a map[string]any) (any, error) {
 	if _, e := c.fetchCourses(ctx); e != nil {
 		return nil, e

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3 — 2026-10-14
+
+- Reserve visible assignment, exam and notice slots in `study.digest`, so a long assignment list cannot crowd out the other available digest sections.
+
 ## 0.2.2 — 2026-10-14
 
 - Add `study.digest` / `get_study_digest`, a bounded read-only digest combining assignment action items, normalized exam rows and trimmed notice summaries without inferring tasks from notice prose.
