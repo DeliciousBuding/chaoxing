@@ -39,7 +39,8 @@ func TestInitializeListCall(t *testing.T) {
 	})
 	w := rpc(h, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"example","version":"1"}}}`)
 	m := result(t, w)
-	if m["result"].(map[string]any)["protocolVersion"] != "2025-06-18" {
+	initRes := m["result"].(map[string]any)
+	if initRes["protocolVersion"] != "2025-06-18" || !strings.Contains(initRes["instructions"].(string), "meta.coverage") {
 		t.Fatal(m)
 	}
 	w = rpc(h, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
@@ -49,7 +50,7 @@ func TestInitializeListCall(t *testing.T) {
 	}
 	for _, v := range list {
 		tool := v.(map[string]any)
-		if tool["annotations"].(map[string]any)["readOnlyHint"] != true || tool["securitySchemes"] == nil {
+		if tool["annotations"].(map[string]any)["readOnlyHint"] != true || tool["securitySchemes"] == nil || tool["title"] == "" {
 			t.Fatal(tool)
 		}
 	}

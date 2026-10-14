@@ -363,7 +363,8 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		return nil, fault("INVALID_TOOL", "unknown tool")
 	}
 }
-func str(a map[string]any, k string) string { v, _ := a[k].(string); return v }
+func str(a map[string]any, k string) string   { v, _ := a[k].(string); return v }
+func boolArg(a map[string]any, k string) bool { v, _ := a[k].(bool); return v }
 func number(a map[string]any, k string, def int) int {
 	v, ok := a[k].(float64)
 	if ok {

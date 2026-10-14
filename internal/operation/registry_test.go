@@ -34,6 +34,20 @@ func TestResultSeparatesCoveragePaginationAndState(t *testing.T) {
 		t.Fatal(r, e)
 	}
 }
+func TestNoticeRawInputIsExplicitlyBoolean(t *testing.T) {
+	d, _ := Find("notices.list")
+	for _, valid := range []any{true, false} {
+		if err := Validate(d, map[string]any{"include_raw": valid}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, invalid := range []any{"true", 1, json.Number("1")} {
+		if err := Validate(d, map[string]any{"include_raw": invalid}); err == nil {
+			t.Fatal("non-boolean include_raw accepted", invalid)
+		}
+	}
+}
+
 func TestRegistryCatalogAndNoUnsupportedArguments(t *testing.T) {
 	ids := map[string]bool{}
 	for _, d := range All() {
@@ -69,7 +83,7 @@ func TestStudyDigestContract(t *testing.T) {
 	if e != nil || out["meta"].(map[string]any)["status"] != "partial" {
 		t.Fatal(out, e)
 	}
-	if Capabilities()["contract_version"] != "3" {
+	if Capabilities()["contract_version"] != "4" {
 		t.Fatal(Capabilities()["contract_version"])
 	}
 }

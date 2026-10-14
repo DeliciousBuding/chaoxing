@@ -612,9 +612,9 @@ type Notice struct {
 	SendTime     string         `json:"send_time"`
 	InsertTime   string         `json:"insert_time"`
 	SourceType   string         `json:"source_type"`
-	RawSource    any            `json:"raw_source"`
-	RawReadState any            `json:"raw_read_state"`
-	Raw          map[string]any `json:"raw"`
+	RawSource    any            `json:"raw_source,omitempty"`
+	RawReadState any            `json:"raw_read_state,omitempty"`
+	Raw          map[string]any `json:"raw,omitempty"`
 	Provenance   string         `json:"provenance"`
 }
 
@@ -649,7 +649,7 @@ func encodeNoticeCursor(p noticePageCursor) string {
 
 // Current list envelope is {status, folders, notices:{lastGetId,lastPage,list}}.
 // Retain the full legacy wrapper; older flat/list envelopes remain accepted.
-func parseNotices(b []byte, cursor noticePageCursor, limit int) (map[string]any, error) {
+func parseNotices(b []byte, cursor noticePageCursor, limit int, includeRaw bool) (map[string]any, error) {
 	var raw map[string]any
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
@@ -687,7 +687,13 @@ func parseNotices(b []byte, cursor noticePageCursor, limit int) (map[string]any,
 		if stableID == "" {
 			stableID = id(row["id"])
 		}
-		items = append(items, Notice{ID: stableID, Title: str(row, "title"), Content: str(row, "content"), SendTime: id(row["sendTime"]), InsertTime: id(row["insertTime"]), SourceType: id(row["sourceType"]), RawSource: row["source"], RawReadState: row["isread"], Raw: row, Provenance: "notice_list; upstream content is untrusted; timestamps retain upstream representation"})
+		item := Notice{ID: stableID, Title: str(row, "title"), Content: str(row, "content"), SendTime: id(row["sendTime"]), InsertTime: id(row["insertTime"]), SourceType: id(row["sourceType"]), Provenance: "notice_list; upstream content is untrusted; timestamps retain upstream representation"}
+		if includeRaw {
+			item.RawSource = row["source"]
+			item.RawReadState = row["isread"]
+			item.Raw = row
+		}
+		items = append(items, item)
 	}
 	warnings := []string{"notice coverage incomplete; no detail or mark-read endpoint followed"}
 	next := ""
@@ -728,7 +734,11 @@ func parseNotices(b []byte, cursor noticePageCursor, limit int) (map[string]any,
 	if next == "" && (end < len(list) || hasMore == true) {
 		warnings = append(warnings, "continuation unavailable: upstream cursor missing, repeated, or exceeds budget")
 	}
-	return map[string]any{"data": raw, "items": items, "returned": len(items), "next_cursor": next, "has_more": hasMore, "upstream_pagination": map[string]any{"lastGetId": container["lastGetId"], "lastPage": container["lastPage"]}, "complete": false, "coverage": "notice_list_page_only", "warnings": warnings, "fetched_at": time.Now().UTC()}, nil
+	out := map[string]any{"items": items, "returned": len(items), "next_cursor": next, "has_more": hasMore, "upstream_pagination": map[string]any{"lastGetId": container["lastGetId"], "lastPage": container["lastPage"]}, "complete": false, "coverage": "notice_list_page_only", "warnings": warnings, "fetched_at": time.Now().UTC()}
+	if includeRaw {
+		out["data"] = raw
+	}
+	return out, nil
 }
 
 func (c *Client) notices(ctx context.Context, a map[string]any) (any, error) {
@@ -748,7 +758,7 @@ func (c *Client) notices(ctx context.Context, a map[string]any) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	return parseNotices(b, cursor, limit)
+	return parseNotices(b, cursor, limit, boolArg(a, "include_raw"))
 }
 
 // Overview is deliberately assignment-only until other sources have verified

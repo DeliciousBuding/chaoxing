@@ -134,6 +134,9 @@ func authorizeFlow(t *testing.T, h http.Handler) flow {
 	if u.Query().Get("state") != "example-state" {
 		t.Fatal("lost state")
 	}
+	if u.Query().Get("iss") != "https://mcp.example.com" {
+		t.Fatal("authorization response missing issuer")
+	}
 	f.code = u.Query().Get("code")
 	if f.code == "" {
 		t.Fatal("no code")
@@ -422,5 +425,41 @@ func TestConsentSessionBindingAndDecision(t *testing.T) {
 	v.Set("decision", "anything")
 	if w := form(h, "/oauth/consent", v, cookie); w.Code != 400 {
 		t.Fatal("invalid decision approved")
+	}
+}
+
+func TestMCPDiscoveryIsAnonymousButCallsRemainProtected(t *testing.T) {
+	s, err := New(config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	s.Register(mux)
+	mux.Handle("/mcp", s.ProtectMCP(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })))
+	for _, method := range []string{"initialize", "ping", "tools/list", "server/discover"} {
+		w := request(mux, "POST", "/mcp", `{"jsonrpc":"2.0","id":1,"method":"`+method+`"}`, "application/json")
+		if w.Code != 204 {
+			t.Fatalf("discovery method %s was protected: %d", method, w.Code)
+		}
+	}
+	for _, method := range []string{"tools/call", "unknown"} {
+		w := request(mux, "POST", "/mcp", `{"jsonrpc":"2.0","id":1,"method":"`+method+`"}`, "application/json")
+		if w.Code != 401 {
+			t.Fatalf("method %s bypassed OAuth: %d", method, w.Code)
+		}
+	}
+	f := authorizeFlow(t, mux)
+	w := form(mux, "/oauth/token", tokenForm(f))
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	accessToken := bodyMap(t, w)["access_token"].(string)
+	r := httptest.NewRequest("POST", "https://mcp.example.com/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+accessToken)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 204 {
+		t.Fatal("authenticated call rejected", w.Code)
 	}
 }

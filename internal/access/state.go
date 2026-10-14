@@ -39,6 +39,7 @@ type client struct {
 type token struct {
 	Client   string `json:"client"`
 	Family   string `json:"family"`
+	Resource string `json:"resource,omitempty"`
 	Expires  int64  `json:"expires"`
 	Created  int64  `json:"created"`
 	Digest   string `json:"digest,omitempty"`
@@ -225,7 +226,7 @@ func loadState(path string) (diskState, error) {
 			if index == 1 {
 				validID = randomIDShape(id) && id == t.Family && hashShape(t.Digest) && hashShape(t.AccessID)
 			}
-			if !validID || (!randomIDShape(t.Client) && !validCIMD(t.Client)) || !randomIDShape(t.Family) || !lifetimeOK(t.Created, t.Expires, ttl) {
+			if !validID || (!randomIDShape(t.Client) && !validCIMD(t.Client)) || !randomIDShape(t.Family) || !lifetimeOK(t.Created, t.Expires, ttl) || (t.Resource != "" && t.Resource != st.Issuer+"/mcp") {
 				return st, errors.New("invalid persisted OAuth token")
 			}
 		}

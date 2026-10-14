@@ -34,7 +34,7 @@ func TestCatalogConvergesWithOperations(t *testing.T) {
 	}
 	for i, d := range definitions {
 		got := list[i].(map[string]any)
-		if got["name"] != d.Name || got["description"] != d.Description {
+		if got["name"] != d.Name || got["title"] != d.Title || got["description"] != d.Description {
 			t.Fatal(got)
 		}
 		if !reflect.DeepEqual(got["inputSchema"], jsonValue(t, d.InputSchema())) ||
@@ -59,7 +59,7 @@ func TestSharedValidationAndNewTools(t *testing.T) {
 		args map[string]any
 	}{
 		{"list_assignments", map[string]any{"course_id": "course-1", "class_id": "class-1", "status": "unknown", "limit": 7}},
-		{"list_notices", map[string]any{"limit": 3, "cursor": "opaque-next"}},
+		{"list_notices", map[string]any{"limit": 3, "cursor": "opaque-next", "include_raw": true}},
 		{"get_study_overview", map[string]any{"course_id": "course-1"}},
 		{"list_action_items", map[string]any{"course": "Synthetic course"}},
 		{"get_study_digest", map[string]any{"course_id": "course-1", "class_id": "class-1", "limit": 20, "notice_limit": 5, "exam_limit": 10}},

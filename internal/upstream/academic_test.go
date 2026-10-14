@@ -202,7 +202,7 @@ func TestAcademicTypedExamsKeepLegacyColumns(t *testing.T) {
 
 func TestAcademicNoticePaginationAndBounds(t *testing.T) {
 	body := []byte(`{"status":true,"data":{"list":[{"id":"synthetic-a","title":"Synthetic notice","extra":42},{"id":"synthetic-b","content":"Untrusted synthetic text"}],"lastValue":"synthetic-next","hasMore":true}}`)
-	out, e := parseNotices(body, noticePageCursor{}, 1)
+	out, e := parseNotices(body, noticePageCursor{}, 1, true)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -214,7 +214,7 @@ func TestAcademicNoticePaginationAndBounds(t *testing.T) {
 	if e != nil || cursor.Offset != 1 || cursor.Upstream != "" {
 		t.Fatal(cursor, e)
 	}
-	out, e = parseNotices(body, cursor, 1)
+	out, e = parseNotices(body, cursor, 1, true)
 	if e != nil || out["items"].([]Notice)[0].ID != "synthetic-b" {
 		t.Fatal(out, e)
 	}
@@ -227,10 +227,10 @@ func TestAcademicNoticePaginationAndBounds(t *testing.T) {
 			t.Fatal("accepted invalid cursor")
 		}
 	}
-	if _, e := parseNotices([]byte(`{"status":true}`), noticePageCursor{}, 1); e == nil {
+	if _, e := parseNotices([]byte(`{"status":true}`), noticePageCursor{}, 1, false); e == nil {
 		t.Fatal("missing list accepted")
 	}
-	if _, e := parseNotices(body, noticePageCursor{Offset: 3}, 1); e == nil {
+	if _, e := parseNotices(body, noticePageCursor{Offset: 3}, 1, false); e == nil {
 		t.Fatal("stale offset accepted")
 	}
 }
@@ -262,7 +262,7 @@ func TestAcademicNoticesOnlyKnownListRead(t *testing.T) {
 
 func TestAcademicVerifiedNoticeWrapper(t *testing.T) {
 	body := []byte(`{"status":true,"folders":[],"notices":{"lastGetId":"synthetic-next","lastPage":1,"list":[{"uuid":"synthetic-uuid","idCode":"synthetic-code","title":"Synthetic","content":"Untrusted","sendTime":"2026-01-01 10:00","insertTime":123,"sourceType":7,"source":{"synthetic":true},"isread":0,"attachment":[],"rft":"Raw rich content"},{"idCode":"synthetic-fallback"},{"id":"synthetic-legacy"}]}}`)
-	out, e := parseNotices(body, noticePageCursor{}, 2)
+	out, e := parseNotices(body, noticePageCursor{}, 2, true)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -277,7 +277,7 @@ func TestAcademicVerifiedNoticeWrapper(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	out, e = parseNotices(body, cursor, 2)
+	out, e = parseNotices(body, cursor, 2, true)
 	if e != nil || out["items"].([]Notice)[0].ID != "synthetic-legacy" || out["next_cursor"] != "" || out["has_more"] != false {
 		t.Fatal(out, e)
 	}
@@ -312,8 +312,11 @@ func TestAcademicVerifiedNoticeCrossPageProtocol(t *testing.T) {
 		t.Fatal(e)
 	}
 	out := v.(map[string]any)
-	if out["has_more"] != true || out["next_cursor"] == "" || out["complete"] != false {
+	if out["has_more"] != true || out["next_cursor"] == "" || out["complete"] != false || out["data"] != nil {
 		t.Fatal(out)
+	}
+	if out["items"].([]Notice)[0].Raw != nil {
+		t.Fatal("raw notice exposed by default")
 	}
 	v, e = c.notices(context.Background(), map[string]any{"cursor": out["next_cursor"]})
 	if e != nil {
@@ -323,7 +326,7 @@ func TestAcademicVerifiedNoticeCrossPageProtocol(t *testing.T) {
 	if out["has_more"] != false || out["next_cursor"] != "" || out["items"].([]Notice)[0].ID != "synthetic-second" || out["complete"] != false {
 		t.Fatal(out)
 	}
-	out, e = parseNotices([]byte(`{"status":true,"notices":{"lastGetId":"synthetic-repeat","lastPage":0,"list":[{"uuid":"synthetic"}]}}`), noticePageCursor{Upstream: "synthetic-repeat"}, 50)
+	out, e = parseNotices([]byte(`{"status":true,"notices":{"lastGetId":"synthetic-repeat","lastPage":0,"list":[{"uuid":"synthetic"}]}}`), noticePageCursor{Upstream: "synthetic-repeat"}, 50, false)
 	if e != nil || out["next_cursor"] != "" || out["has_more"] != true || len(out["warnings"].([]string)) < 2 {
 		t.Fatal(out, e)
 	}

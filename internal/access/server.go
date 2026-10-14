@@ -1,6 +1,7 @@
 package access
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -27,8 +28,8 @@ type Config struct {
 }
 type session struct{ expires int64 }
 type grant struct {
-	client, redirect, challenge, state, session string
-	expires                                     int64
+	client, redirect, challenge, state, session, resource string
+	expires                                               int64
 }
 
 // Server must have one process owning its StateDir. Codes, login sessions and
@@ -170,7 +171,7 @@ func (s *Server) resourceMetadata(w http.ResponseWriter, _ *http.Request) {
 }
 func (s *Server) serverMetadata(w http.ResponseWriter, _ *http.Request) {
 	i := s.cfg.Issuer
-	writeJSON(w, 200, map[string]any{"issuer": i, "authorization_endpoint": i + "/oauth/authorize", "token_endpoint": i + "/oauth/token", "registration_endpoint": i + "/oauth/register", "revocation_endpoint": i + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"}, "scopes_supported": []string{scopeRead}, "client_id_metadata_document_supported": s.cfg.EnableCIMD})
+	writeJSON(w, 200, map[string]any{"issuer": i, "authorization_endpoint": i + "/oauth/authorize", "token_endpoint": i + "/oauth/token", "registration_endpoint": i + "/oauth/register", "revocation_endpoint": i + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"}, "scopes_supported": []string{scopeRead}, "client_id_metadata_document_supported": s.cfg.EnableCIMD, "authorization_response_iss_parameter_supported": true})
 }
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
@@ -341,6 +342,10 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 400, "invalid_redirect_uri")
 		return
 	}
+	resource := q.Get("resource")
+	if resource == "" {
+		resource = s.cfg.Issuer + "/mcp"
+	}
 	s.mu.Lock()
 	s.pruneLocked()
 	sid := s.sessionID(r)
@@ -355,7 +360,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nonce := randomToken()
-	s.pending[digest(nonce)] = grant{client: c.ID, redirect: redirect, challenge: q.Get("code_challenge"), state: q.Get("state"), session: sid, expires: time.Now().Add(10 * time.Minute).Unix()}
+	s.pending[digest(nonce)] = grant{client: c.ID, redirect: redirect, challenge: q.Get("code_challenge"), state: q.Get("state"), session: sid, resource: resource, expires: time.Now().Add(10 * time.Minute).Unix()}
 	s.mu.Unlock()
 	// Always ask: no approval memory or silent first-client authorization.
 	u, _ := url.Parse(redirect)
@@ -451,10 +456,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "__Host-chaoxing-owner", Value: raw, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 3600})
 	http.Redirect(w, r, next, 303)
 }
-func callback(g grant, key, value string) string {
+func (s *Server) callback(g grant, key, value string) string {
 	u, _ := url.Parse(g.redirect)
 	q := u.Query()
 	q.Set(key, value)
+	q.Set("iss", s.cfg.Issuer)
 	if g.state != "" {
 		q.Set("state", g.state)
 	}
@@ -482,7 +488,7 @@ func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
 	}
 	if decision == "deny" {
 		delete(s.pending, key)
-		http.Redirect(w, r, callback(g, "error", "access_denied"), 303)
+		http.Redirect(w, r, s.callback(g, "error", "access_denied"), 303)
 		return
 	}
 	if len(s.codes) >= maxPending {
@@ -516,7 +522,7 @@ func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
 	raw := randomToken()
 	g.expires = time.Now().Add(time.Minute).Unix()
 	s.codes[digest(raw)] = g
-	http.Redirect(w, r, callback(g, "code", raw), 303)
+	http.Redirect(w, r, s.callback(g, "code", raw), 303)
 }
 
 type tokenRequest struct {
@@ -552,16 +558,21 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 	s.pruneLocked()
 	var cid, family string
 	var counter uint64
+	resource := q.Resource
+	if resource == "" {
+		resource = s.cfg.Issuer + "/mcp"
+	}
 	expiry := time.Now().Add(refreshTTL).Unix()
 	switch q.GrantType {
 	case "authorization_code":
 		g, ok := s.codes[digest(q.Code)]
-		if !ok || (q.Client != "" && q.Client != g.client) || q.Redirect != g.redirect || !verifierOK(q.Verifier, g.challenge) {
+		if !ok || (q.Client != "" && q.Client != g.client) || q.Redirect != g.redirect || (q.Resource != "" && q.Resource != g.resource) || !verifierOK(q.Verifier, g.challenge) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
 		delete(s.codes, digest(q.Code))
 		cid = g.client
+		resource = g.resource
 		family = randomToken()
 	case "refresh_token":
 		var verified bool
@@ -594,6 +605,9 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		delete(s.state.Refresh, family)
 		cid = t.Client
 		family = t.Family
+		if t.Resource != "" {
+			resource = t.Resource
+		}
 		expiry = t.Expires
 	default:
 		oauthError(w, 400, "unsupported_grant_type")
@@ -606,8 +620,8 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, refresh := randomToken(), s.signRefresh(family, counter)
-	s.state.Access[digest(a)] = token{Client: cid, Family: family, Expires: time.Now().Add(accessTTL).Unix(), Created: time.Now().Unix()}
-	s.state.Refresh[family] = token{Client: cid, Family: family, Expires: expiry, Created: time.Now().Unix(), Digest: digest(refresh), Counter: counter, AccessID: digest(a)}
+	s.state.Access[digest(a)] = token{Client: cid, Family: family, Resource: resource, Expires: time.Now().Add(accessTTL).Unix(), Created: time.Now().Unix()}
+	s.state.Refresh[family] = token{Client: cid, Family: family, Resource: resource, Expires: expiry, Created: time.Now().Unix(), Digest: digest(refresh), Counter: counter, AccessID: digest(a)}
 	if s.saveLocked() != nil {
 		oauthError(w, 503, "server_error")
 		return
@@ -659,7 +673,7 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && len(parts[1]) <= 128 {
 			s.mu.Lock()
 			t, found := s.state.Access[digest(parts[1])]
-			ok = found && t.Expires > time.Now().Unix()
+			ok = found && t.Expires > time.Now().Unix() && (t.Resource == "" || t.Resource == s.cfg.Issuer+"/mcp")
 			s.mu.Unlock()
 		}
 		if !ok {
@@ -668,5 +682,36 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// ProtectMCP permits anonymous protocol discovery while keeping every actual
+// tool invocation behind the read-only OAuth token. The request body is restored
+// before either path so the MCP transport still performs its own validation.
+func (s *Server) ProtectMCP(next http.Handler) http.Handler {
+	protected := s.Protect(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			protected.ServeHTTP(w, r)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			oauthError(w, 413, "invalid_request")
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var request struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(body, &request) == nil {
+			switch request.Method {
+			case "initialize", "ping", "tools/list", "server/discover":
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		protected.ServeHTTP(w, r)
 	})
 }
