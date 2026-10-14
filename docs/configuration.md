@@ -16,6 +16,14 @@ On Linux, use a root-owned private state directory (0700), config and state file
 
 Run `chaoxing serve` under the trusted service identity. Keep one daemon per state directory. The local identity running `chaoxing call` must have permission to read the private configuration; do not grant untrusted clients access to the vault key.
 
+## Optional egress proxy pool
+
+Upstream requests use direct egress by default. To route through SOCKS5 endpoints, add a private `proxies` array to the config (each entry has `url` (a socks5 URL with optional userinfo) and optional `bind` (a local source IP); at most 16). Selection is round-robin among healthy endpoints; transport failures cool an endpoint down with exponential backoff (30 s up to 5 min) and the direct path is the permanent fallback. There is no background probing. Endpoint health persists in `<state_dir>/chaoxing.db` (SQLite, WAL, mode 0600), which exists only when proxies are configured. Proxy URLs contain credentials: keep the config private and never log it; status output identifies endpoints by a truncated hash only. The local management listener exposes `GET /status` (same bearer token as `POST /call`) returning the version, sanitized egress health and tenant ids.
+
+## Optional additional tenants
+
+The default deployment serves one account at `/mcp`. To serve additional isolated accounts, add a private `tenants` array to the config; each entry needs `id` (`[a-z0-9][a-z0-9-]{0,31}`, unique), `state_dir`, `key_path` and `owner_password_hash`, all distinct from the default account and from each other (at most 32). A tenant mounts a full OAuth + MCP stack under `/t/<id>/` with issuer `<issuer>/t/<id>`, its own sealed credentials (initialize with `chaoxing configure` pointed at a tenant-scoped config, then merge the tenant fields) and its own OAuth state. Upstream clients are created lazily on first tenant request. Tenant discovery metadata is served at `/t/<id>/.well-known/...`; clients that require RFC 8414 path-insertion discovery must be configured with explicit endpoints. Nothing is shared across tenants or with the default account.
+
 ## Publish only the MCP listener
 
 Default listeners are `127.0.0.1:8792` (public MCP and OAuth behind the tunnel) and `127.0.0.1:8793` (private CLI). Both stay bound to loopback. The issuer must match the public HTTPS origin.

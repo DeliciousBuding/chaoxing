@@ -10,16 +10,125 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
+	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/mcphttp"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
+	"github.com/DeliciousBuding/chaoxing/internal/statestore"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
 
 func ownerHash(s string) (string, error) { return access.HashPassword(s) }
+
+// healthAdapter bridges the SQLite store to the egress health interface.
+type healthAdapter struct{ s *statestore.Store }
+
+func (a healthAdapter) ProxyHealth() (map[string]egress.Health, error) {
+	m, err := a.s.ProxyHealth()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]egress.Health, len(m))
+	for k, h := range m {
+		out[k] = egress.Health{Failures: h.Failures, CoolUntil: h.CoolUntil}
+	}
+	return out, nil
+}
+func (a healthAdapter) SetProxyHealth(key string, h egress.Health) error {
+	return a.s.SetProxyHealth(key, statestore.ProxyHealth{Failures: h.Failures, CoolUntil: h.CoolUntil})
+}
+
+var tenantID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+const maxTenants = 32
+
+// tenantRuntime isolates one account: its own OAuth state, sealed credentials,
+// session and upstream client. The client is created lazily so unused tenants
+// cost nothing on memory-constrained hosts.
+type tenantRuntime struct {
+	cfg    tenantConfig
+	pool   *egress.Pool
+	once   sync.Once
+	client *upstream.Client
+	err    error
+}
+
+func (t *tenantRuntime) upstreamClient() (*upstream.Client, error) {
+	t.once.Do(func() {
+		t.client, t.err = upstream.New(upstream.Config{
+			CredentialsPath: filepath.Join(t.cfg.StateDir, "credentials.sealed"),
+			KeyPath:         t.cfg.KeyPath,
+			SessionPath:     filepath.Join(t.cfg.StateDir, "session.sealed"),
+			Transport:       t.pool,
+		})
+	})
+	return t.client, t.err
+}
+
+func validateTenants(c config) error {
+	if len(c.Tenants) > maxTenants {
+		return errors.New("too many tenants (max 32)")
+	}
+	seen := map[string]bool{}
+	for _, tc := range c.Tenants {
+		if !tenantID.MatchString(tc.ID) {
+			return errors.New("invalid tenant id " + tc.ID)
+		}
+		if seen[tc.ID] {
+			return errors.New("duplicate tenant id " + tc.ID)
+		}
+		seen[tc.ID] = true
+		if tc.StateDir == "" || tc.KeyPath == "" || tc.OwnerPasswordHash == "" {
+			return errors.New("tenant " + tc.ID + " requires state_dir, key_path and owner_password_hash")
+		}
+		if tc.StateDir == c.StateDir || tc.KeyPath == c.KeyPath {
+			return errors.New("tenant " + tc.ID + " shares state with the default account")
+		}
+	}
+	return nil
+}
+
+// publicMux mounts the root account and all configured tenants. It returns the
+// mux and the ordered tenant ids for the management status endpoint.
+func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool) (*http.ServeMux, []string, error) {
+	mux := http.NewServeMux()
+	a.Register(mux)
+	execute := func(ctx context.Context, name string, args map[string]any) (any, error) {
+		return operation.Execute(ctx, name, args, x.Call)
+	}
+	mux.Handle("/mcp", a.ProtectMCP(mcphttp.NewWithVersion(execute, version)))
+	// Additional tenants mount a complete isolated OAuth + MCP stack under
+	// /t/<id>/. Discovery metadata lives at /t/<id>/.well-known/...; clients
+	// requiring RFC 8414 path-insertion discovery must configure endpoints
+	// explicitly for tenant issuers.
+	tenantIDs := []string{}
+	for _, tc := range c.Tenants {
+		tr := &tenantRuntime{cfg: tc, pool: pool}
+		ta, e := access.New(access.Config{Issuer: c.Issuer + "/t/" + tc.ID, StateDir: filepath.Join(tc.StateDir, "oauth"), OwnerPasswordHash: tc.OwnerPasswordHash, EnableCIMD: os.Getenv("CHAOXING_ENABLE_CIMD") == "true"})
+		if e != nil {
+			return nil, nil, e
+		}
+		tm := http.NewServeMux()
+		ta.Register(tm)
+		texec := func(ctx context.Context, name string, args map[string]any) (any, error) {
+			cl, e := tr.upstreamClient()
+			if e != nil {
+				return nil, e
+			}
+			return operation.Execute(ctx, name, args, cl.Call)
+		}
+		tm.Handle("/mcp", ta.ProtectMCP(mcphttp.NewWithVersion(texec, version)))
+		mux.Handle("/t/"+tc.ID+"/", http.StripPrefix("/t/"+tc.ID, tm))
+		tenantIDs = append(tenantIDs, tc.ID)
+	}
+	return mux, tenantIDs, nil
+}
+
 func serve() error {
 	c, e := load()
 	if e != nil {
@@ -28,7 +137,32 @@ func serve() error {
 	if !loopback(c.Listen) || !loopback(c.LocalListen) || c.Listen == c.LocalListen {
 		return errors.New("public and management listeners must be distinct loopback addresses")
 	}
-	x, e := c.client()
+	if e = validateTenants(c); e != nil {
+		return e
+	}
+	// Egress pool: direct by default, SOCKS5 endpoints when configured. Pool
+	// health persists in SQLite only when proxies exist, keeping the default
+	// deployment free of the database file.
+	var store *statestore.Store
+	var health egress.HealthStore
+	if len(c.Proxies) > 0 {
+		store, e = statestore.Open(filepath.Join(c.StateDir, "chaoxing.db"))
+		if e != nil {
+			return e
+		}
+		defer store.Close()
+		health = healthAdapter{store}
+	}
+	pool, e := egress.New(c.Proxies, health)
+	if e != nil {
+		return e
+	}
+	x, e := upstream.New(upstream.Config{
+		CredentialsPath: filepath.Join(c.StateDir, "credentials.sealed"),
+		KeyPath:         c.KeyPath,
+		SessionPath:     filepath.Join(c.StateDir, "session.sealed"),
+		Transport:       pool,
+	})
 	if e != nil {
 		return e
 	}
@@ -36,12 +170,13 @@ func serve() error {
 	if e != nil {
 		return e
 	}
-	mux := http.NewServeMux()
-	a.Register(mux)
+	mux, tenantIDs, e := publicMux(c, x, a, pool)
+	if e != nil {
+		return e
+	}
 	execute := func(ctx context.Context, name string, args map[string]any) (any, error) {
 		return operation.Execute(ctx, name, args, x.Call)
 	}
-	mux.Handle("/mcp", a.ProtectMCP(mcphttp.NewWithVersion(execute, version)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version})
 	})
@@ -50,11 +185,28 @@ func serve() error {
 		w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Chaoxing Read-only MCP</title><h1>Chaoxing Read-only MCP</h1><p>Connect your MCP client to /mcp using OAuth. This service does not provide public course data.</p></html>`))
 	})
 	local := http.NewServeMux()
+	localAuth := func(w http.ResponseWriter, r *http.Request) bool {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+c.LocalToken)) != 1 {
+			w.WriteHeader(401)
+			return false
+		}
+		return true
+	}
+	local.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if !localAuth(w, r) {
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"version": version,
+			"egress":  pool.Status(),
+			"tenants": tenantIDs,
+		})
+	})
 	slots := make(chan struct{}, 2)
 	local.HandleFunc("POST /call", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+c.LocalToken)) != 1 {
-			w.WriteHeader(401)
+		if !localAuth(w, r) {
 			return
 		}
 		select {

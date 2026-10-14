@@ -83,7 +83,11 @@ func SafeFault(err error) *Fault {
 	return f
 }
 
-type Config struct{ CredentialsPath, KeyPath, SessionPath string }
+// Config carries sealed-state paths; Transport optionally overrides outbound egress.
+type Config struct {
+	CredentialsPath, KeyPath, SessionPath string
+	Transport                             http.RoundTripper
+}
 type SavedCookies struct {
 	URL     string         `json:"url"`
 	Cookies []*http.Cookie `json:"cookies"`
@@ -108,7 +112,11 @@ func New(c Config) (*Client, error) {
 	if e != nil {
 		return nil, e
 	}
-	h := &http.Client{Jar: jar, Timeout: 20 * time.Second, Transport: &http.Transport{Proxy: nil, MaxIdleConns: 4, MaxIdleConnsPerHost: 2, IdleConnTimeout: 60 * time.Second, TLSHandshakeTimeout: 10 * time.Second}}
+	rt := c.Transport
+	if rt == nil {
+		rt = &http.Transport{Proxy: nil, MaxIdleConns: 4, MaxIdleConnsPerHost: 2, IdleConnTimeout: 60 * time.Second, TLSHandshakeTimeout: 10 * time.Second}
+	}
+	h := &http.Client{Jar: jar, Timeout: 20 * time.Second, Transport: rt}
 	h.CheckRedirect = func(r *http.Request, via []*http.Request) error {
 		if len(via) >= 8 {
 			return errors.New("redirect limit")

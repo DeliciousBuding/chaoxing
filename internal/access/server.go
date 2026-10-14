@@ -103,7 +103,28 @@ func New(cfg Config) (*Server, error) {
 
 func validIssuer(raw string) bool {
 	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && !strings.ContainsAny(raw, "\r\n\t\\\"'<> ;*{}")
+	// Path is allowed only as a tenant prefix such as /t/<id>; query and fragment stay forbidden.
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && validIssuerPath(u.Path) && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && !strings.ContainsAny(raw, "\r\n\t\\\"'<> ;*{}")
+}
+
+func validIssuerPath(p string) bool {
+	if p == "" {
+		return true
+	}
+	if !strings.HasPrefix(p, "/") || strings.Contains(p, "..") || strings.HasSuffix(p, "/") {
+		return false
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "" {
+			return false
+		}
+		for _, r := range seg {
+			if !('a' <= r && r <= 'z' || '0' <= r && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Register mounts discovery, OAuth, and server-rendered login/consent routes.

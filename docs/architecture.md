@@ -15,6 +15,8 @@ Local CLI client -> chaoxing call
 
 Only port 8792 enters the tunnel. Port 8793 is private to the host; it carries authenticated local calls, not public OAuth traffic. `configure` writes private installation state. `query` directly uses the upstream client and is useful for isolated diagnostics; it should not run concurrently against state owned by `serve`.
 
+Two optional layers are off by default. An egress pool (`internal/egress`) routes upstream traffic through configured SOCKS5 endpoints with round-robin selection, transport-failure cooldown and a permanent direct fallback; it learns health only from real request outcomes and never probes in the background. When proxies are configured, `internal/statestore` persists that health in an embedded SQLite database (WAL, single writer, `PRAGMA user_version` migrations, mode 0600); no other state uses the database. Multi-tenant serving mounts additional isolated accounts under `/t/<id>/`, each with its own sealed credentials, OAuth issuer and lazily created upstream client; nothing is shared across tenants.
+
 ## Authentication boundaries
 
 Public DCR registrations last 90 days so connector setup retries can reuse their cached client IDs. Registration alone grants no permission: every authorization requires owner login and consent. The pool is capped at 128 and reclaims the oldest unapproved registration first at capacity; approved registrations are not evicted by anonymous registrations. Login/consent challenges still expire after 10 minutes and authorization codes after 60 seconds.

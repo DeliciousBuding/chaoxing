@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
@@ -28,6 +29,18 @@ type config struct {
 	Listen            string `json:"listen"`
 	LocalListen       string `json:"local_listen"`
 	LocalToken        string `json:"local_token"`
+	OwnerPasswordHash string `json:"owner_password_hash"`
+	// Proxies optionally routes upstream traffic through SOCKS5 endpoints;
+	// empty means direct egress. Tenants are additional isolated accounts
+	// served under /t/<id>/; empty keeps the single-tenant deployment.
+	Proxies []egress.Endpoint `json:"proxies,omitempty"`
+	Tenants []tenantConfig    `json:"tenants,omitempty"`
+}
+
+type tenantConfig struct {
+	ID                string `json:"id"`
+	StateDir          string `json:"state_dir"`
+	KeyPath           string `json:"key_path"`
 	OwnerPasswordHash string `json:"owner_password_hash"`
 }
 type request struct {
@@ -190,7 +203,7 @@ func configure() error {
 	if e != nil {
 		return e
 	}
-	c := config{*state, *key, *issuer, "127.0.0.1:8792", "127.0.0.1:8793", randomToken(), hash}
+	c := config{StateDir: *state, KeyPath: *key, Issuer: *issuer, Listen: "127.0.0.1:8792", LocalListen: "127.0.0.1:8793", LocalToken: randomToken(), OwnerPasswordHash: hash}
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if e = vault.Atomic(configFile(), b); e != nil {
 		return errors.New("config write failed")

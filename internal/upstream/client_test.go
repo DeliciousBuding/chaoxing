@@ -20,7 +20,7 @@ func (f roundtrip) RoundTrip(r *http.Request) (*http.Response, error) { return f
 func testClient(t *testing.T) *Client {
 	t.Helper()
 	d := t.TempDir()
-	cfg := Config{filepath.Join(d, "credentials"), filepath.Join(d, "key"), filepath.Join(d, "session")}
+	cfg := Config{CredentialsPath: filepath.Join(d, "credentials"), KeyPath: filepath.Join(d, "key"), SessionPath: filepath.Join(d, "session")}
 	if e := vault.Seal(cfg.CredentialsPath, cfg.KeyPath, vault.Credentials{Phone: "test-user", Password: "test-password"}); e != nil {
 		t.Fatal(e)
 	}

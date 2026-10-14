@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 — 2026-10-14
+
+- Advertise MCP contract version 4: every tool carries a human-readable `title`, item-level output schemas for courses, assignments, exams, notices, action items, chapters and digest rows, and boolean argument support (`notices.list` gains `include_raw`, default `false`). `initialize` now returns operator instructions describing read-only scope, `meta.coverage` and untrusted notice prose.
+- Allow anonymous MCP discovery (`initialize`, `ping`, `tools/list`, `server/discover`) so clients can inspect the tool catalog before completing OAuth; `tools/call` and every other method still require OAuth.
+- Bind OAuth grants to the advertised resource and issuer: metadata declares `authorization_response_iss_parameter_supported`, authorization callbacks carry `iss`, token exchange verifies `resource`, and refresh tokens preserve it. Existing v2 state loads unchanged.
+- Minimize notice payloads by default: `list_notices` no longer returns raw upstream envelopes or per-item raw fields unless `include_raw:true` is passed explicitly.
+- Add an optional egress proxy pool: SOCKS5 endpoints with optional source-address binding, round-robin selection, transport-failure cooldown with exponential backoff, direct fallback and no background probing. Health persists in an embedded SQLite store (`<state_dir>/chaoxing.db`, WAL, mode 0600) created only when proxies are configured. The local management listener gains `GET /status` with sanitized egress health and tenant ids.
+- Add optional multi-tenant serving: up to 32 isolated accounts under `/t/<id>/`, each with its own sealed credentials, OAuth state and lazy upstream client. The default single-account deployment is unchanged when `tenants` is empty.
+
 ## 0.2.3 — 2026-10-14
 
 - Reserve visible assignment, exam and notice slots in `study.digest`, so a long assignment list cannot crowd out the other available digest sections.

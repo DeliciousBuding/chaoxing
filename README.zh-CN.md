@@ -46,7 +46,7 @@ chaoxing study digest --course-id <课程列表返回的ID> --json
 
 业务命令调用运行中的 daemon，共用会话。默认 JSON；成功数据写 stdout，完全失败的结构化错误写 stderr；覆盖不完整时保留可用数据，并返回退出码 3。`data.meta.status` 表示查询覆盖，不表示作业已完成。群消息、信箱与任务点暂不承诺支持，以能力目录为准。
 
-owner OAuth 授权码有效期为 60 秒，随机 opaque access token 为 15 分钟，refresh family 为 30 天。refresh proof 认证族、计数器与随机值，以有界状态识别重放。不会持久化原始 access/refresh token，不依赖数据库、JWT 或 JWKS。默认启用 DCR，CIMD 需显式开启。
+owner OAuth 授权码有效期为 60 秒，随机 opaque access token 为 15 分钟，refresh family 为 30 天。refresh proof 认证族、计数器与随机值，以有界状态识别重放。不会持久化原始 access/refresh token，授权服务保持文件化状态，不用 JWT 或 JWKS；嵌入式 SQLite 仅用于可选代理池的健康持久化。默认启用 DCR，CIMD 需显式开启。可选的 SOCKS5 代理池（含源地址绑定、失败冷却与直连兜底）和 `/t/<id>/` 下的多租户隔离见[配置说明](docs/configuration.md)，默认均关闭。
 
 上游登录通过 HTTPS 使用学习通 AES 登录协议。GET 辅助函数检测到会话过期时，自动重新认证一次并重试读取一次；需要验证时由用户在官方网站完成。上游凭据和持久化 cookie 使用 AES-GCM 静态加密，密钥单独存放并限制为 root 可读。能读取密钥的 root 或进程仍可解密。owner OAuth 密码只保存加盐哈希，与需要恢复用于登录的上游密码分开。
 
