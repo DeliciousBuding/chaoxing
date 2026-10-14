@@ -38,12 +38,13 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 | `configure` | Initialize sealed credentials and a separate owner password hash |
 | `version` | Print the build version |
 
-Use `chaoxing capabilities` for the verified tool catalog and unsupported domains, and `chaoxing schema assignments.list` for the input/output contract. In addition to the original eight tools, bounded study overview, source-backed action items and capability discovery are available. Core tools never submit assignments, answer exams, check in or change learning progress. Authentication writes session state; read endpoints may use HTTP POST without mutating coursework.
+Use `chaoxing capabilities` for the verified tool catalog and unsupported domains, and `chaoxing schema assignments.list` for the input/output contract. In addition to the original eight tools, bounded study overview, source-backed action items, a bounded study digest and capability discovery are available. Core tools never submit assignments, answer exams, check in or change learning progress. Authentication writes session state; read endpoints may use HTTP POST without mutating coursework.
 
 ```sh
 chaoxing assignments list --course-id <id-from-list-courses> --status pending --json
 chaoxing assignments get <id-from-list-assignments> --json
 chaoxing study overview --course-id <id-from-list-courses> --json
+chaoxing study digest --course-id <id-from-list-courses> --json
 chaoxing schema assignments.list
 ```
 

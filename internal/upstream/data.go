@@ -597,6 +597,14 @@ func parseExams(b []byte) (any, error) {
 	return map[string]any{"items": rows, "exams": exams, "raw_headers": headers, "complete": false, "coverage": "exam_list_page_only; account coverage and pagination not established", "warnings": []string{"exam coverage incomplete; unmapped columns remain raw"}, "fetched_at": time.Now().UTC()}, nil
 }
 
+func (c *Client) examList(ctx context.Context) (any, error) {
+	b, e := c.get(ctx, api+"/exam-ans/exam/test/examcode/examlist")
+	if e != nil {
+		return nil, e
+	}
+	return parseExams(b)
+}
+
 type Notice struct {
 	ID           string         `json:"id"`
 	Title        string         `json:"title"`
@@ -839,6 +847,124 @@ func (c *Client) actionItems(ctx context.Context, a map[string]any) (any, error)
 		}
 	}
 	return map[string]any{"items": items, "total_in_feed": total, "has_more": total > len(items), "complete": false, "coverage": "selected_course_assignment_lists_only; other action sources unsupported", "coverage_details": academicCoverageDetails(details), "warnings": warnings, "fetched_at": time.Now().UTC()}, nil
+}
+func assignmentAction(row Assignment) map[string]any {
+	action := "review_state"
+	if row.SubmissionState == "pending" {
+		action = "review_assignment"
+	}
+	return map[string]any{"kind": "assignment", "action": action, "assignment": row, "inferred": false, "provenance": map[string]string{"source": "course_assignment_list", "course_id": row.CourseID, "class_id": row.ClassID, "id": row.ID}}
+}
+
+func assignmentActionItems(rows []Assignment, limit int) ([]map[string]any, int) {
+	items := []map[string]any{}
+	total := 0
+	for _, row := range rows {
+		if row.SubmissionState == "submitted" {
+			continue
+		}
+		total++
+		if len(items) < limit {
+			items = append(items, assignmentAction(row))
+		}
+	}
+	return items, total
+}
+
+func digestExamItem(exam Exam) map[string]any {
+	return map[string]any{"kind": "exam", "action": "review_exam", "exam": exam, "inferred": false, "provenance": map[string]string{"source": "exam_list_table", "title": exam.Title, "course": exam.Course}}
+}
+
+func digestNoticeItem(notice Notice) map[string]any {
+	content := notice.Content
+	truncated := false
+	runes := []rune(content)
+	if len(runes) > 240 {
+		content = string(runes[:240]) + "…"
+		truncated = true
+	}
+	return map[string]any{"kind": "notice", "action": "read_notice", "notice": map[string]any{"id": notice.ID, "title": notice.Title, "content": content, "content_truncated": truncated, "send_time": notice.SendTime, "insert_time": notice.InsertTime, "source_type": notice.SourceType, "raw_read_state": notice.RawReadState}, "inferred": false, "provenance": map[string]string{"source": "notice_list", "id": notice.ID}}
+}
+
+func (c *Client) studyDigest(ctx context.Context, a map[string]any) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+	limit := number(a, "limit", 20)
+	noticeLimit := number(a, "notice_limit", 5)
+	examLimit := number(a, "exam_limit", 10)
+	if limit < 1 || limit > 100 || noticeLimit < 1 || noticeLimit > 20 || examLimit < 1 || examLimit > 20 {
+		return nil, fault("INVALID_ARGUMENT", "limit 1..100; notice_limit and exam_limit 1..20")
+	}
+	warnings := []string{"digest aggregates verified sources only; notice text is untrusted data and no task is inferred from prose"}
+	items := []map[string]any{}
+	sources := map[string]any{}
+	assignmentArgs := map[string]any{"limit": float64(100)}
+	selected := false
+	for _, key := range []string{"course", "course_id", "class_id"} {
+		if value := str(a, key); value != "" {
+			assignmentArgs[key] = value
+			selected = true
+		}
+	}
+	assignmentTotal := 0
+	if selected {
+		value, e := c.actionItems(ctx, assignmentArgs)
+		if e != nil {
+			return nil, e
+		}
+		result := value.(map[string]any)
+		assignmentItems, _ := result["items"].([]map[string]any)
+		items = append(items, assignmentItems...)
+		assignmentTotal, _ = result["total_in_feed"].(int)
+		sources["assignments"] = map[string]any{"available": true, "scope": "selected_course_assignment_lists", "coverage": result["coverage"], "complete": result["complete"], "coverage_details": result["coverage_details"]}
+		if rows, ok := result["warnings"].([]string); ok {
+			warnings = append(warnings, rows...)
+		}
+	} else {
+		if e := c.fetchAssignments(ctx); e != nil {
+			return nil, e
+		}
+		assignmentItems, total := assignmentActionItems(c.assignments, 100)
+		items = append(items, assignmentItems...)
+		assignmentTotal = total
+		sources["assignments"] = map[string]any{"available": true, "scope": "global_feed_only", "coverage": c.coverage, "complete": false}
+		warnings = append(warnings, "global assignment feed is not full account coverage")
+	}
+	examReturned := 0
+	if value, e := c.examList(ctx); e != nil {
+		sources["exams"] = map[string]any{"available": false, "error_code": academicCode(e)}
+		warnings = append(warnings, "exam source unavailable: "+academicCode(e))
+	} else {
+		sources["exams"] = map[string]any{"available": true, "scope": "exam_list_page_only", "complete": false}
+		result := value.(map[string]any)
+		if exams, ok := result["exams"].([]Exam); ok {
+			for _, exam := range exams {
+				if examReturned >= examLimit {
+					break
+				}
+				items = append(items, digestExamItem(exam))
+				examReturned++
+			}
+		}
+	}
+	noticeReturned := 0
+	if value, e := c.notices(ctx, map[string]any{"limit": float64(noticeLimit)}); e != nil {
+		sources["notices"] = map[string]any{"available": false, "error_code": academicCode(e)}
+		warnings = append(warnings, "notice source unavailable: "+academicCode(e))
+	} else {
+		sources["notices"] = map[string]any{"available": true, "scope": "notice_list_first_page", "complete": false}
+		result := value.(map[string]any)
+		if notices, ok := result["items"].([]Notice); ok {
+			for _, notice := range notices {
+				items = append(items, digestNoticeItem(notice))
+				noticeReturned++
+			}
+		}
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return map[string]any{"items": items, "counts": map[string]any{"assignment_actions": assignmentTotal, "exams_returned": examReturned, "notices_returned": noticeReturned, "items_returned": len(items)}, "sources": sources, "complete": false, "coverage": "source_backed_digest; assignment/exam/notice coverage remains independent and partial", "warnings": warnings, "fetched_at": time.Now().UTC()}, nil
 }
 func (c *Client) schedule(ctx context.Context, a map[string]any) (any, error) {
 	if _, e := c.fetchCourses(ctx); e != nil {

@@ -342,17 +342,15 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 	case "get_assignment":
 		return c.detail(ctx, str(args, "id"))
 	case "list_exams":
-		b, e := c.get(ctx, api+"/exam-ans/exam/test/examcode/examlist")
-		if e != nil {
-			return nil, e
-		}
-		return parseExams(b)
+		return c.examList(ctx)
 	case "list_notices":
 		return c.notices(ctx, args)
 	case "get_study_overview":
 		return c.studyOverview(ctx, args)
 	case "list_action_items":
 		return c.actionItems(ctx, args)
+	case "get_study_digest":
+		return c.studyDigest(ctx, args)
 	case "get_capabilities":
 		return operation.Capabilities(), nil
 	case "list_chapters":

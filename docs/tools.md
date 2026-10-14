@@ -1,6 +1,6 @@
 # Tools and coverage
 
-Chaoxing exposes 12 read-only operations through the CLI, local daemon and HTTP MCP. The operation registry in `internal/operation/registry.go` defines their names, arguments and schemas; `internal/upstream/data.go` and `internal/upstream/chapters.go` implement the source reads and coverage rules.
+Chaoxing exposes 13 read-only operations through the CLI, local daemon and HTTP MCP. The operation registry in `internal/operation/registry.go` defines their names, arguments and schemas; `internal/upstream/data.go` and `internal/upstream/chapters.go` implement the source reads and coverage rules.
 
 ## Calls, schemas and transport results
 
@@ -14,6 +14,7 @@ chaoxing assignments get synthetic-course:synthetic-class:synthetic-work
 chaoxing notices list --limit 20
 chaoxing study overview --course-id synthetic-course
 chaoxing study actions --course-id synthetic-course
+chaoxing study digest --course-id synthetic-course --limit 20 --notice-limit 5 --exam-limit 10
 ```
 
 The IDs above are synthetic. Replace them with values returned by the service.
@@ -44,6 +45,7 @@ Arguments are optional unless marked required. CLI operation IDs use two words, 
 | `materials.list` | `list_materials` | required `course_id`, `class_id`, `cpi` | Top-level course material text under `text`. Requires an exact accessible course/class/cpi triple. Always partial; no folder traversal or downloads. |
 | `study.overview` | `get_study_overview` | `course`, `course_id`, `class_id`, `limit` | Assignment-only overview of selected classes, including submitted, pending and unknown rows. Returns selected `courses`, `items`, `assignments_complete`, class coverage and unsupported sources. Always partial. |
 | `study.actions` | `list_action_items` | `course`, `course_id`, `class_id`, `limit` | Source-backed assignment review items: pending rows use `review_assignment`; unknown rows use `review_state`; submitted rows are excluded. Includes assignment and provenance, with `inferred:false`. Always partial. |
+| `study.digest` | `get_study_digest` | `course`, `course_id`, `class_id`, `limit`, `notice_limit`, `exam_limit` | One bounded source-backed digest combining assignment action items, normalized exam rows and trimmed notice summaries. Without a course selector assignments come from the incomplete global feed; with one they use signed class scans. Notice text is never inferred as a task. Always partial. |
 | `capabilities.list` | `get_capabilities` | none | Contract version, all tool names, operation IDs/descriptions/input/output schemas, and `unsupported_domains`. Complete only for the verified tool catalog. |
 | `chapters.list` | `list_chapters` | required `course_id`, `class_id`, `cpi`; optional `limit`, `offset` | Chapter catalog summaries for an exact enrolled triple, with output pagination and explicitly reported task counts. Always partial; does not enter learning pages or enumerate task cards. |
 
@@ -107,6 +109,12 @@ Overview and action items use the same bounded class selection and assignment sc
 Overview includes all assignment states. `assignments_complete` reports whether the selected assignment scans completed, while overall `complete` remains false. Actions exclude submitted rows and include unknown rows for review. Filtering happens before the output limit so submitted rows cannot hide pending work. Both preserve class failures and partial data.
 
 These tools cover assignments only. They do not aggregate course exams, chapter summaries, task points or notice-derived actions, and do not claim that local coursework is complete. Use `list_exams` separately for the available exam-list page and `list_chapters` for chapter summaries. Group messages, inbox, individual task points, exam start, submission, attendance and folder traversal remain unsupported; chapter summary counts do not provide a task-point API.
+
+## Study digest
+
+`study.digest` is a convenience aggregation for assistants that need one bounded answer. It combines verified assignment action items, exam-list rows and first-page notice summaries; it does not create a new upstream source and does not infer work from notice prose. Digest notice entries contain normalized fields and at most 240 Unicode code points of content, without the raw notice row. Exam entries use the normalized exam-list representation. Assignment entries use the same `review_assignment` and `review_state` actions as `study.actions`.
+
+`limit` defaults to 20 and caps the combined returned item list. `notice_limit` and `exam_limit` default to 5 and 10 respectively, each bounded to 1..20. With a course selector, assignments use the signed per-class scan path and the same four-class bound as other study tools. Without a selector, assignments use the incomplete global feed and must not be treated as full account coverage. `sources` reports availability and coverage independently for assignments, exams and notices; source failures preserve the other available sections and add warnings. The overall result is always `complete:false`.
 
 ## Dates and safe errors
 

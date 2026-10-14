@@ -62,6 +62,7 @@ func TestSharedValidationAndNewTools(t *testing.T) {
 		{"list_notices", map[string]any{"limit": 3, "cursor": "opaque-next"}},
 		{"get_study_overview", map[string]any{"course_id": "course-1"}},
 		{"list_action_items", map[string]any{"course": "Synthetic course"}},
+		{"get_study_digest", map[string]any{"course_id": "course-1", "class_id": "class-1", "limit": 20, "notice_limit": 5, "exam_limit": 10}},
 		{"get_capabilities", map[string]any{}},
 	}
 	for _, tc := range valid {
@@ -95,6 +96,7 @@ func TestSharedValidationAndNewTools(t *testing.T) {
 		`{"name":"list_notices","arguments":{"cursor":"bad\tvalue"}}`,
 		`{"name":"list_materials","arguments":{"course_id":"c","class_id":"k","cpi":"p","folder_id":"f"}}`,
 		`{"name":"get_study_overview","arguments":{"offset":1}}`,
+		`{"name":"get_study_digest","arguments":{"notice_limit":21}}`,
 		`{"name":"courses.list","arguments":{}}`,
 	} {
 		got := result(t, rpc(h, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+params+`}`))

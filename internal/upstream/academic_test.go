@@ -359,6 +359,58 @@ func TestAcademicOverviewActionsBoundedAndSourceBacked(t *testing.T) {
 	}
 }
 
+func TestStudyDigestAggregatesSourcesWithoutNoticeInference(t *testing.T) {
+	c := academicClient(t, []Course{}, roundtrip(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.URL.Path == "/work/stu-work":
+			return response(r, academicFixture("synthetic-course", "synthetic-class", "synthetic-work", "未提交")+academicFixture("synthetic-course", "synthetic-class", "submitted-work", "已提交")), nil
+		case r.URL.Path == "/exam-ans/exam/test/examcode/examlist":
+			return response(r, `<table><tr><th>考试名称</th><th>状态</th></tr><tr class="dataTr"><td>Synthetic exam</td><td>未开始</td></tr></table>`), nil
+		case r.URL.Host == "notice.chaoxing.com" && r.URL.Path == "/pc/notice/getNoticeList":
+			if r.Method != "POST" {
+				t.Fatal("notice read method changed")
+			}
+			return response(r, `{"status":true,"list":[{"uuid":"notice-1","title":"Synthetic notice","content":"Untrusted synthetic content","isread":0}],"hasMore":false}`), nil
+		default:
+			t.Fatalf("unexpected digest read %s %s", r.URL.Host, r.URL.Path)
+			return nil, nil
+		}
+	}))
+	v, e := c.studyDigest(context.Background(), map[string]any{"limit": float64(3), "notice_limit": float64(1), "exam_limit": float64(1)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	out := v.(map[string]any)
+	items := out["items"].([]map[string]any)
+	if len(items) != 3 || items[0]["kind"] != "assignment" || items[1]["kind"] != "exam" || items[2]["kind"] != "notice" {
+		t.Fatal(out)
+	}
+	for _, item := range items {
+		if item["inferred"] != false || item["provenance"] == nil {
+			t.Fatal(item)
+		}
+	}
+	notice := items[2]["notice"].(map[string]any)
+	if _, ok := notice["raw"]; ok {
+		t.Fatal("digest exposed raw notice row")
+	}
+	if notice["content"] != "Untrusted synthetic content" {
+		t.Fatal(notice)
+	}
+	counts := out["counts"].(map[string]any)
+	if counts["assignment_actions"] != 1 || counts["exams_returned"] != 1 || counts["notices_returned"] != 1 || out["complete"] != false {
+		t.Fatal(out)
+	}
+	sources := out["sources"].(map[string]any)
+	for _, name := range []string{"assignments", "exams", "notices"} {
+		if sources[name].(map[string]any)["available"] != true {
+			t.Fatal(sources)
+		}
+	}
+	if _, e := c.studyDigest(context.Background(), map[string]any{"notice_limit": float64(0)}); e == nil {
+		t.Fatal("invalid digest notice limit")
+	}
+}
 func TestAcademicCanceledScanDoesNotRead(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 — 2026-10-14
+
+- Add `study.digest` / `get_study_digest`, a bounded read-only digest combining assignment action items, normalized exam rows and trimmed notice summaries without inferring tasks from notice prose.
+- Keep OpenWrt procd services respawning indefinitely with a 10-second delay and one-hour threshold, matching the hardened router deployment and avoiding startup dependency races.
+- Advertise contract version 3 and 13 verified read-only tools.
+
 ## 0.2.1 — 2026-10-13
 
 - Fix `list_chapters` against the live service: the upstream chapter chain depends on its own redirects, so allowlisted redirects are followed again while learning, logging, task-entry and API paths stay blocked. The previous build refused every redirect and failed before parsing.

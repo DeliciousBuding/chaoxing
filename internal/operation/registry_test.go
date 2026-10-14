@@ -51,6 +51,28 @@ func TestRegistryCatalogAndNoUnsupportedArguments(t *testing.T) {
 	}
 }
 
+func TestStudyDigestContract(t *testing.T) {
+	d, ok := Find("study.digest")
+	if !ok || d.Name != "get_study_digest" {
+		t.Fatal(d)
+	}
+	valid := map[string]any{"course_id": "course-1", "class_id": "class-1", "limit": 20, "notice_limit": 5, "exam_limit": 10}
+	if Validate(d, valid) != nil {
+		t.Fatal(valid)
+	}
+	for _, invalid := range []map[string]any{{"notice_limit": 0}, {"notice_limit": 21}, {"exam_limit": 0}, {"exam_limit": 21}, {"status": "pending"}, {"cursor": "opaque"}} {
+		if Validate(d, invalid) == nil {
+			t.Fatal("invalid digest arguments accepted", invalid)
+		}
+	}
+	out, e := Result("get_study_digest", map[string]any{"items": []any{}, "counts": map[string]any{}, "sources": map[string]any{}, "complete": false})
+	if e != nil || out["meta"].(map[string]any)["status"] != "partial" {
+		t.Fatal(out, e)
+	}
+	if Capabilities()["contract_version"] != "3" {
+		t.Fatal(Capabilities()["contract_version"])
+	}
+}
 func TestRuntimeRejectsMalformedMetadata(t *testing.T) {
 	for _, v := range []map[string]any{{"warnings": "not an array"}, {"items": "not an array"}, {"meta": map[string]any{"status": "complete", "coverage": map[string]any{"complete": "yes", "scope": "example"}}}} {
 		if _, e := Result("list_assignments", v); e == nil {

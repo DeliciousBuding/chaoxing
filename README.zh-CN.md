@@ -35,12 +35,13 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 | `configure` | 初始化加密凭据和独立的 owner 密码哈希 |
 | `version` | 输出构建版本 |
 
-原有八个工具之外，增加有界学业总览、来源明确的行动项与能力发现。`chaoxing capabilities` 查看已验证能力和未支持范围，`chaoxing schema assignments.list` 查看契约。核心工具不提交作业、不作答考试、不签到、不修改学习进度。
+原有八个工具之外，增加有界学业总览、来源明确的行动项、有界学业摘要与能力发现。`chaoxing capabilities` 查看已验证能力和未支持范围，`chaoxing schema assignments.list` 查看契约。核心工具不提交作业、不作答考试、不签到、不修改学习进度。
 
 ```sh
 chaoxing assignments list --course-id <课程列表返回的ID> --status pending --json
 chaoxing assignments get <作业列表返回的ID> --json
 chaoxing study overview --course-id <课程列表返回的ID> --json
+chaoxing study digest --course-id <课程列表返回的ID> --json
 ```
 
 业务命令调用运行中的 daemon，共用会话。默认 JSON；成功数据写 stdout，完全失败的结构化错误写 stderr；覆盖不完整时保留可用数据，并返回退出码 3。`data.meta.status` 表示查询覆盖，不表示作业已完成。群消息、信箱与任务点暂不承诺支持，以能力目录为准。
