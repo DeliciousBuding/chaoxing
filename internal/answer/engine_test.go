@@ -2,7 +2,9 @@ package answer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -72,6 +74,42 @@ func TestLLMProviderParsesOpenAIResponse(t *testing.T) {
 	p := NewLLM(server.URL+"/v1/chat/completions", "key", "test-model", 0)
 	value, confidence, err := p.Query(context.Background(), Question{Type: "single"})
 	if err != nil || value != "B" || confidence != 0.86 {
+		t.Fatalf("value=%q confidence=%v err=%v", value, confidence, err)
+	}
+}
+
+func TestOpenAIResponsesProviderUsesResponsesAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("path = %q, want /responses", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer key" {
+			t.Errorf("missing bearer key")
+		}
+		var payload struct {
+			Model        string `json:"model"`
+			Instructions string `json:"instructions"`
+			Input        string `json:"input"`
+			Store        bool   `json:"store"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if payload.Model != "test-model" || payload.Instructions == "" || payload.Input == "" || payload.Store {
+			t.Fatalf("unexpected request: %+v", payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response","status":"completed","output":[{"id":"msg_test","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"Answer\":[\"B\"]}"}]}]}`))
+	}))
+	defer server.Close()
+
+	p := NewOpenAIResponses(server.URL, "key", "test-model", 0)
+	value, confidence, err := p.Query(context.Background(), Question{
+		Title:   "Pick one",
+		Type:    "single",
+		Options: []string{"A one", "B two"},
+	})
+	if err != nil || value != "B" || confidence != 0.88 {
 		t.Fatalf("value=%q confidence=%v err=%v", value, confidence, err)
 	}
 }

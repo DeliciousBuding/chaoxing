@@ -163,10 +163,21 @@ func (c *answerConfig) engine(stateDir string) (*answer.Engine, error) {
 				return nil, errors.New("answer llm provider requires model")
 			}
 			providers = append(providers, answer.NewLLM(endpoint, key, item.Model, timeout))
+		case "responses", "openai-responses":
+			if item.Model == "" {
+				return nil, errors.New("answer responses provider requires model")
+			}
+			if key == "" {
+				return nil, errors.New("answer responses provider requires an api_key source")
+			}
+			if strings.HasSuffix(strings.TrimRight(endpoint, "/"), "/chat/completions") {
+				return nil, errors.New("answer responses provider base_url must be the API root, not a chat-completions endpoint")
+			}
+			providers = append(providers, answer.NewOpenAIResponses(endpoint, key, item.Model, timeout))
 		case "tiku":
 			providers = append(providers, answer.NewTiku(endpoint, key, timeout))
 		default:
-			return nil, errors.New("answer provider type must be llm or tiku")
+			return nil, errors.New("answer provider type must be llm, responses or tiku")
 		}
 	}
 	return answer.NewEngine(providers, filepath.Join(stateDir, "answer-cache.json"), c.MinConfidence)

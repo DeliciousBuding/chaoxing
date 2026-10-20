@@ -219,13 +219,20 @@ Enable the answer chain with a private top-level `answer` object (tenants may de
         "api_key_env": "CHAOXING_LLM_KEY",
         "model": "gpt-4o-mini",
         "timeout_seconds": 45
+      },
+      {
+        "type": "responses",
+        "base_url": "https://api.openai.com/v1",
+        "api_key_file": "/etc/chaoxing/openai.key",
+        "model": "gpt-5.2",
+        "timeout_seconds": 45
       }
     ]
   }
 }
 ```
 
-`type:"llm"` accepts any OpenAI-compatible non-streaming chat-completions endpoint. `type:"tiku"` posts `{question,type,options}` and accepts either TikuAdapter-style `answer.bestAnswer` or `{data:{answer,confidence}}`. API keys may be supplied through at most one of `api_key`, `api_key_file`, or `api_key_env`; file/env forms are preferred. Keys are never returned by tools.
+`type:"llm"` accepts any OpenAI-compatible non-streaming chat-completions endpoint. `type:"responses"` uses the official `openai/openai-go` SDK and performs one stateless Responses API call per question; `base_url` is the API root (for example `https://api.openai.com/v1` or a compatible gateway root), never a `/chat/completions` endpoint. It requires `model` and exactly one API-key source, disables server-side response storage, disables SDK retries, and uses `timeout_seconds` (default 45) as both the HTTP and per-request deadline. `type:"tiku"` posts `{question,type,options}` and accepts either TikuAdapter-style `answer.bestAnswer` or `{data:{answer,confidence}}`. API keys may be supplied through at most one of `api_key`, `api_key_file`, or `api_key_env`; file/env forms are preferred. Keys are never returned by tools.
 
 For a global assignment, call `get_assignment_questions` first; it follows the signed task entry to the editable work page and returns the `job_id` accepted by `answer_work`. For knowledge-point work, call `list_work_jobs` and `get_work_questions` instead. `answer_work` only generates and saves local drafts, and requires both `chaoxing.answer` and `chaoxing.work`. `save_work` and `submit_work` remain explicit tools and require the `chaoxing.work.submit` scope; final submission additionally requires every question to have a draft.
 
