@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DeliciousBuding/chaoxing/internal/capture"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
@@ -59,6 +60,44 @@ func (f *fakeSigner) SignActivity(_ context.Context, req upstream.SignRequest) (
 type fakeSender struct {
 	fail bool
 	sent []notify.Message
+}
+
+type fakeCaptureStore struct {
+	saved  []capture.Activity
+	pages  []string
+	pruned int
+	had    map[string]bool
+}
+
+func (f *fakeCaptureStore) SaveActivityCapture(_ context.Context, item capture.Activity) (capture.SaveResult, error) {
+	f.saved = append(f.saved, item)
+	if f.had == nil {
+		f.had = map[string]bool{}
+	}
+	return capture.SaveResult{HadPage: f.had[item.ActivityKey]}, nil
+}
+
+func (f *fakeCaptureStore) SaveActivityPage(_ context.Context, _, activityKey string, _ []byte, _ string) error {
+	if f.had == nil {
+		f.had = map[string]bool{}
+	}
+	f.had[activityKey] = true
+	f.pages = append(f.pages, activityKey)
+	return nil
+}
+
+func (f *fakeCaptureStore) PruneActivityCaptures(context.Context, time.Time) error {
+	f.pruned++
+	return nil
+}
+
+type fakePageSource struct {
+	calls int
+}
+
+func (f *fakePageSource) ActivityPage(context.Context, map[string]any) (any, error) {
+	f.calls++
+	return map[string]any{"forms": []map[string]any{{"action": "/synthetic"}}}, nil
 }
 
 func (f *fakeSender) Send(_ context.Context, m notify.Message) error {
@@ -204,6 +243,55 @@ func TestWatchMergesGroupCardAndUsesPresetSignCode(t *testing.T) {
 	}
 }
 
+func TestWatchCapturesPracticePageOnce(t *testing.T) {
+	item := signIn("c", "k", "practice-1", false)
+	item.Kind = "practice"
+	src := &fakeSource{items: []upstream.Activity{item}}
+	store := &fakeCaptureStore{}
+	pages := &fakePageSource{}
+	r, err := New(Config{
+		Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json",
+		Capture: true, CaptureAccount: "root", CaptureRetention: 24 * time.Hour,
+		CaptureActivityPages: true, CaptureStore: store, ActivityPageSource: pages,
+	}, src, &fakeSender{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
+	r.Tick(context.Background())
+	now = now.Add(time.Minute)
+	r.Tick(context.Background())
+	if len(store.saved) != 2 || store.saved[0].Kind != "practice" {
+		t.Fatalf("saved=%d %+v", len(store.saved), store.saved)
+	}
+	if pages.calls != 1 || len(store.pages) != 1 {
+		t.Fatalf("pages=%d saved=%d", pages.calls, len(store.pages))
+	}
+	if store.pruned != 1 {
+		t.Fatalf("pruned=%d", store.pruned)
+	}
+}
+
+func TestWatchCapturesGroupCards(t *testing.T) {
+	item := signIn("c", "k", "group-practice", false)
+	item.Kind, item.Source = "practice", "group"
+	src := &fakeGroupSource{groupItems: []upstream.Activity{item}}
+	store := &fakeCaptureStore{}
+	r, err := New(Config{
+		Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json",
+		Capture: true, CaptureAccount: "tenant", CaptureRetention: 24 * time.Hour, CaptureStore: store,
+	}, src, &fakeSender{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai) }
+	r.Tick(context.Background())
+	if len(store.saved) != 1 || store.saved[0].Source != "group" || store.saved[0].AccountKey != "tenant" {
+		t.Fatalf("%+v", store.saved)
+	}
+}
+
 func TestWatchAutoSignFailureDoesNotRetry(t *testing.T) {
 	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
 	snd := &fakeSender{}
@@ -222,6 +310,21 @@ func TestWatchAutoSignFailureDoesNotRetry(t *testing.T) {
 	}
 	if r.state[key(src.items[0])].Code != "INTERNAL" {
 		t.Fatalf("%+v", r.state)
+	}
+}
+
+func TestWatchAutoSignFailureUsesHighNotificationPriority(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
+	snd := &fakeSender{}
+	signer := &fakeSigner{err: errors.New("synthetic")}
+	r, err := New(Config{Interval: time.Minute, AutoSign: true, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json"}, src, snd, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai) }
+	r.Tick(context.Background())
+	if len(snd.sent) != 1 || snd.sent[0].Priority != 8 {
+		t.Fatalf("%+v", snd.sent)
 	}
 }
 

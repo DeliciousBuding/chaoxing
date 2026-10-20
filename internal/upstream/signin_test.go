@@ -21,7 +21,8 @@ func signActivityResponse(otherID int, extra string) string {
 func TestNormalSignUsesReferenceProtocolAndDeviceIdentity(t *testing.T) {
 	var c *Client
 	c = academicClient(t, []Course{{ID: "course-1", ClassID: "class-1", Name: "Synthetic"}}, roundtrip(func(r *http.Request) (*http.Response, error) {
-		if r.Header.Get("User-Agent") != defaultUserAgent {
+		ua := r.Header.Get("User-Agent")
+		if !strings.Contains(ua, "ChaoXingStudy_3_7.0.4_android_phone_10995_") || !strings.Contains(ua, "(schild:") {
 			t.Fatalf("user agent mismatch: %q", r.Header.Get("User-Agent"))
 		}
 		switch r.URL.Path {

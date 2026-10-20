@@ -5,13 +5,14 @@
 
 [简体中文](README.zh-CN.md)
 
-Chaoxing is an agent-first, self-hosted control plane for courses, assignments, exams, notices, schedules, course materials, class sign-in, rapid answers, answer generation and coursework submission. One Go binary provides an OAuth-protected HTTP MCP endpoint and an authenticated local JSON API. Agents can discover capabilities, read course state, submit explicitly scoped actions, and edit local answer drafts without receiving arbitrary URL or command execution powers.
+Chaoxing is an agent-first, self-hosted control plane for courses, assignments, exams, notices, schedules, course materials, class sign-in, rapid answers, answer generation and coursework submission. One Go binary provides an OAuth-protected HTTP MCP endpoint, an owner-authenticated embedded React management UI, and an authenticated local JSON API. Agents and the browser owner can discover capabilities, read course state, submit explicitly scoped actions, and edit local answer drafts without receiving arbitrary URL or command execution powers.
 
 ## Agent-first control plane
 
 The service is designed to be operated remotely by an agent, not merely called as a library:
 
 - MCP clients connect to `/mcp` through an HTTPS tunnel and receive the same validated tool catalog as the local CLI.
+- The browser owner connects to `/` and receives the embedded React/Tailwind management console with a separate remote-IP-bound cookie session, CSRF protection and the same operation allowlist.
 - The local loopback API on port 8793 accepts one JSON tool request with a bearer token and is suitable for host-local automation.
 - `get_capabilities` and `schema <operation>` expose operation IDs, scopes, input schemas and output schemas before any account data is touched.
 - Every adapter uses `internal/operation` as the single contract; MCP, local API and direct query cannot define parallel argument or result formats.
@@ -23,6 +24,7 @@ One daemon owns the upstream session, caches and watcher state. Agents choose th
 
 | Interface | Audience | Authentication | Boundary |
 | --- | --- | --- | --- |
+| `/` and `/api/*` | Human owner | PBKDF2 owner password, `__Host-` session cookie, CSRF | Published through HTTPS only; no arbitrary URL/file/command capability |
 | `POST /mcp` | Remote MCP clients | Owner OAuth and operation scopes | Published through HTTPS only; no raw tokens or challenge secrets in tool results |
 | `POST /call` | Host-local automation | Private bearer token | Loopback-only listener; never exposed by the tunnel |
 | `chaoxing call` | Local operator or scripts | Reads the private local configuration | One JSON request per invocation through the same operation registry |
@@ -49,6 +51,7 @@ The security design is deliberately layered:
 - Raw upstream bodies, credentials, cookies, OAuth tokens and captcha challenge secrets are never returned by tool contracts.
 - Account operations are serialized per account; process-wide outbound capacity and public MCP admission have explicit saturation behavior.
 - Each account has private credentials, cookies, caches, OAuth state, watcher state and notification destinations; only trusted transport health is shared.
+- The embedded Web UI is same-origin only and contains no analytics or third-party tracker.
 
 The global assignment feed remains incomplete. A course-name query scans matching classes through the signed work list and can report `complete: true` when pagination agrees with upstream totals. That verifies the matched classes, not the whole account. An empty global pending list does not prove that every assignment is submitted. See [coverage and tool contracts](docs/tools.md).
 
@@ -65,6 +68,13 @@ Tagged releases build Linux arm64, Linux amd64 and Windows amd64 binaries with `
 
 Configure the server using private JSON on stdin, then run `chaoxing serve`. [Configuration and tunnel setup](docs/configuration.md) describes the inputs, file permissions and listener boundary. Do not put credentials in command arguments or public files.
 
+The production binary embeds the Web UI. If you changed files under `web/src`, rebuild the bundle before the Go binary:
+
+```sh
+npm --prefix web run build
+go build -o chaoxing ./cmd/chaoxing
+```
+
 With a configured, running local service, send a tool request on stdin:
 
 ```sh
@@ -75,7 +85,7 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 
 | Command | Purpose |
 | --- | --- |
-| `serve` | Own upstream session and caches; serve public MCP and private loopback calls |
+| `serve` | Own upstream session and caches; serve the Web UI, public MCP and private loopback calls |
 | `call` | Send one JSON request to the running daemon's private listener |
 | `query` | Make a direct bounded query with the configured upstream client |
 | `configure` | Initialize sealed credentials and a separate owner password hash |
@@ -94,8 +104,8 @@ The notification layer is a one-way, provider-fan-out boundary:
 | Channel | Required configuration | Delivery |
 | --- | --- | --- |
 | Feishu | `feishu_webhook` | JSON text card; nonzero provider acknowledgements are rejected |
-| ntfy | `ntfy_url` + `ntfy_topic` | `POST <topic>` with title and priority 5 |
-| Gotify | `gotify_url` + `gotify_token` | `POST /message` with `X-Gotify-Key` and priority 5 |
+| ntfy | `ntfy_url` + `ntfy_topic` | `POST <topic>` with title and priority 5–9 by severity |
+| Gotify | `gotify_url` + `gotify_token` | `POST /message` with `X-Gotify-Key` and priority 5–9 by severity |
 
 Enabled channels are tried independently, so one provider outage does not suppress the others. Enabling the watcher without at least one complete channel is a startup error rather than a silent dead alert. Messages carry only operator-facing activity identity and result; credentials and sign codes are never placed in notifications or watch state.
 
@@ -121,7 +131,7 @@ chaoxing schema assignments.list
 
 Business commands use the running daemon. JSON is the default: successful data goes to stdout, complete failures to stderr, and partial source coverage returns usable stdout with exit code 3. Check `data.meta.coverage` before claiming a source is empty or exhaustive. See [tool contracts](docs/tools.md).
 
-Owner OAuth uses a 60-second authorization code, 15-minute random opaque access tokens and 30-day refresh families. Refresh proofs authenticate the family, counter and nonce, keeping rotation state bounded while recognizing replay. `chaoxing.read` grants course reads; `chaoxing.sign` is required for sign-in; `chaoxing.work` is required for local answer-draft edits. Raw access/refresh tokens are never persisted; the authorization server stays file-backed with no JWT or JWKS. An embedded SQLite store is used only for optional egress-proxy health. DCR is enabled by default; CIMD is an explicit opt-in. Optional SOCKS5 proxy pooling and isolated multi-tenant serving under `/t/<id>/` are documented in [configuration](docs/configuration.md); both default off.
+Owner OAuth uses a 60-second authorization code, 15-minute random opaque access tokens and 30-day refresh families. Refresh proofs authenticate the family, counter and nonce, keeping rotation state bounded while recognizing replay. `chaoxing.read` grants course reads; `chaoxing.sign` is required for sign-in; `chaoxing.work` is required for local answer-draft edits. Raw access/refresh tokens are never persisted; the authorization server stays file-backed with no JWT or JWKS. An embedded SQLite store is used only for optional egress health, sticky account assignments and sanitized activity captures. DCR is enabled by default; CIMD is an explicit opt-in. Optional account-sticky SOCKS5 proxying and isolated multi-tenant serving under `/t/<id>/` are documented in [configuration](docs/configuration.md); both default off.
 
 Upstream login follows Chaoxing's AES login protocol over HTTPS. On a detected expired session, the GET helper automatically reauthenticates once and retries the read once. Verification requirements remain user actions on the official site. Upstream credentials and persisted cookies use AES-GCM at rest, with a separately stored, root-only key. Encryption cannot protect against root or a process that can read the key. The owner OAuth password is stored as a salted password hash, distinct from the recoverable upstream password.
 

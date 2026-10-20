@@ -2,11 +2,12 @@
 
 [English](README.md)
 
-Chaoxing 是面向 Agent 的可自托管学习通控制面，用于查询课程、作业、考试、通知、课表、课程资料，执行显式授权的课堂签到、抢答、答案生成与作业提交，并管理本地答题草稿。一个 Go 二进制同时提供带 OAuth 认证的 HTTP MCP 接口和带 bearer 认证的本地 JSON API。Agent 可以发现能力、读取课程状态、提交按 scope 授权的动作、编辑本地答案草稿，但拿不到任意 URL、命令执行或文件系统权限。
+Chaoxing 是面向 Agent 的可自托管学习通控制面，用于查询课程、作业、考试、通知、课表、课程资料，执行显式授权的课堂签到、抢答、答案生成与作业提交，并管理本地答题草稿。一个 Go 二进制同时提供带 OAuth 认证的 HTTP MCP 接口、内嵌 React 的所有者管理界面，以及带 bearer 认证的本地 JSON API。Agent 和浏览器所有者可以发现能力、读取课程状态、提交按 scope 授权的动作、编辑本地答案草稿，但拿不到任意 URL、命令执行或文件系统权限。
 
 ## Agent-first 控制面
 
 - MCP 客户端通过 HTTPS Tunnel 连接 `/mcp`，与本地 CLI 共用同一份经过校验的工具目录。
+- 浏览器所有者访问 `/`，使用独立且绑定来源地址的 cookie 会话、CSRF 双提交和同一 operation allowlist 操作内嵌管理平台。
 - 本机 loopback API 监听 8793，一次请求一个 JSON 工具调用，适合主机本地自动化。
 - `get_capabilities` 和 `schema <operation>` 在接触账号数据前暴露操作 ID、scope、输入输出 schema。
 - MCP、本地 API 和直接查询共用 `internal/operation` 的唯一契约，不允许适配层定义平行参数。
@@ -18,6 +19,7 @@ Chaoxing 是面向 Agent 的可自托管学习通控制面，用于查询课程�
 
 | 接口 | 使用者 | 认证 | 边界 |
 | --- | --- | --- | --- |
+| `/` 与 `/api/*` | 人类所有者 | PBKDF2 owner 密码、`__Host-` 会话 cookie、CSRF | 只经 HTTPS 发布；不提供任意 URL/文件/命令能力 |
 | `POST /mcp` | 远程 MCP 客户端 | owner OAuth 与 operation scope | 只经 HTTPS 发布；工具结果不含原始 token 或验证码密钥 |
 | `POST /call` | 主机本地自动化 | 私有 bearer token | 仅 loopback 监听；绝不接 Tunnel |
 | `chaoxing call` | 本地运维者或脚本 | 读取私有本地配置 | 每次一个 JSON 请求，走同一 operation registry |
@@ -44,6 +46,7 @@ Agent 拿到的是完整课程控制面，不是通用 shell、任意 URL fetche
 - 工具契约不返回原始上游 body、凭据、cookie、OAuth token 或验证码 challenge 密钥。
 - 同一账号的上游操作串行执行；进程级出站预算和公开 MCP admission 都有明确饱和行为。
 - 每个账号拥有独立凭据、cookie、缓存、OAuth 状态、watcher 状态和通知目的地；只有可信传输健康状态共享。
+- 内嵌 Web UI 仅连接同源 API，不包含任何分析或第三方 tracker。
 
 全局作业 feed 仍不完整。按课程名查询会通过带签名的作业列表扫描匹配班级，分页结果与上游总数一致时可以返回 `complete: true`。这一标记只确认匹配班级的覆盖，不代表全账户完整。全局待交列表为空，不能证明所有作业都已提交。详见[工具与覆盖范围](docs/tools.md)。
 
@@ -60,6 +63,13 @@ Tag 发布工作流构建 Linux arm64、Linux amd64 和 Windows amd64 二进制�
 
 使用私有 JSON stdin 初始化配置，然后运行 `chaoxing serve`。[配置与 Tunnel](docs/configuration.md)说明输入字段、文件权限及监听边界。凭据不放在命令参数或公开文件中。
 
+生产二进制已内嵌 Web UI。如果修改了 `web/src`，先重建前端资源再构建 Go：
+
+```sh
+npm --prefix web run build
+go build -o chaoxing ./cmd/chaoxing
+```
+
 在已配置并运行服务的本机，通过 stdin 发送工具请求：
 
 ```sh
@@ -70,7 +80,7 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 
 | 命令 | 用途 |
 | --- | --- |
-| `serve` | 管理上游会话与缓存，提供公开 MCP 和私有 loopback 调用 |
+| `serve` | 管理上游会话与缓存，提供 Web UI、公开 MCP 和私有 loopback 调用 |
 | `call` | 将一个 JSON 请求发往运行中的 daemon 私有接口 |
 | `query` | 使用配置中的上游客户端直接执行有界查询 |
 | `configure` | 初始化加密凭据和独立的 owner 密码哈希 |
@@ -89,8 +99,8 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 | 通道 | 必需配置 | 投递方式 |
 | --- | --- | --- |
 | 飞书 | `feishu_webhook` | JSON text card；非零 provider acknowledgement 视为失败 |
-| ntfy | `ntfy_url` + `ntfy_topic` | `POST <topic>`，携带 title 与 priority 5 |
-| Gotify | `gotify_url` + `gotify_token` | `POST /message`，携带 `X-Gotify-Key` 与 priority 5 |
+| ntfy | `ntfy_url` + `ntfy_topic` | `POST <topic>`，携带 title 与按严重程度 5–9 的 priority |
+| Gotify | `gotify_url` + `gotify_token` | `POST /message`，携带 `X-Gotify-Key` 与按严重程度 5–9 的 priority |
 
 启用多个通道时各自独立投递，一个 provider 故障不会压制其他通道。watcher 启用但没有任何完整通道时直接启动失败，而不是静默丢告警。通知只携带运营者可读的活动身份和结果；凭据和签到码不会进入通知或 watch 状态。
 
@@ -115,7 +125,7 @@ chaoxing study digest --course-id <课程列表返回的ID> --json
 
 业务命令调用运行中的 daemon，共用会话。默认 JSON；成功数据写 stdout，完全失败的结构化错误写 stderr；覆盖不完整时保留可用数据，并返回退出码 3。`data.meta.status` 表示查询覆盖，不表示作业已完成。群消息、信箱与任务点暂不承诺支持，以能力目录为准。
 
-owner OAuth 授权码有效期为 60 秒，随机 opaque access token 为 15 分钟，refresh family 为 30 天。refresh proof 认证族、计数器与随机值，以有界状态识别重放。`chaoxing.read` 用于读取；签到额外要求 `chaoxing.sign`；本地答案草稿编辑要求 `chaoxing.work`。不会持久化原始 access/refresh token，授权服务保持文件化状态，不用 JWT 或 JWKS；嵌入式 SQLite 仅用于可选代理池的健康持久化。默认启用 DCR，CIMD 需显式开启。可选的 SOCKS5 代理池（含源地址绑定、失败冷却与直连兜底）和 `/t/<id>/` 下的多租户隔离见[配置说明](docs/configuration.md)，默认均关闭。
+owner OAuth 授权码有效期为 60 秒，随机 opaque access token 为 15 分钟，refresh family 为 30 天。refresh proof 认证族、计数器与随机值，以有界状态识别重放。`chaoxing.read` 用于读取；签到额外要求 `chaoxing.sign`；本地答案草稿编辑要求 `chaoxing.work`。不会持久化原始 access/refresh token，授权服务保持文件化状态，不用 JWT 或 JWKS；嵌入式 SQLite 仅保存可选出口健康、账号粘性绑定和脱敏活动捕获。默认启用 DCR，CIMD 需显式开启。可选的账号粘性 SOCKS5 出口和 `/t/<id>/` 下的多租户隔离见[配置说明](docs/configuration.md)，默认均关闭。
 
 上游登录通过 HTTPS 使用学习通 AES 登录协议。GET 辅助函数检测到会话过期时，自动重新认证一次并重试读取一次；需要验证时由用户在官方网站完成。上游凭据和持久化 cookie 使用 AES-GCM 静态加密，密钥单独存放并限制为 root 可读。能读取密钥的 root 或进程仍可解密。owner OAuth 密码只保存加盐哈希，与需要恢复用于登录的上游密码分开。
 

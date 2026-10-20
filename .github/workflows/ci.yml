@@ -21,6 +21,17 @@ jobs:
         with:
           go-version: '1.26.x' # Use the latest security patch, not just the go.mod minimum.
           check-latest: true
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build embedded Web UI
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+      - name: Ensure the embedded Web UI bundle is current
+        run: git diff --exit-code -- internal/webui/dist
       - name: Check formatting without rewriting source
         shell: bash
         run: |

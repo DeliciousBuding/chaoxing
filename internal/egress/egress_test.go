@@ -2,6 +2,7 @@ package egress
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
@@ -22,6 +23,24 @@ func (f *fakeStore) SetProxyHealth(k string, h Health) error {
 		return nil
 	}
 	f.m[k] = h
+	return nil
+}
+
+type fakeAssignmentStore struct {
+	fakeStore
+	assigned map[string]string
+}
+
+func (f *fakeAssignmentStore) ProxyAssignments() (map[string]string, error) { return f.assigned, nil }
+func (f *fakeAssignmentStore) SetProxyAssignment(account, endpoint string) error {
+	if f.assigned == nil {
+		f.assigned = map[string]string{}
+	}
+	f.assigned[account] = endpoint
+	return nil
+}
+func (f *fakeAssignmentStore) DeleteProxyAssignment(account string) error {
+	delete(f.assigned, account)
 	return nil
 }
 
@@ -189,7 +208,7 @@ func TestFailureCooldownAndPersist(t *testing.T) {
 	p.mu.Lock()
 	p.next = 1
 	p.mu.Unlock()
-	if e := p.pick(); e.key == directKey {
+	if e := p.pick(context.Background()); e.key == directKey {
 		t.Fatal("cooling endpoint should be retried after expiry")
 	}
 }
@@ -230,5 +249,63 @@ func TestRestoredHealthFromStore(t *testing.T) {
 	}
 	if s := p2.Status(); s[1].Failures != 1 || !s[1].Cooldown {
 		t.Fatal("health not restored", s)
+	}
+}
+
+func TestAccountLabeledEgressIsSticky(t *testing.T) {
+	store := &fakeAssignmentStore{fakeStore{m: map[string]Health{}}, map[string]string{}}
+	p, err := New([]Endpoint{{URL: "socks5://127.0.0.1:1"}, {URL: "socks5://127.0.0.1:2"}}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithAccount(context.Background(), "root")
+	first := p.pick(ctx)
+	for range 5 {
+		if next := p.pick(ctx); next != first {
+			t.Fatalf("account egress changed: %s -> %s", first.key, next.key)
+		}
+	}
+	if store.assigned["root"] != first.key {
+		t.Fatal(store.assigned)
+	}
+}
+
+func TestStickyAssignmentIsRestored(t *testing.T) {
+	store := &fakeAssignmentStore{fakeStore{m: map[string]Health{}}, map[string]string{}}
+	p1, err := New([]Endpoint{{URL: "socks5://127.0.0.1:1"}, {URL: "socks5://127.0.0.1:2"}}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := p1.pick(WithAccount(context.Background(), "root"))
+	p2, err := New([]Endpoint{{URL: "socks5://127.0.0.1:1"}, {URL: "socks5://127.0.0.1:2"}}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second := p2.pick(WithAccount(context.Background(), "root")); second.key != first.key {
+		t.Fatalf("assignment not restored: %s != %s", first.key, second.key)
+	}
+}
+
+func TestStickyAssignmentUsesDirectOnlyWhileCooling(t *testing.T) {
+	store := &fakeAssignmentStore{fakeStore{m: map[string]Health{}}, map[string]string{}}
+	p, err := New([]Endpoint{{URL: "socks5://127.0.0.1:1"}}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithAccount(context.Background(), "root")
+	if selected := p.pick(ctx); selected.key == directKey {
+		t.Fatal("sticky account was bound to direct")
+	}
+	assigned := store.assigned["root"]
+	p.failEndpoint(p.list[1])
+	if selected := p.pick(ctx); selected.key != directKey {
+		t.Fatal("cooling endpoint was reused")
+	}
+	if store.assigned["root"] != assigned {
+		t.Fatal("cooling changed the persistent assignment")
+	}
+	p.heal(p.list[1])
+	if selected := p.pick(ctx); selected.key != assigned {
+		t.Fatalf("assignment not restored after cooldown: %s != %s", selected.key, assigned)
 	}
 }

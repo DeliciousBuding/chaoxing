@@ -336,7 +336,7 @@ func decryptIMPassword(encrypted string) (string, error) {
 }
 
 func (c *Client) imDo(ctx context.Context, method, endpoint string, body io.Reader, contentType, authorization string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	req, err := http.NewRequestWithContext(c.requestContext(ctx), method, endpoint, body)
 	if err != nil {
 		return nil, fault("INVALID_URL", "IM endpoint not permitted")
 	}

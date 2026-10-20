@@ -74,7 +74,7 @@ func TestSlowPersistenceDoesNotHoldPoolLock(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("disk I/O held pool lock")
 	}
-	if e := p.pick(); e.key != directKey {
+	if e := p.pick(context.Background()); e.key != directKey {
 		t.Error("cooling proxy picked")
 	}
 	close(db.release)

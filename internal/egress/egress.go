@@ -1,8 +1,8 @@
 // Package egress implements an optional outbound proxy pool for upstream
 // requests. Direct egress is always available and remains the default when no
-// proxies are configured; SOCKS5 endpoints are tried round-robin with
-// failure cooldown. There is no background probing: health is learned only
-// from real request outcomes.
+// proxies are configured. Unlabeled requests use round-robin selection, while
+// account-labeled requests keep a stable healthy endpoint. Failures cool an
+// endpoint down; there is no background probing.
 package egress
 
 import (
@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"net/http"
@@ -36,6 +37,13 @@ type HealthStore interface {
 	SetProxyHealth(key string, h Health) error
 }
 
+// AssignmentStore optionally persists stable account-to-egress bindings.
+type AssignmentStore interface {
+	ProxyAssignments() (map[string]string, error)
+	SetProxyAssignment(accountKey, endpointKey string) error
+	DeleteProxyAssignment(accountKey string) error
+}
+
 // Health is the failure state of one endpoint.
 type Health struct {
 	Failures  int
@@ -49,6 +57,7 @@ type entry struct {
 	fail              int
 	cool              time.Time
 	persistenceFailed bool
+	assignmentFailed  bool
 }
 
 // Status is the operator-facing state of one endpoint.
@@ -58,16 +67,19 @@ type Status struct {
 	Failures            int    `json:"failures"`
 	Cooldown            bool   `json:"cooldown"`
 	PersistenceDegraded bool   `json:"persistence_degraded"`
+	AssignmentDegraded  bool   `json:"assignment_degraded,omitempty"`
 }
 
 // Pool is an http.RoundTripper selecting among configured egress paths.
 type Pool struct {
-	mu       sync.Mutex
-	list     []*entry
-	next     int
-	db       HealthStore
-	now      func() time.Time
-	requests *admission.Gate
+	mu          sync.Mutex
+	list        []*entry
+	next        int
+	db          HealthStore
+	assignments AssignmentStore
+	assigned    map[string]string
+	now         func() time.Time
+	requests    *admission.Gate
 }
 
 const (
@@ -84,7 +96,7 @@ func New(endpoints []Endpoint, store HealthStore) (*Pool, error) {
 	if len(endpoints) > maxEndpoints {
 		return nil, fmt.Errorf("too many egress endpoints (max %d)", maxEndpoints)
 	}
-	p := &Pool{db: store, now: time.Now, requests: admission.New(4, 32)}
+	p := &Pool{db: store, now: time.Now, requests: admission.New(4, 32), assigned: map[string]string{}}
 	p.list = append(p.list, &entry{key: directKey, rt: transport(nil)})
 	keys := map[string]bool{directKey: true}
 	for _, ep := range endpoints {
@@ -118,6 +130,12 @@ func New(endpoints []Endpoint, store HealthStore) (*Pool, error) {
 			for _, e := range p.list {
 				e.persistenceFailed = true
 			}
+		}
+	}
+	if assignments, ok := store.(AssignmentStore); ok {
+		p.assignments = assignments
+		if m, err := assignments.ProxyAssignments(); err == nil {
+			p.assigned = m
 		}
 	}
 	return p, nil
@@ -171,7 +189,7 @@ func (p *Pool) RoundTrip(req *http.Request) (*http.Response, error) {
 			p.requests.Release()
 		}
 	}()
-	e := p.pick()
+	e := p.pick(req.Context())
 	if e == nil {
 		return nil, errors.New(errNoEgress)
 	}
@@ -210,7 +228,14 @@ func (b *limitedBody) Close() error {
 	return err
 }
 
-func (p *Pool) pick() *entry {
+func (p *Pool) pick(ctx context.Context) *entry {
+	if account := Account(ctx); account != "" {
+		return p.pickSticky(account)
+	}
+	return p.pickRoundRobin()
+}
+
+func (p *Pool) pickRoundRobin() *entry {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
@@ -223,6 +248,72 @@ func (p *Pool) pick() *entry {
 	}
 	// Everything cooling down: fall back to direct rather than failing.
 	return p.list[0]
+}
+
+func (p *Pool) pickSticky(account string) *entry {
+	p.mu.Lock()
+	now := p.now()
+	if key, ok := p.assigned[account]; ok {
+		for _, e := range p.list {
+			if e.key != key {
+				continue
+			}
+			if e.cool.IsZero() || !now.Before(e.cool) {
+				p.mu.Unlock()
+				return e
+			}
+			p.mu.Unlock()
+			return p.list[0] // preserve the binding; use direct only while cooling
+		}
+		delete(p.assigned, account)
+		p.mu.Unlock()
+		p.deleteAssignment(account)
+		p.mu.Lock()
+	}
+	candidates := make([]*entry, 0, len(p.list)-1)
+	for _, e := range p.list {
+		if e.key != directKey && (e.cool.IsZero() || !now.Before(e.cool)) {
+			candidates = append(candidates, e)
+		}
+	}
+	var selected *entry
+	if len(candidates) > 0 {
+		selected = candidates[stableIndex(account, len(candidates))]
+		p.assigned[account] = selected.key
+		p.mu.Unlock()
+		p.setAssignment(account, selected.key)
+		return selected
+	}
+	p.mu.Unlock()
+	return p.list[0] // temporary direct fallback; do not bind the account to it
+}
+
+func stableIndex(account string, length int) int {
+	sum := fnv.New32a()
+	_, _ = sum.Write([]byte(account))
+	return int(sum.Sum32() % uint32(length))
+}
+
+func (p *Pool) setAssignment(account, endpoint string) {
+	if p.assignments == nil {
+		return
+	}
+	err := p.assignments.SetProxyAssignment(account, endpoint)
+	p.mu.Lock()
+	for _, e := range p.list {
+		if e.key == endpoint {
+			e.assignmentFailed = err != nil
+			break
+		}
+	}
+	p.mu.Unlock()
+}
+
+func (p *Pool) deleteAssignment(account string) {
+	if p.assignments == nil {
+		return
+	}
+	_ = p.assignments.DeleteProxyAssignment(account)
 }
 
 func (p *Pool) failEndpoint(e *entry) {
@@ -287,6 +378,41 @@ func (p *Pool) Status() []Status {
 			kind = "socks5"
 		}
 		out = append(out, Status{Key: e.key, Kind: kind, Failures: e.fail, Cooldown: !e.cool.IsZero() && now.Before(e.cool), PersistenceDegraded: e.persistenceFailed})
+		out[len(out)-1].AssignmentDegraded = e.assignmentFailed
 	}
 	return out
+}
+
+type accountContextKey struct{}
+
+// WithAccount labels a request with a private account key. The egress pool uses
+// it to keep one account on one healthy endpoint instead of rotating its IP.
+func WithAccount(ctx context.Context, account string) context.Context {
+	if ctx == nil || !validAccount(account) {
+		return ctx
+	}
+	return context.WithValue(ctx, accountContextKey{}, account)
+}
+
+func Account(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(accountContextKey{}).(string)
+	if !validAccount(v) {
+		return ""
+	}
+	return v
+}
+
+func validAccount(account string) bool {
+	if account == "" || len(account) > 64 {
+		return false
+	}
+	for _, r := range account {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }

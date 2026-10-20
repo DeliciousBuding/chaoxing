@@ -11,13 +11,15 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type Message struct {
-	Title string
-	Body  string
+	Title    string
+	Body     string
+	Priority int
 }
 
 type Sender interface {
@@ -34,6 +36,16 @@ func (m Multi) Send(ctx context.Context, msg Message) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (m Message) priority() int {
+	if m.Priority < 1 {
+		return 5
+	}
+	if m.Priority > 10 {
+		return 10
+	}
+	return m.Priority
 }
 
 type Feishu struct {
@@ -106,7 +118,7 @@ func (g Gotify) Send(ctx context.Context, m Message) error {
 	if strings.TrimSpace(g.Token) == "" {
 		return errors.New("gotify token is not configured")
 	}
-	payload := map[string]any{"title": m.Title, "message": m.Body, "priority": 5}
+	payload := map[string]any{"title": m.Title, "message": m.Body, "priority": m.priority()}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -157,7 +169,7 @@ func (n Ntfy) Send(ctx context.Context, m Message) error {
 		return err
 	}
 	req.Header.Set("Title", m.Title)
-	req.Header.Set("Priority", "5")
+	req.Header.Set("Priority", strconv.Itoa(m.priority()))
 	req.Header.Set("Tags", "rotating_light")
 	resp, err := n.client().Do(req)
 	if err != nil {

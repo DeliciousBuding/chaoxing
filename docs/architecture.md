@@ -1,9 +1,11 @@
 # Architecture
 
-Chaoxing runs as one Go binary. `serve` owns one upstream client, authenticated cookie jar and cache per account, and exposes two loopback listeners. Local CLI clients use the default account's daemon session rather than create a fresh upstream client each time.
+Chaoxing runs as one Go binary. `serve` owns one upstream client, authenticated cookie jar and cache per account, and exposes two loopback listeners. The public listener serves the owner Web UI, OAuth and MCP; the private listener serves local bearer-token calls. Local CLI clients use the default account's daemon session rather than create a fresh upstream client each time.
 
 ```text
-MCP client -> HTTPS mcp.example.com -> Cloudflare Tunnel
+Browser owner   -> HTTPS mcp.example.com -> Cloudflare Tunnel
+                                      -> 127.0.0.1:8792 -> Web UI session -> /api tools
+MCP client      -> HTTPS mcp.example.com -> Cloudflare Tunnel
                                       -> 127.0.0.1:8792 -> owner OAuth -> MCP tools
 Local CLI client -> chaoxing call
                                       -> 127.0.0.1:8793 -> local bearer -> same tools
@@ -13,9 +15,23 @@ Local CLI client -> chaoxing call
                                                               Chaoxing over HTTPS
 ```
 
-Only port 8792 enters the tunnel. Port 8793 is private to the host; it carries authenticated local calls, not public OAuth traffic. `configure` writes private installation state. `query` directly uses the upstream client and is useful for isolated diagnostics; it should not run concurrently against state owned by `serve`.
+Only port 8792 enters the tunnel. Port 8793 is private to the host; it carries authenticated local calls, not public OAuth or browser traffic. `configure` writes private installation state. `query` directly uses the upstream client and is useful for isolated diagnostics; it should not run concurrently against state owned by `serve`.
 
-Two optional layers are off by default. An egress pool (`internal/egress`) routes upstream traffic through configured SOCKS5 endpoints with round-robin selection, transport-failure cooldown and a permanent direct fallback; it learns health only from real request outcomes and never probes in the background. When proxies are configured, `internal/statestore` persists endpoint health in SQLite; no other state uses the database. Additional accounts mount under `/t/<id>/` with independent sealed credentials, cookie jars, caches, query queues and OAuth state. The process-wide transport pool, endpoint-health database and outbound budget are deliberately shared; they contain no account session or coursework data. This is logical account isolation within one trusted process, not process or network-egress isolation.
+Two optional layers are off by default. An egress pool (`internal/egress`) routes upstream traffic through configured SOCKS5 endpoints with account-sticky selection, transport-failure cooldown and a direct fallback while the selected endpoint cools; it learns health only from real request outcomes and never probes in the background. An account assignment is stable across restarts and is removed only when that endpoint is no longer configured. When proxies or activity capture are enabled, `internal/statestore` persists endpoint health, sticky assignments and sanitized captures in SQLite. Additional accounts mount under `/t/<id>/` with independent sealed credentials, cookie jars, caches, query queues and OAuth state. The process-wide transport pool, endpoint-health database and outbound budget are deliberately shared; they contain no account session or coursework credentials. This is logical account isolation within one trusted process, not process or network-egress isolation.
+
+Upstream requests also pass a per-account pacing boundary. The default minimum interval is 650 ms with 35% random jitter; redirects and retries use the same boundary. The watcher adds randomized 750 ms–3 s gaps between class polls and 5–25 s before automatic sign-in. These values are risk controls, not throughput controls.
+
+## Owner Web UI
+
+`internal/webui` embeds the production Vite bundle from `web/src` and mounts it at `/` and `/app`. It is a separate operator identity from MCP OAuth: login verifies the same owner PBKDF2-SHA256 hash, then issues a random opaque session ID that exists only as a SHA-256 key in memory. The cookie uses the `__Host-` prefix, `Secure`, `HttpOnly`, `SameSite=Strict`, an eight-hour absolute TTL and a thirty-minute idle TTL, and the in-memory session is also bound to the client remote address. Login prunes expired sessions and caps active sessions at 128. Every state-changing API request requires both the cookie and an `X-Chaoxing-CSRF` header matching a separate CSRF cookie. Login attempts are bounded to ten per minute and thirty per fifteen minutes.
+
+The UI API has no parallel capability definition. `/api/tools/call` only accepts names from `internal/operation`, and execution is dispatched to the selected root or tenant account executor. API bodies are capped at 128 KiB, tool calls receive a ninety-second context, and errors use safe fault codes. The static bundle has a strict CSP, `nosniff`, no-referrer, HSTS, a restrictive `Permissions-Policy`, `Cross-Origin-Opener-Policy: same-origin`, `frame-ancestors 'none'`, and immutable caching for hashed assets. The bundle contains no analytics or third-party tracker; its CSP permits connections to the same origin only.
+
+The UI intentionally does not expose arbitrary file browsing, shell execution, URL fetching, raw cookies, hidden form values or upstream HTML. Dangerous operations such as final submission and sign-in remain explicit button actions with confirmation.
+
+## Production activity capture
+
+Watcher capture is an evidence layer for still-unverified classroom H5 protocols, especially practice/type-42 flows. Each observation is deduplicated by account and `course:class:activity`, and stores activity identity, state, first/last-seen timestamps, update count and sanitized JSON projections. A practice page can be fetched once through `get_activity_page`; page evidence is never overwritten. The Web UI lists captures without page payloads and fetches sanitized page JSON only through an explicit opt-in query. The store rejects oversized payloads, omits hidden values, cookies, credentials and raw bodies, and prunes entries after a configurable retention period (default seven days). Capture failures do not interrupt watcher operation.
 
 ## Concurrency and resource budgets
 
@@ -33,9 +49,9 @@ The HTTP transport is shared, not the cookie jar. Raw reads retain the same allo
 
 ## SQLite scope and durability
 
-SQLite stores non-authoritative endpoint health, not accounts, assignments, tokens or cookies. One reusable connection serializes short indexed upserts and deletes. This workload does not justify separate reader pools, sharding, a write-behind queue or another service. Healthy rows are deleted; normal requests that do not change health do not write. Replaced endpoints can leave stale rows, which are ignored unless their exact endpoint key is configured again.
+SQLite stores non-authoritative endpoint health, sticky egress assignments and sanitized activity captures—not accounts, assignments, tokens or cookies. One reusable connection serializes short indexed upserts and deletes. This workload does not justify separate reader pools, sharding, a write-behind queue or another service. Healthy rows are deleted; normal requests that do not change health do not write. Replaced endpoints can leave stale rows, which are ignored unless their exact endpoint key is configured again.
 
-The store uses WAL with `synchronous=NORMAL`, a one-second busy timeout and two-second operation contexts. Automatic checkpointing starts at 256 pages; `journal_size_limit=4 MiB` limits retained journal size after resets, not an absolute WAL file-size cap. Schema creation, shape validation and `user_version` update commit atomically. The existing schema remains version 1, so no data migration or OAuth reauthorization is required. NORMAL can lose recent health updates on power failure; this is acceptable for reconstructible health, not an authorization-store policy.
+The store uses WAL with `synchronous=NORMAL`, a one-second busy timeout and two-second operation contexts. Automatic checkpointing starts at 256 pages; `journal_size_limit=4 MiB` limits retained journal size after resets, not an absolute WAL file-size cap. Schema creation, shape validation and `user_version` update commit atomically. Schema v3 adds proxy assignments and activity captures; older health-only databases migrate in place and no OAuth reauthorization is required. NORMAL can lose recent health/capture updates on power failure; this is acceptable for reconstructible operational evidence, not an authorization-store policy.
 
 The DB is created/chmodded to 0600 before sidecars, database symlinks are rejected, and filenames are URI-escaped. Existing parent permissions and trusted exclusive ownership still matter. Keep one daemon per store on a local filesystem. Do not copy a live WAL main file as a consistent backup; use SQLite's backup API or stop the owner first. Benchmarks in `internal/statestore` are synthetic local-write measurements, not upstream throughput or deployment capacity claims.
 
