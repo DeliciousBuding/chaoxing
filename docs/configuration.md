@@ -41,7 +41,7 @@ ingress:
   - service: http_status:404
 ```
 
-Keep tunnel credentials outside this repository. Never add an ingress rule or port forward for 8793, and never expose both listeners. Configure the MCP client with `https://mcp.example.com/mcp`, then complete owner login and consent. Read tools require `chaoxing.read`; remote sign-in additionally requires `chaoxing.sign`.
+Keep tunnel credentials outside this repository. Never add an ingress rule or port forward for 8793, and never expose both listeners. Configure the MCP client with `https://mcp.example.com/mcp`, then complete owner login and consent. Read tools require `chaoxing.read`; answer generation requires `chaoxing.answer`; sign-in requires `chaoxing.sign`; work submission requires `chaoxing.work.submit`; upload requires `chaoxing.upload`; face operations require `chaoxing.face`.
 
 Dynamic client registration (DCR) is enabled by default. CIMD is opt-in with `CHAOXING_ENABLE_CIMD=true`; enable it only after verifying that the host can fetch HTTPS metadata from `chatgpt.com`. Discovery advertises the selected capability truthfully. DCR does not require fetching that external metadata.
 
@@ -75,6 +75,7 @@ The watcher turns the class activity feed and optional course-group sign-in card
   "watch": {
     "enabled": true,
     "auto_sign": true,
+    "auto_answer": false,
     "interval_seconds": 60,
     "interval_jitter_percent": 10,
     "repeat_seconds": 120,
@@ -108,7 +109,8 @@ The watcher turns the class activity feed and optional course-group sign-in card
 Bounds and behavior:
 
 - `group_activities` defaults to false. When true, `list_activities` and the watcher also read Easemob course-group history, parse `attachmentType=15` course cards, and merge them with the class feed by `course_id:class_id:activity_id`. The group list is cached for 10 minutes, at most 20 groups are scanned, and parsed cards are cached for 15 seconds to avoid a fixed high-rate request pattern. Group failures produce partial coverage or a safe watcher log; they do not erase successful class-feed rows.
-- `auto_sign` defaults to false. When true, normal and location activities are attempted once. Password and gesture activities are attempted only when the matching class has a nonempty `sign_code.code`. A slider-captcha response is solved automatically when `captcha_solver` is configured; otherwise it returns `CAPTCHA_REQUIRED`, sends one alert, and uses the manual MCP tools. QR activities alert because they require the operator-scanned raw payload in `sign_activity`; photo and face activities remain alert-only.
+- `auto_answer` defaults to false. When true, an active `kind:"answer"` activity is claimed once through `answer_activity`; failed attempts do not resubmit and only repeat the alert.
+- `auto_sign` defaults to false. When true, normal and location activities are attempted once. Password and gesture activities are attempted only when the matching class has a nonempty `sign_code.code`. A slider-captcha response is solved automatically when `captcha_solver` is configured; otherwise it returns `CAPTCHA_REQUIRED`, sends one alert, and uses the manual MCP tools. QR activities alert because they require the operator-scanned raw payload in `sign_activity`; the watcher also leaves photo and face alert-only. Explicit `upload_file`, `sign_activity` and `sign_activity_with_face` tools support those flows when the operator supplies the object IDs.
 - `interval_seconds` is at least 30 (default 60), with `interval_jitter_percent` randomized around it (default 10, maximum 25). Each poll uses the account-bounded query queue.
 - `repeat_seconds` defaults to 120 and must be at least 30; `max_repeats` defaults to 5 and is capped at 20. Manual reminders repeat only while the activity is still `signable`.
 - `lead_seconds` defaults to 120 and is capped at 600. A class schedule is polled from `start - lead_seconds` through `end`; set it to `-1` to poll only from the exact start.
@@ -123,7 +125,15 @@ The watcher logs class failures by safe fault code, continues with the other cla
 
 ## Optional slider-captcha solver
 
-Set a private top-level `captcha_solver` object to let `sign_activity` resolve slider challenges automatically. The provider runs outside the Go binary, so the daemon stays small enough for embedded hosts:
+Set a private top-level `captcha_solver` object to let `sign_activity` resolve slider challenges automatically. `provider:"local"` uses the built-in no-network image-pair detector:
+
+```json
+{
+  "captcha_solver": {"provider": "local"}
+}
+```
+
+For the external DamaGou provider, the provider runs outside the Go binary, so the daemon stays small enough for embedded hosts:
 
 ```json
 {
@@ -135,7 +145,41 @@ Set a private top-level `captcha_solver` object to let `sign_activity` resolve s
 }
 ```
 
-`provider` currently accepts `damagou`. Provide exactly one of `user_key`, `user_key_file`, or `user_key_env`; `user_key_file` is recommended so the secret stays outside the main JSON. Use an absolute path to a root-only file containing only the key. `timeout_seconds` defaults to 60. A solved challenge is submitted through the same `answer_sign_captcha` protocol and followed by exactly one sign retry. If the provider fails, the safe fault code is `CAPTCHA_SOLVER_FAILED` and the manual `get_sign_captcha` -> `answer_sign_captcha` -> `sign_activity` flow remains available. A tenant can contain its own `captcha_solver` object.
-## Manual answer drafts
+`provider` accepts `local` or `damagou`. DamaGou requires exactly one of `user_key`, `user_key_file`, or `user_key_env`; `user_key_file` is recommended so the secret stays outside the main JSON. Use an absolute path to a root-only file containing only the key. `timeout_seconds` defaults to 60. A solved challenge is submitted through the same `answer_sign_captcha` protocol and followed by exactly one sign retry. If the provider fails, the safe fault code is `CAPTCHA_SOLVER_FAILED` and the manual `get_sign_captcha` -> `answer_sign_captcha` -> `sign_activity` flow remains available. A tenant can contain its own `captcha_solver` object.
 
-Manual answer support needs no extra configuration. The first `upsert_work_draft`, `list_work_drafts`, `delete_work_draft` or `export_work_draft` call creates `<state_dir>/work-drafts.json` with mode 0600. Drafts are validated against the current work question set, persisted atomically, and exported as both a `pyFlag=1` save payload and a final submit payload. The daemon never posts either payload upstream.
+## Answer providers, uploads and face enrollment
+
+Enable the answer chain with a private top-level `answer` object (tenants may define their own). Providers run in configured order; successful high-confidence answers are cached in `<state_dir>/answer-cache.json`:
+
+```json
+{
+  "answer": {
+    "enabled": true,
+    "min_confidence": 0.8,
+    "providers": [
+      {
+        "type": "tiku",
+        "base_url": "https://tiku.example.com/query",
+        "api_key_file": "/etc/chaoxing/tiku.key",
+        "timeout_seconds": 30
+      },
+      {
+        "type": "llm",
+        "base_url": "https://api.example.com/v1/chat/completions",
+        "api_key_env": "CHAOXING_LLM_KEY",
+        "model": "gpt-4o-mini",
+        "timeout_seconds": 45
+      }
+    ]
+  }
+}
+```
+
+`type:"llm"` accepts any OpenAI-compatible non-streaming chat-completions endpoint. `type:"tiku"` posts `{question,type,options}` and accepts either TikuAdapter-style `answer.bestAnswer` or `{data:{answer,confidence}}`. API keys may be supplied through at most one of `api_key`, `api_key_file`, or `api_key_env`; file/env forms are preferred. Keys are never returned by tools.
+
+For a global assignment, call `get_assignment_questions` first; it follows the signed task entry to the editable work page and returns the `job_id` accepted by `answer_work`. For knowledge-point work, call `list_work_jobs` and `get_work_questions` instead. `answer_work` only generates and saves local drafts, and requires both `chaoxing.answer` and `chaoxing.work`. `save_work` and `submit_work` remain explicit tools and require the `chaoxing.work.submit` scope; final submission additionally requires every question to have a draft.
+
+Stage uploads directly under `<state_dir>/uploads/`. `upload_file` accepts only a filename, rejects path separators, and limits content to 5 MiB. It returns the pan object ID needed by photo sign-in or face enrollment. Face enrollment requires `chaoxing.face`; face sign-in requires both `chaoxing.face` and `chaoxing.sign`.
+## Local draft state
+
+Draft support needs no extra provider configuration. The first draft operation creates `<state_dir>/work-drafts.json` with mode 0600. Manual and generated answers share this validated, atomically persisted store. Export remains local; only the explicit `save_work` and `submit_work` tools post upstream.

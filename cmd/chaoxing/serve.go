@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -55,15 +56,15 @@ const maxTenants = 32
 // session and upstream client. The client is created lazily so unused tenants
 // cost nothing on memory-constrained hosts.
 type tenantRuntime struct {
-	cfg       tenantConfig
-	pool      *egress.Pool
-	once      sync.Once
-	client    *upstream.Client
-	err       error
-	watch     *watch.Runner
-	draftOnce sync.Once
-	drafts    *workdraft.Store
-	draftErr  error
+	cfg      tenantConfig
+	pool     *egress.Pool
+	once     sync.Once
+	client   *upstream.Client
+	err      error
+	watch    *watch.Runner
+	execOnce sync.Once
+	execute  func(context.Context, string, map[string]any) (any, error)
+	execErr  error
 }
 
 func (t *tenantRuntime) upstreamClient() (*upstream.Client, error) {
@@ -79,38 +80,100 @@ func (t *tenantRuntime) upstreamClient() (*upstream.Client, error) {
 	return t.client, t.err
 }
 
-func (t *tenantRuntime) workDrafts() (*workdraft.Store, error) {
-	t.draftOnce.Do(func() {
+func (t *tenantRuntime) operationExecutor() (func(context.Context, string, map[string]any) (any, error), error) {
+	t.execOnce.Do(func() {
 		client, err := t.upstreamClient()
 		if err != nil {
-			t.draftErr = err
+			t.execErr = err
 			return
 		}
-		t.drafts, t.draftErr = workdraft.Open(filepath.Join(t.cfg.StateDir, "work-drafts.json"), client)
+		t.execute, t.execErr = operationExecutor(client, t.cfg.StateDir, t.cfg.Answer)
 	})
-	return t.drafts, t.draftErr
+	return t.execute, t.execErr
 }
 
 func isWorkDraftOperation(name string) bool {
 	switch name {
-	case "upsert_work_draft", "list_work_drafts", "delete_work_draft", "export_work_draft":
+	case "answer_work", "upsert_work_draft", "list_work_drafts", "delete_work_draft", "export_work_draft":
 		return true
 	default:
 		return false
 	}
 }
 
-func operationExecutor(client *upstream.Client, stateDir string) (func(context.Context, string, map[string]any) (any, error), error) {
+func operationExecutor(client *upstream.Client, stateDir string, answers *answerConfig) (func(context.Context, string, map[string]any) (any, error), error) {
 	drafts, err := workdraft.Open(filepath.Join(stateDir, "work-drafts.json"), client)
 	if err != nil {
 		return nil, err
 	}
+	engine, err := answers.engine(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	drafts.SetAnswerer(engine)
 	return func(ctx context.Context, name string, args map[string]any) (any, error) {
 		if isWorkDraftOperation(name) {
 			return operation.Execute(ctx, name, args, drafts.Call)
 		}
+		if name == "save_work" || name == "submit_work" {
+			return operation.Execute(ctx, name, args, func(ctx context.Context, _ string, args map[string]any) (any, error) {
+				return submitPreparedWork(ctx, client, drafts, name, args)
+			})
+		}
+		if name == "upload_file" {
+			return operation.Execute(ctx, name, args, func(ctx context.Context, _ string, args map[string]any) (any, error) {
+				return uploadPreparedFile(ctx, client, stateDir, args)
+			})
+		}
 		return operation.Execute(ctx, name, args, client.Call)
 	}, nil
+}
+
+func submitPreparedWork(ctx context.Context, client *upstream.Client, drafts *workdraft.Store, action string, args map[string]any) (any, error) {
+	save, submit, questions, answered, err := drafts.Payloads(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	if questions == 0 {
+		return nil, &upstream.Fault{Code: "WORK_UNAVAILABLE", Message: "work has no questions"}
+	}
+	if action == "save_work" && answered == 0 {
+		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "save_work requires at least one draft"}
+	}
+	if action == "submit_work" && answered != questions {
+		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "submit_work requires every question to have a draft"}
+	}
+	payload := save
+	if action == "submit_work" {
+		payload = submit
+	}
+	result, err := client.SubmitWorkPayload(ctx, strings.TrimSuffix(action, "_work"), payload)
+	if err != nil {
+		return nil, err
+	}
+	result.Action = map[string]string{"save_work": "save", "submit_work": "submit"}[action]
+	return map[string]any{"result": result, "questions": questions, "answered": answered, "complete": true, "coverage": "upstream_work_submission", "fetched_at": result.FetchedAt}, nil
+}
+
+func uploadPreparedFile(ctx context.Context, client *upstream.Client, stateDir string, args map[string]any) (any, error) {
+	filename := strings.TrimSpace(fmt.Sprint(args["file_name"]))
+	if filename == "" || filepath.Base(filename) != filename || strings.Contains(filename, "/") || strings.Contains(filename, `\`) {
+		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "upload file_name must be a filename without paths"}
+	}
+	path := filepath.Join(stateDir, "uploads", filename)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "upload file is unavailable or is not a regular file"}
+	}
+	content, err := os.ReadFile(path)
+	if err != nil || len(content) == 0 || len(content) > 5*1024*1024 {
+		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "upload file is unavailable or exceeds 5 MiB"}
+	}
+	result, err := client.UploadFile(ctx, filename, content)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"result": result, "complete": true, "coverage": "chaoxing_pan_upload", "fetched_at": result.FetchedAt}, nil
 }
 
 func validateTenants(c config) error {
@@ -163,18 +226,11 @@ func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool
 		ta.RegisterPathDiscovery(mux)
 		runtimes = append(runtimes, tr)
 		texec := func(ctx context.Context, name string, args map[string]any) (any, error) {
-			cl, e := tr.upstreamClient()
+			exec, e := tr.operationExecutor()
 			if e != nil {
 				return nil, e
 			}
-			if isWorkDraftOperation(name) {
-				drafts, e := tr.workDrafts()
-				if e != nil {
-					return nil, e
-				}
-				return operation.Execute(ctx, name, args, drafts.Call)
-			}
-			return operation.Execute(ctx, name, args, cl.Call)
+			return exec(ctx, name, args)
 		}
 		tm.Handle("/mcp", ta.ProtectMCP(mcphttp.NewWithVersion(texec, version)))
 		mux.Handle("/t/"+tc.ID+"/", http.StripPrefix("/t/"+tc.ID, tm))
@@ -202,7 +258,7 @@ func newWatcher(c watchConfig, stateDir string, client *upstream.Client) (*watch
 	if interval <= 0 {
 		interval = time.Minute
 	}
-	return watch.New(watch.Config{
+	cfg := watch.Config{
 		Interval:              interval,
 		IntervalJitterPercent: c.IntervalJitterPercent,
 		RepeatEvery:           time.Duration(c.RepeatSeconds) * time.Second,
@@ -212,7 +268,12 @@ func newWatcher(c watchConfig, stateDir string, client *upstream.Client) (*watch
 		AutoSign:              c.AutoSign,
 		Classes:               c.Classes,
 		StatePath:             filepath.Join(stateDir, "watch-state.json"),
-	}, client, sender, client)
+	}
+	var answerer []watch.AnswerActivitySource
+	if c.AutoAnswer {
+		answerer = append(answerer, client)
+	}
+	return watch.New(cfg, client, sender, client, answerer...)
 }
 
 func serve() error {
@@ -252,7 +313,7 @@ func serve() error {
 	if e != nil {
 		return e
 	}
-	rootExecute, e := operationExecutor(x, c.StateDir)
+	rootExecute, e := operationExecutor(x, c.StateDir, c.Answer)
 	if e != nil {
 		return e
 	}

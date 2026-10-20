@@ -459,51 +459,9 @@ func (c *Client) scanCourse(ctx context.Context, co Course) ([]Assignment, bool,
 var timePattern = regexp.MustCompile(`(?:开始时间|截止时间|作答时间)\s*[:：]\s*([0-9-]+\s+[0-9:]+)`)
 
 func (c *Client) detail(ctx context.Context, aid string) (any, error) {
-	if e := c.fetchAssignments(ctx); e != nil {
+	hit, e := c.findAssignment(ctx, aid)
+	if e != nil {
 		return nil, e
-	}
-	var hit *Assignment
-	for i := range c.assignments {
-		if c.assignments[i].ID == aid {
-			hit = &c.assignments[i]
-			break
-		}
-	}
-	if hit == nil {
-		if r, ok := c.extraAssignments[aid]; ok {
-			hit = &r
-		} else {
-			parts := strings.Split(aid, ":")
-			if len(parts) == 3 {
-				courses, e := c.fetchCourses(ctx)
-				if e != nil {
-					return nil, e
-				}
-				for _, co := range courses {
-					if co.ID == parts[0] && co.ClassID == parts[1] {
-						var scanned []Assignment
-						scanned, _, e = c.scanCourse(ctx, co)
-						if e != nil {
-							return nil, e
-						}
-						for _, row := range scanned {
-							if row.ID == aid {
-								r := row
-								hit = &r
-								break
-							}
-						}
-						break
-					}
-				}
-				if r, ok := c.extraAssignments[aid]; ok {
-					hit = &r
-				}
-			}
-		}
-		if hit == nil {
-			return nil, fault("NOT_FOUND", "assignment not found in accessible course feed")
-		}
 	}
 	b, e := c.get(ctx, hit.DetailURL)
 	if e != nil {
@@ -518,7 +476,7 @@ func (c *Client) detail(ctx context.Context, aid string) (any, error) {
 	if strings.Contains(t, "用户登录") {
 		return nil, fault("AUTH_REQUIRED", "assignment needs additional authorization")
 	}
-	out := map[string]any{"assignment": *hit, "summary": t, "fetched_at": time.Now().UTC(), "timezone": "Asia/Shanghai", "start_time": nil, "deadline": nil, "date_precision": "upstream_month_day; year not inferred"}
+	out := map[string]any{"assignment": hit, "summary": t, "fetched_at": time.Now().UTC(), "timezone": "Asia/Shanghai", "start_time": nil, "deadline": nil, "date_precision": "upstream_month_day; year not inferred"}
 	for _, m := range timePattern.FindAllStringSubmatch(t, -1) {
 		if strings.Contains(m[0], "开始") {
 			out["start_time"] = m[1]
@@ -537,6 +495,111 @@ func (c *Client) detail(ctx context.Context, aid string) (any, error) {
 		out["summary_truncated"] = true
 	}
 	return out, nil
+}
+
+func (c *Client) findAssignment(ctx context.Context, aid string) (Assignment, error) {
+	if r, ok := c.extraAssignments[aid]; ok {
+		return r, nil
+	}
+	if c.assignments == nil || time.Since(c.assignmentsAt) >= time.Minute {
+		if e := c.fetchAssignments(ctx); e != nil {
+			return Assignment{}, e
+		}
+	}
+	for _, r := range c.assignments {
+		if r.ID == aid {
+			return r, nil
+		}
+	}
+	parts := strings.Split(aid, ":")
+	if len(parts) != 3 {
+		return Assignment{}, fault("NOT_FOUND", "assignment not found in accessible course feed")
+	}
+	courses, e := c.fetchCourses(ctx)
+	if e != nil {
+		return Assignment{}, e
+	}
+	var scanErr error
+	for _, co := range courses {
+		if co.ID != parts[0] || co.ClassID != parts[1] {
+			continue
+		}
+		rows, _, e := c.scanCourse(ctx, co)
+		if e != nil {
+			scanErr = e
+			continue
+		}
+		for _, row := range rows {
+			if row.ID == aid {
+				return row, nil
+			}
+		}
+	}
+	if r, ok := c.extraAssignments[aid]; ok {
+		return r, nil
+	}
+	if scanErr != nil {
+		return Assignment{}, scanErr
+	}
+	return Assignment{}, fault("NOT_FOUND", "assignment not found in accessible course feed")
+}
+
+// AssignmentQuestions follows the assignment task entry exactly once. The
+// upstream redirects editable assignments to the work answer page; read-only
+// preview/prompt states surface as WORK_UNAVAILABLE rather than empty work.
+// The parsed job and form are cached so answer_work can operate on the same
+// evidence without replaying an unverified knowledge-card API request.
+func (c *Client) AssignmentQuestions(ctx context.Context, args map[string]any) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	assignment, e := c.findAssignment(ctx, str(args, "id"))
+	if e != nil {
+		return nil, e
+	}
+	entry, e := url.Parse(assignment.DetailURL)
+	if e != nil || !safeURL(entry) {
+		return nil, fault("INVALID_URL", "assignment entry URL is not permitted")
+	}
+	q := entry.Query()
+	idParts := strings.Split(assignment.ID, ":")
+	fallbackWorkID := ""
+	if len(idParts) == 3 {
+		fallbackWorkID = idParts[2]
+	}
+	workID := firstNonBlank(q.Get("workId"), q.Get("workid"), fallbackWorkID)
+	if workID == "" {
+		return nil, fault("UPSTREAM_SCHEMA", "assignment entry has no stable work id")
+	}
+	job := WorkJob{
+		ID: workID, CourseID: assignment.CourseID, ClassID: assignment.ClassID,
+		Knowledge: "course assignment", Title: firstNonBlank(assignment.Title, workID),
+		Enc: q.Get("enc"), KToken: "", CPI: q.Get("cpi"), Type: "work",
+		IsPassed: assignment.SubmissionState == "submitted",
+	}
+	b, resp, e := c.authenticatedReadResponse(ctx, "GET", assignment.DetailURL, nil)
+	if e != nil {
+		return nil, e
+	}
+	finalPath := strings.ToLower(resp.Request.URL.Path)
+	if strings.Contains(finalPath, "/work/preview") || strings.Contains(finalPath, "/work/prompt") || strings.Contains(finalPath, "selectworkquestionyipiyue") {
+		return nil, fault("WORK_UNAVAILABLE", "assignment is a read-only preview or already submitted")
+	}
+	set, warnings, e := parseWorkQuestions(b, job)
+	if e != nil {
+		return nil, e
+	}
+	set.Warnings = warnings
+	if c.workJobs == nil {
+		c.workJobs = map[string]WorkJob{}
+	}
+	c.workJobs[workJobKey(job)] = job
+	c.cacheWorkQuestionSet(set)
+	return map[string]any{
+		"assignment": assignment, "job": set.Job, "job_id": set.Job.ID,
+		"questions": set.Questions, "form_data": set.FormData,
+		"warnings": set.Warnings, "complete": true,
+		"coverage": "assignment_task_redirect_work_page", "fetched_at": set.FetchedAt,
+	}, nil
 }
 
 type Exam struct {

@@ -18,16 +18,20 @@ import (
 )
 
 const (
-	scopeRead     = "chaoxing.read"
-	scopeSign     = "chaoxing.sign"
-	scopeWork     = "chaoxing.work"
-	maxClients    = 128
-	maxTokens     = 4096
-	maxPending    = 128
-	maxStateBytes = 2 << 20
-	accessTTL     = 15 * time.Minute
-	refreshTTL    = 30 * 24 * time.Hour
-	clientTTL     = 90 * 24 * time.Hour
+	scopeRead       = "chaoxing.read"
+	scopeSign       = "chaoxing.sign"
+	scopeWork       = "chaoxing.work"
+	scopeAnswer     = "chaoxing.answer"
+	scopeWorkSubmit = "chaoxing.work.submit"
+	scopeUpload     = "chaoxing.upload"
+	scopeFace       = "chaoxing.face"
+	maxClients      = 128
+	maxTokens       = 4096
+	maxPending      = 128
+	maxStateBytes   = 2 << 20
+	accessTTL       = 15 * time.Minute
+	refreshTTL      = 30 * 24 * time.Hour
+	clientTTL       = 90 * 24 * time.Hour
 )
 
 type client struct {
@@ -83,13 +87,22 @@ func normalizeScope(raw string) (string, bool) {
 	seen := map[string]bool{}
 	out := []string{}
 	for _, scope := range strings.Fields(raw) {
-		if scope != scopeRead && scope != scopeSign && scope != scopeWork || seen[scope] {
+		if !validScope(scope) || seen[scope] {
 			return "", false
 		}
 		seen[scope] = true
 		out = append(out, scope)
 	}
 	return strings.Join(out, " "), true
+}
+
+func validScope(scope string) bool {
+	switch scope {
+	case scopeRead, scopeSign, scopeWork, scopeAnswer, scopeWorkSubmit, scopeUpload, scopeFace:
+		return true
+	default:
+		return false
+	}
 }
 
 func scopeSubset(requested, allowed string) bool {

@@ -53,7 +53,8 @@ func TestInitializeListCall(t *testing.T) {
 	for _, v := range list {
 		tool := v.(map[string]any)
 		def, _ := operation.Find(tool["name"].(string))
-		readOnly := operation.RequiredScope(def) == "chaoxing.read"
+		scopes := operation.RequiredScopes(def)
+		readOnly := len(scopes) == 1 && scopes[0] == "chaoxing.read"
 		if tool["annotations"].(map[string]any)["readOnlyHint"] != readOnly || tool["securitySchemes"] == nil || tool["title"] == "" {
 			t.Fatal(tool)
 		}
@@ -67,6 +68,35 @@ func TestInitializeListCall(t *testing.T) {
 	w = rpc(h, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 	if w.Code != 202 || w.Body.Len() != 0 {
 		t.Fatal(w.Code)
+	}
+}
+
+func TestAnswerWorkRequiresAnswerAndWorkScopes(t *testing.T) {
+	calls := 0
+	h := New(func(context.Context, string, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"answers": []any{}, "drafts": []any{}, "complete": true, "coverage": "test"}, nil
+	})
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"answer_work","arguments":{"course_id":"course-1","class_id":"class-1","job_id":"work-1"}}}`
+	for _, scope := range []string{"chaoxing.read", "chaoxing.answer", "chaoxing.work"} {
+		r := httptest.NewRequest("POST", "https://mcp.example.com/mcp", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json, text/event-stream")
+		r = r.WithContext(authz.WithScopes(r.Context(), scope))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if result(t, w)["error"] == nil || calls != 0 {
+			t.Fatal(scope, w.Body.String(), calls)
+		}
+	}
+	r := httptest.NewRequest("POST", "https://mcp.example.com/mcp", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/json, text/event-stream")
+	r = r.WithContext(authz.WithScopes(r.Context(), "chaoxing.answer chaoxing.work"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if calls != 1 || result(t, w)["error"] != nil {
+		t.Fatal(w.Body.String(), calls)
 	}
 }
 

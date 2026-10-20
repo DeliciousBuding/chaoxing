@@ -18,6 +18,8 @@ const (
 )
 
 var mArgPattern = regexp.MustCompile(`mArg=\{(.*?)\};`)
+var workTitleNumberPattern = regexp.MustCompile(`^\s*[0-9]+\s*[.、]\s*`)
+var workTitleTypePattern = regexp.MustCompile(`^[（(【\[]?(?:单选题|多选题|判断题|填空题|简答题|名词解释题?|论述题|计算题|其它|连线题|排序题)[）)】\]]?\s*`)
 
 type WorkJob struct {
 	ID          string `json:"id"`
@@ -132,7 +134,11 @@ func (c *Client) GetWorkQuestions(ctx context.Context, courseID, classID, jobID 
 }
 
 func (c *Client) getWorkQuestions(ctx context.Context, courseID, classID, jobID string) (WorkQuestionSet, error) {
-	job, ok := c.workJobs[workJobKey(WorkJob{CourseID: courseID, ClassID: classID, ID: jobID})]
+	key := workJobKey(WorkJob{CourseID: courseID, ClassID: classID, ID: jobID})
+	if cached, ok := c.workQuestionSets[key]; ok && time.Since(cached.at) < 10*time.Minute {
+		return cached.set, nil
+	}
+	job, ok := c.workJobs[key]
 	if !ok {
 		return WorkQuestionSet{}, fault("NOT_FOUND", "work job is not in the current cache; call list_work_jobs first")
 	}
@@ -152,7 +158,21 @@ func (c *Client) getWorkQuestions(ctx context.Context, courseID, classID, jobID 
 		return WorkQuestionSet{}, err
 	}
 	set.Warnings = warnings
+	c.cacheWorkQuestionSet(set)
 	return set, nil
+}
+
+func (c *Client) cacheWorkQuestionSet(set WorkQuestionSet) {
+	if set.Job.ID == "" {
+		return
+	}
+	if c.workQuestionSets == nil {
+		c.workQuestionSets = map[string]cachedWorkQuestionSet{}
+	}
+	if len(c.workQuestionSets) >= 256 {
+		c.workQuestionSets = map[string]cachedWorkQuestionSet{}
+	}
+	c.workQuestionSets[workJobKey(set.Job)] = cachedWorkQuestionSet{set: set, at: time.Now()}
 }
 
 type knowledgePoint struct {
@@ -274,12 +294,20 @@ func parseWorkQuestions(b []byte, job WorkJob) (WorkQuestionSet, []string, error
 		warnings = append(warnings, "upstream font obfuscation detected; verify decoded titles manually")
 	}
 	formData := map[string]string{}
+	answerTypes := map[string]string{}
 	walk(doc, func(n *html.Node) {
 		if n.Data != "input" {
 			return
 		}
 		name := attr(n, "name")
-		if name == "" || strings.HasPrefix(name, "answer") {
+		if name == "" {
+			return
+		}
+		if strings.HasPrefix(name, "answertype") {
+			answerTypes[strings.TrimPrefix(name, "answertype")] = attr(n, "value")
+			return
+		}
+		if strings.HasPrefix(name, "answer") {
 			return
 		}
 		formData[name] = attr(n, "value")
@@ -297,18 +325,50 @@ func parseWorkQuestions(b []byte, job WorkJob) (WorkQuestionSet, []string, error
 		if tm := first(n, func(v *html.Node) bool { return hasClass(v, "TiMu") }); tm != nil {
 			typeCode = attr(tm, "data")
 		}
+		if typeCode == "" {
+			typeCode = answerTypes[qid]
+		}
 		title := ""
-		if node := first(n, func(v *html.Node) bool { return hasClass(v, "Zy_TItle") }); node != nil {
-			title = chapterShort(text(node))
+		titleNode := first(n, func(v *html.Node) bool {
+			return hasClass(v, "Zy_TItle") || hasClass(v, "newZy_TItle") || (v.Data == "h3" && hasClass(v, "mark_name"))
+		})
+		if titleNode != nil {
+			if node := first(titleNode, func(v *html.Node) bool { return hasClass(v, "qtContent") }); node != nil {
+				title = chapterShort(text(node))
+			} else {
+				title = chapterShort(cleanWorkQuestionTitle(text(titleNode)))
+			}
 		}
 		options := []string{}
-		if ul := first(n, func(v *html.Node) bool { return v.Data == "ul" }); ul != nil {
-			for li := ul.FirstChild; li != nil; li = li.NextSibling {
-				if li.Data != "li" {
-					continue
+		if answer := first(n, func(v *html.Node) bool { return hasClass(v, "stem_answer") }); answer != nil {
+			walk(answer, func(v *html.Node) {
+				if v.Data != "div" || !hasClass(v, "clearfix") {
+					return
 				}
-				if option := strings.TrimSpace(firstNonBlank(attr(li, "aria-label"), text(li))); option != "" {
+				letter := ""
+				content := ""
+				walk(v, func(w *html.Node) {
+					if hasClass(w, "num_option") {
+						letter = strings.TrimSpace(text(w))
+					}
+					if hasClass(w, "answer_p") {
+						content = strings.TrimSpace(text(w))
+					}
+				})
+				if option := strings.TrimSpace(firstNonBlank(letter+" "+content, content)); option != "" {
 					options = append(options, chapterShort(option))
+				}
+			})
+		}
+		if len(options) == 0 {
+			if ul := first(n, func(v *html.Node) bool { return v.Data == "ul" }); ul != nil {
+				for li := ul.FirstChild; li != nil; li = li.NextSibling {
+					if li.Data != "li" {
+						continue
+					}
+					if option := strings.TrimSpace(firstNonBlank(attr(li, "aria-label"), text(li))); option != "" {
+						options = append(options, chapterShort(option))
+					}
 				}
 			}
 		}
@@ -326,6 +386,12 @@ func parseWorkQuestions(b []byte, job WorkJob) (WorkQuestionSet, []string, error
 		formData["pyFlag"] = ""
 	}
 	return WorkQuestionSet{Job: job, Questions: questions, FormData: formData, FetchedAt: time.Now().UTC()}, warnings, nil
+}
+
+func cleanWorkQuestionTitle(s string) string {
+	s = workTitleNumberPattern.ReplaceAllString(strings.TrimSpace(s), "")
+	s = workTitleTypePattern.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 func workQuestionType(code string) string {

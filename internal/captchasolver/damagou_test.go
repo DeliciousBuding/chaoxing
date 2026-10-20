@@ -24,7 +24,7 @@ func TestDamaGouSolvesCoordinate(t *testing.T) {
 		t.Fatal(err)
 	}
 	solver.Endpoint = server.URL
-	x, err := solver.Solve(context.Background(), []byte("image-bytes"))
+	x, err := solver.Solve(context.Background(), []byte("image-bytes"), []byte("cutout-bytes"))
 	if err != nil || x != 120 {
 		t.Fatalf("x=%d err=%v", x, err)
 	}
@@ -43,7 +43,7 @@ func TestDamaGouRejectsBadCoordinate(t *testing.T) {
 		t.Fatal(err)
 	}
 	solver.Endpoint = server.URL
-	if _, err = solver.Solve(context.Background(), []byte("image-bytes")); err == nil || !strings.Contains(err.Error(), "invalid") {
+	if _, err = solver.Solve(context.Background(), []byte("image-bytes"), []byte("cutout-bytes")); err == nil || !strings.Contains(err.Error(), "invalid") {
 		t.Fatalf("err=%v", err)
 	}
 }

@@ -1,6 +1,6 @@
 # Tools and coverage
 
-Chaoxing exposes 23 operations through the CLI, local daemon and HTTP MCP. The operation registry in `internal/operation/registry.go` defines their names, arguments, schemas and required OAuth scopes; `internal/upstream` implements the source reads, activity/group discovery, work-question parsing, sign-in state machine and manual captcha state, while `internal/workdraft` implements local answer drafts.
+Chaoxing exposes 32 operations through the CLI, local daemon and HTTP MCP. The operation registry in `internal/operation/registry.go` defines their names, arguments, schemas and required OAuth scopes; `internal/upstream` implements source reads, activity/group discovery, work parsing, assignment-to-work bridging, activity-page evidence collection, rapid answers, uploads and sign-in; `internal/answer` implements the configurable answer-provider chain; `internal/workdraft` validates and persists local answer drafts.
 
 ## Calls, schemas and transport results
 
@@ -27,7 +27,7 @@ The IDs above are synthetic. Replace them with values returned by the service.
 
 Successful CLI reads write `{"ok":true,"data":...}` to stdout. Exit status is 0 for complete results and 3 for partial results. Exit 3 still includes usable data on stdout; inspect `data.meta` before interpreting it. Failures write `{"ok":false,"error":...}` to stderr and exit 1. A partial result does not also emit a failure envelope.
 
-The local daemon uses JSON success/error envelopes. HTTP MCP uses JSON-RPC and MCP envelopes: successful tool data appears in `structuredContent` and matching JSON text content. Upstream tool failures use `isError:true`, with the safe typed fault under `structuredContent.error` and as JSON text content. MCP transport/request errors remain JSON-RPC errors. Read tools require `chaoxing.read`; `sign_activity` requires `chaoxing.sign` and is advertised as non-read-only, account-bounded behavior (`openWorldHint:false`).
+The local daemon uses JSON success/error envelopes. HTTP MCP uses JSON-RPC and MCP envelopes: successful tool data appears in `structuredContent` and matching JSON text content. Upstream tool failures use `isError:true`, with the safe typed fault under `structuredContent.error` and as JSON text content. MCP transport/request errors remain JSON-RPC errors. Read tools require `chaoxing.read`; answer generation requires `chaoxing.answer`; sign-in requires `chaoxing.sign`; upstream work save/submit requires `chaoxing.work.submit`; upload requires `chaoxing.upload`; face operations require `chaoxing.face`. All write tools are advertised as non-read-only, account-bounded behavior (`openWorldHint:false`).
 
 CLI and MCP business calls share a bounded per-account queue. Queue overflow returns a structured, retryable `RATE_LIMITED` fault; caller cancellation or deadline returns `UPSTREAM_UNAVAILABLE`. Waits consume the existing request budget. See [concurrency budgets](architecture.md#concurrency-and-resource-budgets). The CLI also classifies empty HTTP 429 responses as `RATE_LIMITED`, authorization failures as `AUTH_REQUIRED`, and other non-JSON HTTP failures as `UPSTREAM_UNAVAILABLE`. No raw response body is disclosed. Public MCP transport admission independently reports HTTP 503 with `Retry-After` when saturated.
 
@@ -41,6 +41,7 @@ Arguments are optional unless marked required. CLI operation IDs use two words, 
 | `courses.list` | `list_courses` | none | Accessible course/class rows, wrapped in `result`, with `course_id`, `class_id`, `cpi`, name, teacher, class and `retired`. May use the two-minute course cache; does not select the current semester. |
 | `assignments.list` | `list_assignments` | `course`, `course_id`, `class_id`, `status`, `limit`, `offset` | Global assignment feed without a selector; signed per-class scans with a selector. Returns `items`, source counts, pagination, states and class coverage. |
 | `assignments.get` | `get_assignment` | required `id` | Known assignment summary/task page, with `assignment`, `summary`, date fields and date precision. |
+| `assignments.questions` | `get_assignment_questions` | required `id` | Follows the assignment task entry once, accepts the upstream redirect to the editable work page, parses questions/options/answer types and the hidden form, and caches the resulting `job_id` for `answer_work`. Read-only `preview`/`prompt` states return `WORK_UNAVAILABLE`. |
 | `exams.list` | `list_exams` | none | Available exam-list table: legacy raw rows in `items`, normalized `exams`, and `raw_headers`. Fields map only with matching header evidence; unmapped columns remain raw. Always partial. |
 | `notices.list` | `list_notices` | `limit`, `cursor`, `include_raw` | Verified notice-list read with normalized `items`, `returned`, `next_cursor`, `has_more` and pagination metadata. Raw upstream envelopes and per-item raw fields are excluded unless `include_raw:true`. Always partial; no detail or mark-read calls. |
 | `schedule.get` | `get_schedule` | `week` | Specified teaching week's upstream schedule JSON under `data`, plus `week` and `fetched_at`. Default week 1; completeness is not established. |
@@ -51,13 +52,21 @@ Arguments are optional unless marked required. CLI operation IDs use two words, 
 | `capabilities.list` | `get_capabilities` | none | Contract version, all tool names, operation IDs/descriptions/input/output schemas, and `unsupported_domains`. Complete only for the verified tool catalog. |
 | `chapters.list` | `list_chapters` | required `course_id`, `class_id`, `cpi`; optional `limit`, `offset` | Chapter catalog summaries for an exact enrolled triple, with output pagination and explicitly reported task counts. Always partial; does not enter learning pages or enumerate task cards. |
 | `activities.list` | `list_activities` | `course`, `course_id`, `class_id`, `limit` | Current class activity list, including sign-in activities and the account's own sign-in state. Returns `items` with `kind`, `state`, `user_state`, `sign_type` and `signable`. |
+| `activities.page` | `get_activity_page` | required `course_id`, `class_id`, `activity_id` | Follows only an activity URL already returned by the verified class feed and returns bounded page evidence: final URL, title/text, iframe and script URLs, links, and form field names/types with value-presence flags. Hidden values and raw bodies are withheld. |
 | `works.list` | `list_work_jobs` | required `course_id`, `class_id`, `cpi` | Discovers answer-work cards under course knowledge points. Output is capped at 50 jobs; `enc`, `ktoken` and `cpi` protocol parameters stay in memory. |
 | `works.questions` | `get_work_questions` | required `course_id`, `class_id`, `job_id` | Reads one editable work's questions, options, answer types and hidden form fields. Requires `chaoxing.read`; does not submit. |
+| `works.answer` | `answer_work` | required `course_id`, `class_id`, `job_id` | Queries the configured LLM/tiku provider chain, normalizes answers by question type, persists them as local drafts and reports confidence. Requires both `chaoxing.answer` and `chaoxing.work`; does not submit. |
 | `workdrafts.upsert` | `upsert_work_draft` | required `course_id`, `class_id`, `job_id`, `question_id`, `answer` | Validates the question ID, then atomically saves or updates one local draft. Requires `chaoxing.work`. |
 | `workdrafts.list` | `list_work_drafts` | required `course_id`, `class_id`, `job_id` | Lists local drafts for one work. Requires `chaoxing.work`. |
 | `workdrafts.delete` | `delete_work_draft` | required `course_id`, `class_id`, `job_id`, `question_id` | Deletes one local draft. Requires `chaoxing.work`. |
 | `workdrafts.export` | `export_work_draft` | required `course_id`, `class_id`, `job_id` | Exports current form data plus drafts as `pyFlag=1` save and final submit payloads. Requires `chaoxing.work`; does not POST. |
+| `works.save` | `save_work` | required `course_id`, `class_id`, `job_id` | Posts the current drafts to `/mooc-ans/work/addStudentWorkNew` with `pyFlag=1`. Requires `chaoxing.work.submit`. |
+| `works.submit` | `submit_work` | required `course_id`, `class_id`, `job_id` | Posts the current drafts as the final answer with `pyFlag` empty. Requires every question to have a draft and `chaoxing.work.submit`; this action is not reversible. |
 | `activities.sign` | `sign_activity` | required `course_id`, `class_id`, `activity_id`; optional `latitude`, `longitude`, `address`, `sign_code`, `qr_payload` | Submits one normal, location, QR, password or gesture sign-in, then re-reads attendance state. Password/gesture require `sign_code`; QR requires a raw scanned `qr_payload`. Requires the separate `chaoxing.sign` OAuth scope. |
+| `activities.answer` | `answer_activity` | required `course_id`, `class_id`, `activity_id` | Claims one active classroom rapid-answer activity (`raw_type=4`) through `/pptAnswer/stuAnswer`. Requires `chaoxing.answer`. |
+| `uploads.file` | `upload_file` | required `file_name` | Uploads a file already staged in that account's private `<state_dir>/uploads` directory to the Chaoxing pan. Path separators are rejected. Requires `chaoxing.upload`. |
+| `face.enroll` | `enroll_face` | required `object_id` | Registers an uploaded photo object ID as the account face template. Persistent biometric change; requires `chaoxing.face`. |
+| `face.sign` | `sign_activity_with_face` | required `course_id`, `class_id`, `activity_id`, `face_object_id`; optional coordinates/address | Constructs the device-signed face-liveness result, obtains `faceEnc`, and submits the sign-in. Requires both `chaoxing.face` and `chaoxing.sign`. |
 | `signcaptcha.get` | `get_sign_captcha` | required `course_id`, `class_id`, `activity_id` | Returns the slider background/cutout image URLs and expiry for a challenge created by `sign_activity`. Requires `chaoxing.sign`. |
 | `signcaptcha.answer` | `answer_sign_captcha` | required `course_id`, `class_id`, `activity_id`, `x_position` | Submits one slider coordinate and stores the upstream validation token for the next `sign_activity` retry. Requires `chaoxing.sign`. |
 
@@ -116,9 +125,9 @@ Items contain chapter `number`, `title`, `state` and nullable `pending_tasks`. E
 
 ## Class activities and sign-in state
 
-`activities.list` reads the class activity feed at `https://mobilelearn.chaoxing.com/v2/apis/active/student/activelist` for every selected class, using `showNotStartedActive=0`. When `group_activities` is enabled, it also reads Easemob course-group history, parses only `attachmentType=15` course cards, and merges cards by stable activity ID. It projects only the fields needed to identify an activity and judge whether the account can still act: stable upstream `id`, `title`, course/class identity, `kind` (`signin` for activity types 2 and 74, otherwise `activity`), `state`, `user_state`, sign type, source (`class` or `group`) and group name.
+`activities.list` reads the class activity feed at `https://mobilelearn.chaoxing.com/v2/apis/active/student/activelist` for every selected class, using `showNotStartedActive=0`. When `group_activities` is enabled, it also reads Easemob course-group history, parses only `attachmentType=15` course cards, and merges cards by stable activity ID. It projects stable upstream `id`, `title`, course/class identity, `kind`, `state`, `user_state`, raw type, sign/answer capability, activity URL, source and group name. `kind` maps raw types `2/74` to `signin`, `4` to `answer`, `42` to `practice`, and `19` to `homework`; other types remain `activity`.
 
-`signable` is `true` only for an active sign-in activity whose account state is `unsigned`. It is a hint for alerting, not proof that a submission will succeed. Time values, when present upstream, are returned as UTC `starts_at`/`ends_at`; Chinese upstream times are converted from epoch milliseconds.
+`signable` is `true` only for an active sign-in activity whose account state is `unsigned`; `answerable` is `true` only for an active rapid-answer activity whose account state is `unsigned`. Both are hints, not proof that a submission will succeed. Time values, when present upstream, are returned as UTC `starts_at`/`ends_at`; Chinese upstream times are converted from epoch milliseconds.
 
 Class failures preserve rows from other selected classes and report per-class codes in `coverage_details.classes`; all classes failing returns the first safe fault. A group-feed failure keeps class rows and makes the result partial. `complete:true` means every selected class and the group source returned recognized data. It does not establish account-wide history: the feed is the upstream current-activity window, and `showNotStartedActive=0` excludes future activities. Pagination is output-only and `limit` defaults to 50.
 
@@ -132,17 +141,19 @@ Class failures preserve rows from other selected classes and report per-class co
 - location sign-in (`otherId=4` and location enabled);
 - password sign-in (`otherId=5`) with a nonempty `sign_code`;
 - gesture sign-in (`otherId=3`) with a nonempty `sign_code`;
-- QR sign-in (`otherId=2`) with a raw scanned `qr_payload`.
+- QR sign-in (`otherId=2`) with a raw scanned `qr_payload`;
+- photo sign-in (`otherId=0`, `ifphoto=1`) with a stable `photo_object_id` from `upload_file`;
+- face-verified sign-in (`openCheckFaceFlag=1`) with `sign_activity_with_face` and an enrolled `face_object_id`.
 
 The operation uses the reference Android client's protocol chain: persistent device identity, account identity, `preSign`, `analysis`, `analysis2`, then `stuSignajax`. Query order is preserved rather than alphabetically re-encoded. It sends the stable `deviceCode`, the configured Android-like user agent and the account's upstream identity. Expired sessions trigger the normal one-shot automatic login and retry; official verification requirements are not bypassed.
 
 Location requests may supply `latitude`, `longitude` and `address`. Coordinates must lie inside the activity's published range. The service applies the reference client's independent ±0.00005-degree random offset; if upstream returns `errorLocation`, it retries once with the tightened ±0.00001 offset. Without preset coordinates, it uses the activity's published center with the same jitter. A successful submission is verified through `getAttendInfo`; a still-unsigned state returns `SIGN_REJECTED`.
 
-Password and gesture requests first call the reference `checkSignCode` endpoint. A rejected code returns `SIGN_CODE_REJECTED` before attendance is changed. QR payloads are parsed locally in both reference formats (`SIGNIN:` and URL), checked through `signDetail`, and submitted with the QR `enc` in the reference query order. The service never fetches a QR URL. Photo and face requirements return `UNSUPPORTED`. Remote MCP callers need `chaoxing.sign`; a `chaoxing.read` token receives an insufficient-scope error before upstream is contacted.
+Password and gesture requests first call the reference `checkSignCode` endpoint. A rejected code returns `SIGN_CODE_REJECTED` before attendance is changed. QR payloads are parsed locally in both reference formats (`SIGNIN:` and URL), checked through `signDetail`, and submitted with the QR `enc` in the reference query order. The service never fetches a QR URL. Photo sign-in submits the pan object ID plus the reference `photoResult` JSON. Face sign-in derives `cxcid`/`sc` from the server-issued `clientId`, signs `currentFaceId`, `collectStatus`, `LiveDetectionStatus`, `cxcid` and `cxtime` with MD5, exchanges that result at `check-face-result` for `faceEnc`, then submits through `stuSignajax`. Remote sign callers need `chaoxing.sign`; face sign additionally requires `chaoxing.face`.
 
 ### Slider captcha
 
-When upstream requires a slider captcha, the first `sign_activity` call follows the reference protocol and may receive `validate_<enc2>`. If `captcha_solver` is configured, the service downloads the shade image, asks the provider for one coordinate, submits it through the same result endpoint, and retries the sign exactly once. Solver failures return `CAPTCHA_SOLVER_FAILED`; the manual flow below remains available.
+When upstream requires a slider captcha, the first `sign_activity` call follows the reference protocol and may receive `validate_<enc2>`. If `captcha_solver` is configured, the service downloads both the shade and cutout images, asks the selected provider for one coordinate, submits it through the same result endpoint, and retries the sign exactly once. `provider:"local"` uses the built-in image-pair detector; `damagou` sends only the background to the configured external service. Solver failures return `CAPTCHA_SOLVER_FAILED`; the manual flow below remains available.
 ### Manual slider captcha
 
 When upstream requires a slider captcha, the first `sign_activity` call follows the reference protocol and may receive `validate_<enc2>`. The service stores only the in-memory challenge token, returns `CAPTCHA_REQUIRED`, and does not verify attendance. The caller then:
@@ -154,13 +165,17 @@ answer_sign_captcha(x_position) -> sign_activity
 
 `answer_sign_captcha` submits one x-coordinate in the upstream `-8..280` coordinate space and stores the returned validation token in memory. The next `sign_activity` automatically adds `enc2` and `validate` in the reference query order. A wrong answer returns `SIGN_CAPTCHA_REJECTED`; the caller may fetch a new challenge but the watcher performs at most one solver-backed retry. Challenges expire after 10 minutes and raw `enc2`, `captchaKey`, `iv`, token and validate values are never returned by the tool contract.
 
-## Manual work questions and drafts
+## Work questions, generated answers and submission
 
 Use the exact course/class/cpi triple from `list_courses` with `list_work_jobs`. The operation reads the chapter catalog, then each knowledge point's card catalog, and returns only `type=workid` cards. It checks at most 50 knowledge points and returns at most 50 work jobs; a point failure makes the result partial but preserves other jobs. Protocol parameters needed by the next request are cached in memory and are not part of the public result.
 
 `get_work_questions` requires a `job_id` from the same daemon process. If the daemon restarts, call `list_work_jobs` again to rebuild the in-memory reference. The operation reads the editable `/mooc-ans/api/work` page, recognizes graded/not-created/not-open/ended states, parses question IDs, titles, types, options and hidden form fields, and returns `answerwqbid`. Font-obfuscated pages produce a warning; titles may require manual verification.
 
-`upsert_work_draft` validates the supplied `question_id` against that current question set before writing. Drafts are stored per account in `<state_dir>/work-drafts.json`; state writes are atomic and malformed state fails closed. `export_work_draft` re-reads the current form, combines local answers, and returns both a save payload (`pyFlag=1`) and a final submit payload (`pyFlag=""`). It does not call the upstream submission endpoint, and no tool generates answers automatically.
+`upsert_work_draft` validates the supplied `question_id` against that current question set before writing. Drafts are stored per account in `<state_dir>/work-drafts.json`; state writes are atomic and malformed state fails closed. `export_work_draft` re-reads the current form, combines local answers, and returns both a save payload (`pyFlag=1`) and a final submit payload (`pyFlag=""`) without posting.
+
+`answer_work` runs the configured provider chain in order, normalizes output by question type, and writes successful generated answers into the same validated draft store. Objective answers are converted to option letters; judgement answers are normalized to `true`/`false`; fill-in/short answers retain ordered lines. The result reports provider, confidence and per-question safe warnings. It never invents a random fallback and never submits.
+
+`save_work` posts the prepared form with `pyFlag=1`. `submit_work` posts the final form and refuses to run unless every parsed question has a draft. Both call only `https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew`, preserve the hidden form fields, and require the separate submit scope. Treat `submit_work` as irreversible.
 
 ## Assignment overview and review items
 
@@ -168,7 +183,7 @@ Overview and action items use the same bounded class selection and assignment sc
 
 Overview includes all assignment states. `assignments_complete` reports whether the selected assignment scans completed, while overall `complete` remains false. Actions exclude submitted rows and include unknown rows for review. Filtering happens before the output limit so submitted rows cannot hide pending work. Both preserve class failures and partial data.
 
-These tools cover assignments only. They do not aggregate course exams, chapter summaries, task points or notice-derived actions, and do not claim that local coursework is complete. Use `list_exams` separately for the available exam-list page and `list_chapters` for chapter summaries. General group-message history, inbox, individual task points and folder traversal remain unsupported; activity discovery recognizes only course-group sign-in cards. Chapter summary counts do not provide a task-point API.
+These tools cover assignments only. They do not aggregate course exams, chapter summaries, task points or notice-derived actions, and do not claim that local coursework is complete. Use `list_exams` separately for the available exam-list page and `list_chapters` for chapter summaries. General group-message history, inbox, individual task points, folder traversal and classroom-practice submission remain unsupported; activity discovery recognizes rapid-answer, practice and homework activity kinds, but only rapid-answer participation is implemented. Chapter summary counts do not provide a task-point API.
 
 ## Study digest
 

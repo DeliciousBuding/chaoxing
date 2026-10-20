@@ -179,11 +179,15 @@ func (c *Client) solveSignCaptcha(ctx context.Context, req SignRequest) error {
 	if !ok || challenge.ShadeImage == "" {
 		return fault("CAPTCHA_SOLVER_FAILED", "captcha image is unavailable")
 	}
-	image, err := c.captchaGet(ctx, challenge.ShadeImage, preSignReferer(challenge, ""))
-	if err != nil || len(image) == 0 {
-		return fault("CAPTCHA_SOLVER_FAILED", "captcha image could not be downloaded")
+	background, err := c.captchaGet(ctx, challenge.ShadeImage, preSignReferer(challenge, ""))
+	if err != nil || len(background) == 0 {
+		return fault("CAPTCHA_SOLVER_FAILED", "captcha background could not be downloaded")
 	}
-	x, err := c.config.CaptchaSolver.Solve(ctx, image)
+	cutout, err := c.captchaGet(ctx, challenge.CutoutImage, preSignReferer(challenge, ""))
+	if err != nil || len(cutout) == 0 {
+		return fault("CAPTCHA_SOLVER_FAILED", "captcha cutout could not be downloaded")
+	}
+	x, err := c.config.CaptchaSolver.Solve(ctx, background, cutout)
 	if err != nil || x < -8 || x > 280 {
 		return fault("CAPTCHA_SOLVER_FAILED", "captcha solver returned an invalid coordinate")
 	}

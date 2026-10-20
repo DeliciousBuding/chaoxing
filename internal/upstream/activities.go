@@ -29,6 +29,8 @@ type Activity struct {
 	RawUserStatus int        `json:"raw_user_status"`
 	SignType      string     `json:"sign_type"`
 	Signable      bool       `json:"signable"`
+	Answerable    bool       `json:"answerable"`
+	URL           string     `json:"url,omitempty"`
 	StartsAt      *time.Time `json:"starts_at,omitempty"`
 	EndsAt        *time.Time `json:"ends_at,omitempty"`
 	StartsAtTitle string     `json:"starts_at_title,omitempty"`
@@ -64,6 +66,7 @@ type rawActivity struct {
 	Type       flexInt     `json:"type"`
 	ActiveType flexInt     `json:"activeType"`
 	OtherID    flexInt     `json:"otherId"`
+	URL        string      `json:"url"`
 	Status     flexInt     `json:"status"`
 	UserStatus flexInt     `json:"userStatus"`
 	StartTime  flexInt     `json:"startTime"`
@@ -188,10 +191,7 @@ func (c *Client) fetchActivities(ctx context.Context, co Course) ([]Activity, er
 }
 
 func normalizeActivity(raw rawActivity, co Course, ext string) Activity {
-	kind := "activity"
-	if raw.Type.value == 2 || raw.Type.value == 74 {
-		kind = "signin"
-	}
+	kind := activityKind(raw.Type.value)
 	state := "unknown"
 	switch raw.Status.value {
 	case 1:
@@ -233,12 +233,29 @@ func normalizeActivity(raw rawActivity, co Course, ext string) Activity {
 		RawUserStatus: int(raw.UserStatus.value),
 		Ext:           strings.TrimSpace(ext),
 		Source:        "class",
+		URL:           strings.TrimSpace(raw.URL),
 	}
 	a.SignType = signType(raw.OtherID.value)
 	a.Signable = kind == "signin" && state == "active" && userState == "unsigned"
+	a.Answerable = kind == "answer" && state == "active" && userState == "unsigned"
 	a.StartsAt = msTime(raw.StartTime.value)
 	a.EndsAt = msTime(raw.EndTime.value)
 	return a
+}
+
+func activityKind(rawType int64) string {
+	switch rawType {
+	case 2, 74:
+		return "signin"
+	case 4:
+		return "answer"
+	case 42:
+		return "practice"
+	case 19:
+		return "homework"
+	default:
+		return "activity"
+	}
 }
 
 func signType(otherID int64) string {

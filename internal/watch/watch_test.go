@@ -40,6 +40,17 @@ type fakeSigner struct {
 	err      error
 }
 
+type fakeAnswerer struct {
+	requests [][3]string
+	result   upstream.SignResult
+	err      error
+}
+
+func (f *fakeAnswerer) AnswerActivity(_ context.Context, courseID, classID, activityID string) (upstream.SignResult, error) {
+	f.requests = append(f.requests, [3]string{courseID, classID, activityID})
+	return f.result, f.err
+}
+
 func (f *fakeSigner) SignActivity(_ context.Context, req upstream.SignRequest) (upstream.SignResult, error) {
 	f.requests = append(f.requests, req)
 	return f.result, f.err
@@ -61,6 +72,46 @@ func (f *fakeSender) Send(_ context.Context, m notify.Message) error {
 func signIn(course, class, id string, signable bool) upstream.Activity {
 	start := time.Now()
 	return upstream.Activity{ID: id, CourseID: course, ClassID: class, Course: "Synthetic", Title: "Synthetic sign-in", Kind: "signin", State: "active", UserState: "unsigned", SignType: "normal_or_photo", Signable: signable, StartsAt: &start}
+}
+
+func answerActivity(course, class, id string) upstream.Activity {
+	start := time.Now()
+	return upstream.Activity{ID: id, CourseID: course, ClassID: class, Course: "Synthetic", Title: "Synthetic rapid answer", Kind: "answer", State: "active", UserState: "unsigned", Answerable: true, StartsAt: &start}
+}
+
+func TestWatchAutoAnswersOnce(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{answerActivity("c", "k", "answer-1")}}
+	snd := &fakeSender{}
+	answerer := &fakeAnswerer{result: upstream.SignResult{Method: "answer", State: "answered", Verified: true}}
+	r, err := New(Config{
+		Interval: time.Minute, RepeatEvery: time.Minute, MaxRepeats: 3, AutoAnswer: true,
+		Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json",
+	}, src, snd, nil, answerer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
+	for i := 0; i < 3; i++ {
+		r.Tick(context.Background())
+		now = now.Add(time.Minute)
+	}
+	if len(answerer.requests) != 1 || answerer.requests[0] != [3]string{"c", "k", "answer-1"} {
+		t.Fatalf("%+v", answerer.requests)
+	}
+	if len(snd.sent) != 1 || snd.sent[0].Title != "✅ 学习通自动抢答成功" {
+		t.Fatalf("%+v", snd.sent)
+	}
+	if r.state[key(src.items[0])].Status != "answered" {
+		t.Fatalf("%+v", r.state)
+	}
+}
+
+func TestWatchAutoAnswerRequiresSource(t *testing.T) {
+	_, err := New(Config{Interval: time.Minute, AutoAnswer: true, Classes: []Class{{CourseID: "c", ClassID: "k"}}}, &fakeSource{}, &fakeSender{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "auto answer") {
+		t.Fatal(err)
+	}
 }
 
 func TestWatchAlertsThenRepeatsUntilSigned(t *testing.T) {

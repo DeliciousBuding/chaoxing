@@ -3,20 +3,20 @@ package upstream
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 )
 
 type fakeCaptchaSolver struct {
 	calls   int
 	image   []byte
+	cutout  []byte
 	x       int
 	failure error
 }
 
-func (f *fakeCaptchaSolver) Solve(_ context.Context, image []byte) (int, error) {
+func (f *fakeCaptchaSolver) Solve(_ context.Context, image, cutout []byte) (int, error) {
 	f.calls++
-	f.image = image
+	f.image, f.cutout = image, cutout
 	return f.x, f.failure
 }
 
@@ -31,6 +31,8 @@ func TestSignActivitySolvesSliderCaptcha(t *testing.T) {
 			return response(r, `cx_captcha_function({"token":"image-token","imageVerificationVo":{"shadeImage":"https://captcha.chaoxing.com/shade.jpg","cutoutImage":"https://captcha.chaoxing.com/cutout.jpg"}})`), nil
 		case r.URL.Host == "captcha.chaoxing.com" && r.URL.Path == "/shade.jpg":
 			return response(r, "synthetic-shade-image"), nil
+		case r.URL.Host == "captcha.chaoxing.com" && r.URL.Path == "/cutout.jpg":
+			return response(r, "synthetic-cutout-image"), nil
 		case r.URL.Host == "captcha.chaoxing.com" && r.URL.Path == "/captcha/check/verification/result":
 			if r.URL.Query().Get("textClickArr") != `[{"x":120}]` {
 				t.Fatal(r.URL.RawQuery)
@@ -76,7 +78,7 @@ func TestSignActivitySolvesSliderCaptcha(t *testing.T) {
 	if err != nil || !result.Verified || result.Method != "password" || signCalls != 2 || solver.calls != 1 {
 		t.Fatalf("result=%+v err=%v signCalls=%d solverCalls=%d", result, err, signCalls, solver.calls)
 	}
-	if string(solver.image) != "synthetic-shade-image" || strings.Contains(string(solver.image), "token") {
+	if string(solver.image) != "synthetic-shade-image" || string(solver.cutout) != "synthetic-cutout-image" {
 		t.Fatalf("solver image=%q", solver.image)
 	}
 }

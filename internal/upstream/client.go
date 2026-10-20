@@ -97,6 +97,15 @@ func SafeFault(err error) *Fault {
 
 		f.Category = "upstream_state"
 		f.Message = "The work is not currently available for manual answering."
+	case "WORK_SUBMIT_REJECTED":
+		f.Category = "upstream_state"
+		f.Message = "The upstream work save/submit was not accepted."
+	case "ANSWER_REJECTED":
+		f.Category = "upstream_state"
+		f.Message = "The classroom answer activity was not accepted."
+	case "UPLOAD_REJECTED", "FACE_ENROLL_REJECTED", "FACE_CHECK_REJECTED":
+		f.Category = "upstream_state"
+		f.Message = "The upstream upload or face operation was not accepted."
 	case "UNSUPPORTED":
 		f.Category = "capability"
 		f.Message = "Capability is not implemented."
@@ -121,10 +130,11 @@ type Config struct {
 	CaptchaSolver                         CaptchaSolver
 }
 
-// CaptchaSolver turns a slider background image into an upstream coordinate.
+// CaptchaSolver turns a slider background and cutout pair into an upstream
+// coordinate. External providers may ignore the cutout.
 // Implementations stay outside upstream so protocol and provider code do not mix.
 type CaptchaSolver interface {
-	Solve(ctx context.Context, image []byte) (int, error)
+	Solve(ctx context.Context, background, cutout []byte) (int, error)
 }
 type SavedCookies struct {
 	URL     string         `json:"url"`
@@ -151,7 +161,13 @@ type Client struct {
 	imActivities      []Activity
 	imActivitiesAt    time.Time
 	workJobs          map[string]WorkJob
+	workQuestionSets  map[string]cachedWorkQuestionSet
 	captchaChallenges map[string]signCaptchaChallenge
+}
+
+type cachedWorkQuestionSet struct {
+	set WorkQuestionSet
+	at  time.Time
 }
 
 func New(c Config) (*Client, error) {
@@ -290,6 +306,42 @@ func (c *Client) raw(ctx context.Context, method, rawurl string, form url.Values
 	}
 	return b, resp, nil
 }
+func (c *Client) rawWrite(ctx context.Context, method, rawurl string, body io.Reader, contentType string) ([]byte, *http.Response, error) {
+	u, e := url.Parse(rawurl)
+	if e != nil || (!safeURL(u) && u.String() != workSubmitAPI) {
+		return nil, nil, fault("INVALID_URL", "upstream URL not permitted")
+	}
+	r, e := http.NewRequestWithContext(ctx, method, rawurl, body)
+	if e != nil {
+		return nil, nil, e
+	}
+	r.Header.Set("User-Agent", c.userAgent())
+	if contentType != "" {
+		r.Header.Set("Content-Type", contentType)
+	}
+	resp, e := c.http.Do(r)
+	if e != nil {
+		if errors.Is(e, admission.ErrFull) {
+			return nil, nil, fault("RATE_LIMITED", "shared outbound capacity exhausted")
+		}
+		return nil, nil, fault("UPSTREAM_UNAVAILABLE", "upstream transport failed")
+	}
+	defer resp.Body.Close()
+	b, e := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024+1))
+	if e != nil {
+		return nil, resp, fault("UPSTREAM_UNAVAILABLE", "response read failed")
+	}
+	if len(b) > 4*1024*1024 {
+		return nil, resp, fault("RESPONSE_TOO_LARGE", "upstream response exceeds limit")
+	}
+	if e = c.save(resp); e != nil {
+		return nil, resp, fault("STATE_WRITE_FAILED", "cannot persist session")
+	}
+	if resp.StatusCode != 200 {
+		return nil, resp, fault("UPSTREAM_HTTP", fmt.Sprintf("upstream HTTP %d", resp.StatusCode))
+	}
+	return b, resp, nil
+}
 func loginRequired(b []byte, r *http.Response) bool {
 	if strings.Contains(r.Request.URL.Host, "passport2.") {
 		return true
@@ -330,30 +382,36 @@ func (c *Client) login(ctx context.Context) error {
 	c.imActivities = nil
 	c.imActivitiesAt = time.Time{}
 	c.workJobs = nil
+	c.workQuestionSets = nil
 	c.captchaChallenges = nil
 	return nil
 }
 func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
-	return c.authenticatedRead(ctx, "GET", u, nil)
+	b, _, e := c.authenticatedReadResponse(ctx, "GET", u, nil)
+	return b, e
 }
 func (c *Client) authenticatedRead(ctx context.Context, method, u string, form url.Values) ([]byte, error) {
+	b, _, e := c.authenticatedReadResponse(ctx, method, u, form)
+	return b, e
+}
+func (c *Client) authenticatedReadResponse(ctx context.Context, method, u string, form url.Values) ([]byte, *http.Response, error) {
 	b, r, e := c.raw(ctx, method, u, form)
 	if e != nil {
-		return nil, e
+		return nil, nil, e
 	}
 	if loginRequired(b, r) {
 		if e = c.login(ctx); e != nil {
-			return nil, e
+			return nil, nil, e
 		}
 		b, r, e = c.raw(ctx, method, u, form)
 		if e != nil {
-			return nil, e
+			return nil, nil, e
 		}
 		if loginRequired(b, r) {
-			return nil, fault("AUTH_REQUIRED", "session rejected after automatic login")
+			return nil, nil, fault("AUTH_REQUIRED", "session rejected after automatic login")
 		}
 	}
-	return b, nil
+	return b, r, nil
 }
 func (c *Client) lock(ctx context.Context) error {
 	if err := c.queries.Acquire(ctx); err != nil {
@@ -409,6 +467,8 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		return c.listAssignments(ctx, args)
 	case "get_assignment":
 		return c.detail(ctx, str(args, "id"))
+	case "get_assignment_questions":
+		return c.AssignmentQuestions(ctx, args)
 	case "list_exams":
 		return c.examList(ctx)
 	case "list_notices":
@@ -427,10 +487,24 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		return c.materials(ctx, args)
 	case "list_activities":
 		return c.activities(ctx, args)
+	case "get_activity_page":
+		return c.ActivityPage(ctx, args)
 	case "list_work_jobs":
 		return c.ListWorkJobs(ctx, args)
 	case "get_work_questions":
 		return c.WorkQuestions(ctx, args)
+	case "answer_activity":
+		result, e := c.answerActivity(ctx, str(args, "course_id"), str(args, "class_id"), str(args, "activity_id"))
+		if e != nil {
+			return nil, e
+		}
+		return map[string]any{"result": result, "complete": true, "coverage": "single_answer_activity", "fetched_at": result.FetchedAt}, nil
+	case "enroll_face":
+		result, e := c.enrollFace(ctx, str(args, "object_id"))
+		if e != nil {
+			return nil, e
+		}
+		return map[string]any{"result": result, "complete": true, "coverage": "face_enrollment", "fetched_at": result.FetchedAt}, nil
 	case "get_sign_captcha":
 		return c.getSignCaptcha(ctx, args)
 	case "answer_sign_captcha":
@@ -440,6 +514,7 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 			CourseID: str(args, "course_id"), ClassID: str(args, "class_id"),
 			ActivityID: str(args, "activity_id"), Address: str(args, "address"),
 			SignCode: str(args, "sign_code"), QRPayload: str(args, "qr_payload"),
+			PhotoObjectID: str(args, "photo_object_id"),
 		}
 		if v, ok := floatArg(args, "latitude"); ok {
 			req.Latitude = &v
@@ -452,6 +527,23 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 			return nil, e
 		}
 		return map[string]any{"result": result, "complete": true, "coverage": "single_activity_signin", "fetched_at": result.FetchedAt}, nil
+	case "sign_activity_with_face":
+		req := SignRequest{
+			CourseID: str(args, "course_id"), ClassID: str(args, "class_id"),
+			ActivityID: str(args, "activity_id"), Address: str(args, "address"),
+			FaceObjectID: str(args, "face_object_id"),
+		}
+		if v, ok := floatArg(args, "latitude"); ok {
+			req.Latitude = &v
+		}
+		if v, ok := floatArg(args, "longitude"); ok {
+			req.Longitude = &v
+		}
+		result, e := c.signActivityWithSolver(ctx, req)
+		if e != nil {
+			return nil, e
+		}
+		return map[string]any{"result": result, "complete": true, "coverage": "single_activity_face_signin", "fetched_at": result.FetchedAt}, nil
 	default:
 		return nil, fault("INVALID_TOOL", "unknown tool")
 	}

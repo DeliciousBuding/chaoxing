@@ -2,8 +2,15 @@
 
 ## Unreleased
 
+- Add `get_activity_page` as a read-only evidence collector for unverified classroom H5 flows. It follows only a URL already returned by the verified activity feed and reports final URL, bounded text, iframe/script/link URLs, form actions and field names/types; hidden values and raw page bytes remain withheld.
+- Add `get_assignment_questions`, a read-only bridge from the global assignment feed into the editable work page. It follows the signed `work/task` entry once, accepts the upstream `work/dowork` redirect, parses the new `questionLi`/`mark_name` and `stem_answer` templates plus hidden `answertype` fields, caches the resulting job for `answer_work`, and reports read-only preview/prompt states as `WORK_UNAVAILABLE`.
+- Add the answer-generation and coursework-submission loop: configurable OpenAI-compatible LLM and TikuAdapter-style providers, local answer cache, question-type normalization, `answer_work`, `save_work` and final `submit_work` behind the new `chaoxing.answer` and `chaoxing.work.submit` scopes. Final submission requires every question to have a draft.
+- Add classroom rapid-answer discovery and participation: activity types 4/19/42 normalize to `answer`/`homework`/`practice`, `answer_activity` claims active type-4 activities through the reference `stuAnswer` endpoint, and the opt-in watcher setting `auto_answer` claims each new rapid answer once.
+- Add photo sign-in, pan upload, face enrollment and headless face sign-in. Uploads are restricted to filenames under each account's private uploads directory; face operations use the new `chaoxing.upload` and `chaoxing.face` scopes.
+- Add a no-network local slider-captcha solver using the shade/cutout image pair; DamaGou remains available as an external fallback.
+- Advertise MCP contract version 14 with 32 tools and seven separately grantable OAuth scopes. Classroom-practice submission remains explicitly unsupported until its H5 submission contract is verified.
 - Reject partially configured ntfy or Gotify notification channels at startup so a mistyped alert destination cannot silently disable one channel.
-- Advertise MCP contract version 11, remove the obsolete automatic-captcha-solver unsupported marker, and explicitly report photo and face sign-in as unsupported capability domains.
+- Advertise MCP contract version 11, remove the obsolete automatic-captcha-solver unsupported marker, and keep capability discovery explicit about unverified classroom-practice submission.
 - Document the agent control matrix, layered authorization/security invariants and independent notification fan-out behavior in the project README and architecture guide.
 - Add password and gesture sign-in using an operator-provided sign code, including reference-compatible code verification, ordered submission, attendance verification and watcher presets.
 - Add QR sign-in with local parsing of both reference payload formats, `signDetail` expiry verification, ordered `enc` submission and no QR URL fetching.

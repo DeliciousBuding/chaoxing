@@ -5,7 +5,7 @@
 
 [简体中文](README.zh-CN.md)
 
-Chaoxing is an agent-first, self-hosted control plane for courses, assignments, exams, notices, schedules, course materials, class sign-in and manual answer preparation. One Go binary provides an OAuth-protected HTTP MCP endpoint and an authenticated local JSON API. Agents can discover capabilities, read course state, submit explicitly scoped sign-ins, and edit local answer drafts without receiving arbitrary URL or command execution powers.
+Chaoxing is an agent-first, self-hosted control plane for courses, assignments, exams, notices, schedules, course materials, class sign-in, rapid answers, answer generation and coursework submission. One Go binary provides an OAuth-protected HTTP MCP endpoint and an authenticated local JSON API. Agents can discover capabilities, read course state, submit explicitly scoped actions, and edit local answer drafts without receiving arbitrary URL or command execution powers.
 
 ## Agent-first control plane
 
@@ -35,6 +35,10 @@ Agents do not receive a general shell, arbitrary URL fetcher, file browser or un
 | `chaoxing.read` | Course, assignment, exam, notice, schedule, material, chapter, activity and work-question reads |
 | `chaoxing.sign` | Normal, location, and operator-coded password/gesture sign-in |
 | `chaoxing.work` | Create, update, list, delete and export local answer drafts |
+| `chaoxing.answer` | Generate work answers through configured providers and claim rapid-answer activities |
+| `chaoxing.work.submit` | Save or finally submit prepared work answers upstream |
+| `chaoxing.upload` | Upload pre-staged files from the private uploads directory |
+| `chaoxing.face` | Enroll and use an account face template for face sign-in |
 
 There is intentionally no generic `write` scope. Refresh tokens can narrow scopes but never widen them. The upstream password and cookie vault use AES-GCM with a separately stored key; the owner OAuth password is stored only as a salted PBKDF2 hash. See [security policy](SECURITY.md).
 
@@ -77,11 +81,11 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 | `configure` | Initialize sealed credentials and a separate owner password hash |
 | `version` | Print the build version |
 
-Use `chaoxing capabilities` for the verified tool catalog and unsupported domains, and `chaoxing schema assignments.list` for the input/output contract. In addition to the original eight tools, bounded study overview, source-backed action items, a bounded study digest and capability discovery are available. Authentication writes session state; read endpoints may use HTTP POST without mutating coursework.
+Use `chaoxing capabilities` for the verified 32-tool catalog and unsupported domains, and `chaoxing schema assignments.list` for the input/output contract. Authentication writes session state; read endpoints may use HTTP POST without mutating coursework.
 
-An optional activity watcher can poll selected classes during their course times, merge sign-in cards published in course-group messages, send operator alerts, and automatically submit normal, location, and password/gesture sign-ins when the matching class has a preset sign code. Per-class preset coordinates, persistent device identity, interval jitter and one-attempt state are built in. If upstream returns a slider-captcha challenge and a solver is configured, `sign_activity` resolves it automatically with one bounded retry; without a solver the watcher alerts once and an agent can complete the manual flow. QR sign-in accepts an operator-scanned raw payload through `sign_activity`; photo and face requirements stay alert-only.
+An optional activity watcher can poll selected classes during their course times, merge sign-in cards published in course-group messages, send operator alerts, automatically submit normal, location, and password/gesture sign-ins when the matching class has a preset sign code, and optionally claim rapid-answer activities once with `auto_answer`. Per-class preset coordinates, persistent device identity, interval jitter and one-attempt state are built in. If upstream returns a slider-captcha challenge and a solver is configured, `sign_activity` resolves it automatically with one bounded retry; without a solver the watcher alerts once and an agent can complete the manual flow. QR sign-in accepts an operator-scanned raw payload. Photo sign-in uses a path-bounded uploaded object ID; face sign-in uses the separately scoped enrolled face template.
 
-Slider recognition is an optional provider boundary configured through `captcha_solver`; the daemon sends only the background image and keeps the provider key private. See [configuration](docs/configuration.md).
+Slider recognition is configured through `captcha_solver`. The built-in local detector uses the background/cutout pair without network access; DamaGou receives only the background and keeps its key private. See [configuration](docs/configuration.md).
 
 Notifications can be sent simultaneously to Feishu webhooks, ntfy and Gotify. Watch state is atomic, private and separate from upstream credentials. Each tenant account can run its own watcher with independent classes, schedules, coordinates, sign codes, state and notification destinations.
 
@@ -95,13 +99,17 @@ The notification layer is a one-way, provider-fan-out boundary:
 
 Enabled channels are tried independently, so one provider outage does not suppress the others. Enabling the watcher without at least one complete channel is a startup error rather than a silent dead alert. Messages carry only operator-facing activity identity and result; credentials and sign codes are never placed in notifications or watch state.
 
-Manual answering is deliberately local-first:
+Answering is deliberately staged and auditable:
 
 ```text
-list_work_jobs -> get_work_questions -> upsert_work_draft -> export_work_draft
+list_assignments -> get_assignment_questions -> answer_work/upsert_work_draft -> save_work/submit_work
+
+or, for knowledge-point work:
+
+list_work_jobs -> get_work_questions -> answer_work/upsert_work_draft -> save_work/submit_work
 ```
 
-The draft store validates question IDs against the current upstream work page, persists answers atomically, and exports both `pyFlag=1` save and final submit request payloads. The service does not generate answers or post those payloads upstream.
+The draft store validates question IDs against the current upstream work page and persists manual or provider-generated answers atomically. `answer_work` never submits; `save_work` posts a temporary save, and `submit_work` requires every question to have a draft before the irreversible final POST.
 
 ```sh
 chaoxing assignments list --course-id <id-from-list-courses> --status pending --json

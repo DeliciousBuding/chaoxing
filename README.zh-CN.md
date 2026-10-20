@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Chaoxing 是面向 Agent 的可自托管学习通控制面，用于查询课程、作业、考试、通知、课表、课程资料，执行显式授权的课堂签到，并管理手动答题草稿。一个 Go 二进制同时提供带 OAuth 认证的 HTTP MCP 接口和带 bearer 认证的本地 JSON API。Agent 可以发现能力、读取课程状态、提交按 scope 授权的签到、编辑本地答案草稿，但拿不到任意 URL、命令执行或文件系统权限。
+Chaoxing 是面向 Agent 的可自托管学习通控制面，用于查询课程、作业、考试、通知、课表、课程资料，执行显式授权的课堂签到、抢答、答案生成与作业提交，并管理本地答题草稿。一个 Go 二进制同时提供带 OAuth 认证的 HTTP MCP 接口和带 bearer 认证的本地 JSON API。Agent 可以发现能力、读取课程状态、提交按 scope 授权的动作、编辑本地答案草稿，但拿不到任意 URL、命令执行或文件系统权限。
 
 ## Agent-first 控制面
 
@@ -30,6 +30,10 @@ Agent 拿到的是完整课程控制面，不是通用 shell、任意 URL fetche
 | `chaoxing.read` | 课程、作业、考试、通知、课表、资料、章节、活动、题目读取 |
 | `chaoxing.sign` | 普通、位置，以及带运营者签到码的密码/手势签到 |
 | `chaoxing.work` | 创建、修改、查看、删除和导出本地答题草稿 |
+| `chaoxing.answer` | 通过配置的 provider 生成作业答案，并参与课堂抢答 |
+| `chaoxing.work.submit` | 将已准备答案暂存或最终提交到上游 |
+| `chaoxing.upload` | 从私有 uploads 目录上传预置文件 |
+| `chaoxing.face` | 注册并使用账号人脸模板完成人脸签到 |
 
 不提供泛化的 `write` scope。refresh token 只能收窄权限，不能扩大。上游密码和 cookie 使用 AES-GCM 加密，密钥单独存放；owner OAuth 密码只保存加盐 PBKDF2 哈希。详见[安全政策](SECURITY.md)。
 
@@ -72,11 +76,11 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 | `configure` | 初始化加密凭据和独立的 owner 密码哈希 |
 | `version` | 输出构建版本 |
 
-原有八个工具之外，增加有界学业总览、来源明确的行动项、有界学业摘要与能力发现。`chaoxing capabilities` 查看已验证能力和未支持范围，`chaoxing schema assignments.list` 查看契约。
+当前提供 32 个已验证工具，包括有界学业总览、行动项、学业摘要、抢答、答案生成、全局作业题目桥接、课堂 H5 证据采集、作业保存/提交、上传和人脸签到。`chaoxing capabilities` 查看能力和未支持范围，`chaoxing schema assignments.list` 查看契约。
 
-可选的课堂活动监视器会按课程时间轮询指定班级，合并课程群消息里的签到卡片，发送运维告警，并自动提交普通、位置，以及配置了签到码的密码/手势签到。内置班级预设坐标、持久化设备身份、轮询抖动和单次尝试状态。上游返回滑块验证码时，若配置了 solver，`sign_activity` 会自动完成一次有界识别与重试；未配置时 watcher 只告警一次，Agent 可人工完成手动链路；二维码签到通过 `sign_activity` 接收运营者扫到的原始 payload；拍照和人脸仍只告警。
+可选的课堂活动监视器会按课程时间轮询指定班级，合并课程群消息里的签到卡片，发送运维告警，并自动提交普通、位置，以及配置了签到码的密码/手势签到；也可用 `auto_answer` 对课堂抢答执行一次性抢占。内置班级预设坐标、持久化设备身份、轮询抖动和单次尝试状态。上游返回滑块验证码时，若配置了 solver，`sign_activity` 会自动完成一次有界识别与重试；未配置时 watcher 只告警一次，Agent 可人工完成手动链路；二维码签到接收运营者扫到的原始 payload；拍照签到使用路径受限上传后的 object ID；人脸签到使用独立 scope 授权的人脸模板。
 
-滑块识别是可选的 provider 边界，通过 `captcha_solver` 配置；daemon 只发送背景图，provider key 保持私有。详见[配置文档](docs/configuration.md)。
+滑块识别通过 `captcha_solver` 配置。内置 local solver 使用背景图和缺口图且不访问网络；打码狗只接收背景图，key 保持私有。详见[配置文档](docs/configuration.md)。
 
 通知可同时发送到飞书 webhook、ntfy 和 Gotify。watch 状态原子写入、私有保存，并与上游凭据分离。每个租户账号可以运行独立 watcher，拥有独立班级、课表、坐标、签到码、状态文件和通知目的地。
 
@@ -90,13 +94,17 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 
 启用多个通道时各自独立投递，一个 provider 故障不会压制其他通道。watcher 启用但没有任何完整通道时直接启动失败，而不是静默丢告警。通知只携带运营者可读的活动身份和结果；凭据和签到码不会进入通知或 watch 状态。
 
-手动答题按本地优先设计：
+答题链路按分阶段、可审计设计：
 
 ```text
-list_work_jobs -> get_work_questions -> upsert_work_draft -> export_work_draft
+list_assignments -> get_assignment_questions -> answer_work/upsert_work_draft -> save_work/submit_work
+
+或对章节任务：
+
+list_work_jobs -> get_work_questions -> answer_work/upsert_work_draft -> save_work/submit_work
 ```
 
-草稿存储会先用当前上游题目页校验 question_id，原子持久化答案，并导出 `pyFlag=1` 的暂存请求与最终提交请求两种 payload。服务不生成答案，也不会把 payload 发送到上游。
+草稿存储先用当前上游题目页校验 question_id，并原子持久化手动或 provider 生成的答案。`answer_work` 不提交；`save_work` 暂存；`submit_work` 要求所有题目都有草稿后才执行不可撤回的最终提交。
 
 ```sh
 chaoxing assignments list --course-id <课程列表返回的ID> --status pending --json

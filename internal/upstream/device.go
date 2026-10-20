@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -46,6 +47,9 @@ type signIdentity struct {
 	FID        string
 	Name       string
 	IMPassword string
+	ClientID   string
+	CXCID      string
+	SC         string
 }
 
 func (c *Client) loadDeviceState() error {
@@ -282,6 +286,7 @@ func (c *Client) fetchSignIdentity(ctx context.Context) (signIdentity, error) {
 					Password string `json:"password"`
 				} `json:"imAccount"`
 			} `json:"accountInfo"`
+			ClientID string `json:"clientId"`
 		} `json:"msg"`
 	}
 	if json.Unmarshal(b, &payload) != nil {
@@ -296,11 +301,58 @@ func (c *Client) fetchSignIdentity(ctx context.Context) (signIdentity, error) {
 	if uid == "" || fid == "" || strings.TrimSpace(payload.Msg.Name) == "" {
 		return signIdentity{}, fault("UPSTREAM_SCHEMA", "account identity not recognized")
 	}
-	c.identity = &signIdentity{
+	clientID := strings.TrimSpace(payload.Msg.ClientID)
+	identity := signIdentity{
 		UID: uid, FID: fid, Name: strings.TrimSpace(payload.Msg.Name),
-		IMPassword: strings.TrimSpace(payload.Msg.AccountInfo.IMAccount.Password),
+		IMPassword: strings.TrimSpace(payload.Msg.AccountInfo.IMAccount.Password), ClientID: clientID,
 	}
+	if clientID != "" {
+		if cxcid, sc, err := decryptDeviceIdentity(clientID); err == nil && cxcid != "" && sc != "" {
+			identity.CXCID, identity.SC = cxcid, sc
+		}
+	}
+	c.identity = &identity
 	return *c.identity, nil
+}
+
+func decryptDeviceIdentity(clientID string) (string, string, error) {
+	cipher, err := base64.StdEncoding.DecodeString(strings.TrimSpace(clientID))
+	if err != nil || len(cipher) == 0 {
+		return "", "", errors.New("client id is not base64")
+	}
+	key, err := x509.ParsePKIXPublicKey(devicePublicKeyBytes())
+	if err != nil {
+		return "", "", err
+	}
+	rsaKey, ok := key.(*rsa.PublicKey)
+	if !ok {
+		return "", "", errors.New("device key is not RSA")
+	}
+	m := new(big.Int).Exp(new(big.Int).SetBytes(cipher), big.NewInt(int64(rsaKey.E)), rsaKey.N)
+	encoded := m.Bytes()
+	if len(encoded) < 11 || encoded[0] != 0 || encoded[1] != 1 {
+		return "", "", errors.New("client id block is invalid")
+	}
+	end := 10
+	for end < len(encoded) && encoded[end] != 0 {
+		end++
+	}
+	if end >= len(encoded) {
+		return "", "", errors.New("client id padding is invalid")
+	}
+	var device struct {
+		CID string `json:"cid"`
+		SC  string `json:"sc"`
+	}
+	if json.Unmarshal(encoded[end+1:], &device) != nil || device.CID == "" || device.SC == "" {
+		return "", "", errors.New("client id payload is invalid")
+	}
+	return device.CID, device.SC, nil
+}
+
+func devicePublicKeyBytes() []byte {
+	b, _ := base64.StdEncoding.DecodeString(deviceInfoPublicKey)
+	return b
 }
 
 var validPackageName = regexp.MustCompile(`^[a-z0-9_]+(\.[a-z0-9_]+)+$`)

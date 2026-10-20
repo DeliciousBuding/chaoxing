@@ -18,11 +18,6 @@ import (
 
 const damaGouEndpoint = "http://api.damagou.top/apiv1/recognize.html"
 
-// Solver converts one slider background image into the upstream x-coordinate.
-type Solver interface {
-	Solve(ctx context.Context, image []byte) (int, error)
-}
-
 // DamaGou is the operator-configured DamaGou client. The userkey is private
 // configuration and is never exposed through tool results.
 type DamaGou struct {
@@ -50,7 +45,8 @@ func NewDamaGou(userKey string) (*DamaGou, error) {
 	}, nil
 }
 
-func (d *DamaGou) Solve(ctx context.Context, image []byte) (int, error) {
+func (d *DamaGou) Solve(ctx context.Context, background, _ []byte) (int, error) {
+	image := background
 	if len(image) == 0 || len(image) > 4*1024*1024 {
 		return 0, errors.New("captcha image size is invalid")
 	}
@@ -94,5 +90,3 @@ func (d *DamaGou) Solve(ctx context.Context, image []byte) (int, error) {
 	}
 	return x, nil
 }
-
-var _ Solver = (*DamaGou)(nil)

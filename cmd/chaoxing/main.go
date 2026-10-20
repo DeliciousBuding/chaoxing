@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/DeliciousBuding/chaoxing/internal/answer"
 	"github.com/DeliciousBuding/chaoxing/internal/captchasolver"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
@@ -35,6 +37,7 @@ type config struct {
 	OwnerPasswordHash string               `json:"owner_password_hash"`
 	Watch             *watchConfig         `json:"watch,omitempty"`
 	CaptchaSolver     *captchaSolverConfig `json:"captcha_solver,omitempty"`
+	Answer            *answerConfig        `json:"answer,omitempty"`
 	Device            *deviceConfig        `json:"device,omitempty"`
 	GroupActivities   bool                 `json:"group_activities,omitempty"`
 	// Proxies optionally routes upstream traffic through SOCKS5 endpoints;
@@ -49,6 +52,7 @@ type config struct {
 type watchConfig struct {
 	Enabled               bool          `json:"enabled"`
 	AutoSign              bool          `json:"auto_sign"`
+	AutoAnswer            bool          `json:"auto_answer"`
 	IntervalSeconds       int           `json:"interval_seconds"`
 	IntervalJitterPercent int           `json:"interval_jitter_percent"`
 	RepeatSeconds         int           `json:"repeat_seconds"`
@@ -78,6 +82,7 @@ type tenantConfig struct {
 	GroupActivities   bool                 `json:"group_activities,omitempty"`
 	Watch             *watchConfig         `json:"watch,omitempty"`
 	CaptchaSolver     *captchaSolverConfig `json:"captcha_solver,omitempty"`
+	Answer            *answerConfig        `json:"answer,omitempty"`
 }
 
 // captchaSolverConfig selects a private recognition provider. The user_key is
@@ -90,12 +95,105 @@ type captchaSolverConfig struct {
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
+type answerConfig struct {
+	Enabled       bool                   `json:"enabled"`
+	Providers     []answerProviderConfig `json:"providers"`
+	MinConfidence float64                `json:"min_confidence,omitempty"`
+}
+
+type answerProviderConfig struct {
+	Type           string `json:"type"`
+	BaseURL        string `json:"base_url,omitempty"`
+	APIKey         string `json:"api_key,omitempty"`
+	APIKeyFile     string `json:"api_key_file,omitempty"`
+	APIKeyEnv      string `json:"api_key_env,omitempty"`
+	Model          string `json:"model,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+func (c *answerConfig) engine(stateDir string) (*answer.Engine, error) {
+	if c == nil || !c.Enabled || len(c.Providers) == 0 {
+		return nil, nil
+	}
+	providers := []answer.Provider{}
+	for _, item := range c.Providers {
+		endpoint, err := publicHTTPURL(item.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		key, err := item.resolveAPIKey()
+		if err != nil {
+			return nil, err
+		}
+		timeout := time.Duration(item.TimeoutSeconds) * time.Second
+		switch strings.TrimSpace(item.Type) {
+		case "llm", "openai":
+			if item.Model == "" {
+				return nil, errors.New("answer llm provider requires model")
+			}
+			providers = append(providers, answer.NewLLM(endpoint, key, item.Model, timeout))
+		case "tiku":
+			providers = append(providers, answer.NewTiku(endpoint, key, timeout))
+		default:
+			return nil, errors.New("answer provider type must be llm or tiku")
+		}
+	}
+	return answer.NewEngine(providers, filepath.Join(stateDir, "answer-cache.json"), c.MinConfidence)
+}
+
+func (p answerProviderConfig) resolveAPIKey() (string, error) {
+	values := []string{p.APIKey, p.APIKeyFile, p.APIKeyEnv}
+	sources := 0
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			sources++
+		}
+	}
+	if sources > 1 {
+		return "", errors.New("answer provider requires at most one api_key source")
+	}
+	switch {
+	case strings.TrimSpace(p.APIKey) != "":
+		return strings.TrimSpace(p.APIKey), nil
+	case strings.TrimSpace(p.APIKeyFile) != "":
+		b, err := os.ReadFile(p.APIKeyFile)
+		if err != nil {
+			return "", errors.New("answer provider api key file is unavailable")
+		}
+		key := strings.TrimSpace(string(b))
+		if key == "" || len(key) > 512 {
+			return "", errors.New("answer provider api key file is invalid")
+		}
+		return key, nil
+	case strings.TrimSpace(p.APIKeyEnv) != "":
+		key := strings.TrimSpace(os.Getenv(p.APIKeyEnv))
+		if key == "" {
+			return "", errors.New("answer provider api key environment variable is empty")
+		}
+		return key, nil
+	default:
+		return "", nil
+	}
+}
+
+func publicHTTPURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return "", errors.New("answer provider base_url must be an absolute HTTP(S) URL")
+	}
+	return u.String(), nil
+}
+
 func (c *captchaSolverConfig) solver() (upstream.CaptchaSolver, error) {
 	if c == nil {
 		return nil, nil
 	}
-	if strings.TrimSpace(c.Provider) != "damagou" {
-		return nil, errors.New("captcha_solver.provider must be damagou")
+	switch strings.TrimSpace(c.Provider) {
+	case "local":
+		return captchasolver.NewLocal(), nil
+	case "damagou":
+	default:
+		return nil, errors.New("captcha_solver.provider must be local or damagou")
 	}
 	userKey, err := c.resolveUserKey()
 	if err != nil {
@@ -287,7 +385,7 @@ func run() error {
 		if e != nil {
 			return e
 		}
-		execute, e := operationExecutor(x, c.StateDir)
+		execute, e := operationExecutor(x, c.StateDir, c.Answer)
 		if e != nil {
 			return e
 		}

@@ -122,7 +122,7 @@ func TestTenantIsolationAndDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	execute, err := operationExecutor(x, c.StateDir)
+	execute, err := operationExecutor(x, c.StateDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

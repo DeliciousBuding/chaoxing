@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DeliciousBuding/chaoxing/internal/answer"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
@@ -22,6 +23,51 @@ func (fakeQuestions) GetWorkQuestions(context.Context, string, string, string) (
 		FormData:  map[string]string{"workId": "1", "answerwqbid": "q1,q2,", "pyFlag": ""},
 		FetchedAt: time.Now().UTC(),
 	}, nil
+}
+
+type deterministicAnswerProvider struct{}
+
+func (deterministicAnswerProvider) Name() string { return "test" }
+func (deterministicAnswerProvider) Query(_ context.Context, q answer.Question) (string, float64, error) {
+	if q.ID == "q1" {
+		return "B", 0.99, nil
+	}
+	return "generated answer", 0.99, nil
+}
+
+func TestAnswerWorkPersistsNormalizedProviderAnswers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "work-drafts.json")
+	store, err := Open(path, fakeQuestions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := answer.NewEngine([]answer.Provider{deterministicAnswerProvider{}}, filepath.Join(t.TempDir(), "answer-cache.json"), 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetAnswerer(engine)
+	args := map[string]any{"course_id": "course-1", "class_id": "class-1", "job_id": "work-1"}
+	out, err := operation.Execute(context.Background(), "answer_work", args, store.Call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := out.(map[string]any)
+	if result["answered"] != float64(2) || result["questions"] != float64(2) || result["complete"] != true {
+		t.Fatalf("%+v", result)
+	}
+	answers := result["answers"].([]any)
+	first := answers[0].(map[string]any)
+	if first["answer"] != "B" || first["source"] != "test" || first["confidence"] != 0.99 {
+		t.Fatalf("%+v", first)
+	}
+	list, err := store.Call(context.Background(), "list_work_drafts", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := list.(map[string]any)["items"].([]Item)
+	if len(items) != 2 {
+		t.Fatalf("%+v", items)
+	}
 }
 
 func TestWorkDraftUpsertListExportDelete(t *testing.T) {

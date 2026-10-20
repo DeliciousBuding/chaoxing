@@ -88,6 +88,46 @@ func TestWorkContractsUseDedicatedScopeAndBoundedAnswer(t *testing.T) {
 	}
 }
 
+func TestAssignmentQuestionsContractIsReadOnlyAndBridgeable(t *testing.T) {
+	d, ok := Find("get_assignment_questions")
+	if !ok || RequiredScope(d) != "chaoxing.read" {
+		t.Fatal(d, ok)
+	}
+	if err := Validate(d, map[string]any{"id": "course-1:class-1:42"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(d, map[string]any{}); err == nil {
+		t.Fatal("missing assignment id accepted")
+	}
+	assignment := map[string]any{"id": "course-1:class-1:42", "course_id": "course-1", "class_id": "class-1", "title": "Synthetic", "course": "Synthetic course", "status": "未交", "submission_state": "pending", "availability_state": "unknown", "raw_status": "未交"}
+	job := map[string]any{"id": "42", "course_id": "course-1", "class_id": "class-1", "knowledge_id": "", "knowledge": "course assignment", "title": "Synthetic", "type": "work", "is_passed": false}
+	question := map[string]any{"id": "q1", "title": "Pick one", "type": "single", "answer_type": "0", "options": []any{"A Alpha", "B Beta"}}
+	out, e := Result("get_assignment_questions", map[string]any{"assignment": assignment, "job": job, "job_id": "42", "questions": []any{question}, "form_data": map[string]any{}, "complete": true, "coverage": "assignment_task_redirect_work_page"})
+	if e != nil || out["meta"].(map[string]any)["status"] != "complete" {
+		t.Fatal(out, e)
+	}
+}
+
+func TestActivityPageContractIsReadOnlyEvidenceCollection(t *testing.T) {
+	d, ok := Find("get_activity_page")
+	if !ok || RequiredScope(d) != "chaoxing.read" {
+		t.Fatal(d, ok)
+	}
+	valid := map[string]any{"course_id": "course-1", "class_id": "class-1", "activity_id": "9301"}
+	if err := Validate(d, valid); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(d, map[string]any{"course_id": "course-1"}); err == nil {
+		t.Fatal("incomplete activity identity accepted")
+	}
+	activity := map[string]any{"id": "9301", "course_id": "course-1", "class_id": "class-1", "course": "Synthetic", "title": "Practice", "kind": "practice", "state": "active", "user_state": "unsigned", "raw_type": 42, "raw_status": 1, "raw_user_status": 0, "signable": false, "answerable": false}
+	page := map[string]any{"activity": activity, "entry_url": "https://mobilelearn.chaoxing.com/page", "final_url": "https://mobilelearn.chaoxing.com/page", "title": "Practice", "text": "evidence", "iframes": []any{}, "scripts": []any{}, "links": []any{}, "forms": []any{}, "body_sha256": strings.Repeat("a", 64)}
+	out, e := Result("get_activity_page", map[string]any{"activity_page": page, "complete": true, "coverage": "single_activity_page_structure"})
+	if e != nil || out["meta"].(map[string]any)["status"] != "complete" {
+		t.Fatal(out, e)
+	}
+}
+
 func TestRegistryCatalogAndNoUnsupportedArguments(t *testing.T) {
 	ids := map[string]bool{}
 	for _, d := range All() {
@@ -124,14 +164,14 @@ func TestStudyDigestContract(t *testing.T) {
 		t.Fatal(out, e)
 	}
 	caps := Capabilities()
-	if caps["contract_version"] != "11" {
+	if caps["contract_version"] != "14" {
 		t.Fatal(caps["contract_version"])
 	}
 	unsupported, ok := caps["unsupported_domains"].([]string)
 	if !ok {
 		t.Fatalf("unsupported_domains has type %T", caps["unsupported_domains"])
 	}
-	for _, domain := range []string{"photo_signin", "face_signin"} {
+	for _, domain := range []string{"classroom_practice_submission"} {
 		found := false
 		for _, actual := range unsupported {
 			if actual == domain {

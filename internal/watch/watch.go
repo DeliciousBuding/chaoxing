@@ -54,6 +54,7 @@ type Config struct {
 	Window                string
 	Lead                  time.Duration
 	AutoSign              bool
+	AutoAnswer            bool
 	Classes               []Class
 	StatePath             string
 }
@@ -72,6 +73,10 @@ type Signer interface {
 	SignActivity(ctx context.Context, req upstream.SignRequest) (upstream.SignResult, error)
 }
 
+type AnswerActivitySource interface {
+	AnswerActivity(ctx context.Context, courseID, classID, activityID string) (upstream.SignResult, error)
+}
+
 type entry struct {
 	LastSent    time.Time `json:"last_sent"`
 	LastAttempt time.Time `json:"last_attempt,omitempty"`
@@ -87,23 +92,31 @@ type stateFile struct {
 }
 
 type Runner struct {
-	cfg    Config
-	source ActivitySource
-	signer Signer
-	sender notify.Sender
-	state  map[string]entry
-	now    func() time.Time
-	random func() float64
+	cfg      Config
+	source   ActivitySource
+	signer   Signer
+	answerer AnswerActivitySource
+	sender   notify.Sender
+	state    map[string]entry
+	now      func() time.Time
+	random   func() float64
 }
 
 var shanghai = time.FixedZone("CST", 8*60*60)
 
-func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer) (*Runner, error) {
+func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer, answerer ...AnswerActivitySource) (*Runner, error) {
 	if source == nil || sender == nil {
 		return nil, errors.New("watch requires an activity source and a notifier")
 	}
 	if cfg.AutoSign && signer == nil {
 		return nil, errors.New("auto sign requires a signer")
+	}
+	var answerSource AnswerActivitySource
+	if len(answerer) > 0 {
+		answerSource = answerer[0]
+	}
+	if cfg.AutoAnswer && answerSource == nil {
+		return nil, errors.New("auto answer requires an answer activity source")
 	}
 	if cfg.Interval < 30*time.Second {
 		return nil, errors.New("watch interval must be at least 30 seconds")
@@ -151,7 +164,8 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer)
 	}
 	r := &Runner{
 		cfg: cfg, source: source, signer: signer, sender: sender,
-		state: map[string]entry{}, now: time.Now, random: rand.Float64,
+		answerer: answerSource,
+		state:    map[string]entry{}, now: time.Now, random: rand.Float64,
 	}
 	if loadErr := r.load(); loadErr != nil {
 		return nil, loadErr
@@ -188,7 +202,7 @@ func validateClasses(classes []Class) error {
 }
 
 func (r *Runner) Run(ctx context.Context) {
-	log.Printf("activity watch started: %d classes, interval %s (+/-%d%%), auto_sign=%t", len(r.cfg.Classes), r.cfg.Interval, r.cfg.IntervalJitterPercent, r.cfg.AutoSign)
+	log.Printf("activity watch started: %d classes, interval %s (+/-%d%%), auto_sign=%t, auto_answer=%t", len(r.cfg.Classes), r.cfg.Interval, r.cfg.IntervalJitterPercent, r.cfg.AutoSign, r.cfg.AutoAnswer)
 	for {
 		delay := r.jitterInterval()
 		timer := time.NewTimer(delay)
@@ -234,7 +248,7 @@ func (r *Runner) Tick(ctx context.Context) {
 			continue
 		}
 		for _, item := range items {
-			if item.Signable {
+			if item.Signable || item.Answerable {
 				k := key(item)
 				active[k] = item
 				classes[k] = class
@@ -261,6 +275,29 @@ func (r *Runner) Tick(ctx context.Context) {
 	changed := false
 	for k, item := range active {
 		e, seen := r.state[k]
+		if item.Answerable {
+			if r.cfg.AutoAnswer && (!seen || e.LastAttempt.IsZero()) {
+				changed = r.autoAnswer(ctx, item, e) || changed
+				continue
+			}
+			if seen && e.Status == "answered" {
+				continue
+			}
+			if seen && (e.Count >= r.cfg.MaxRepeats || now.Sub(e.LastSent) < r.cfg.RepeatEvery) {
+				continue
+			}
+			title, body := "🔔 学习通抢答提醒", formatAlertBody(item)
+			if seen && e.Status == "failed" {
+				title, body = "🚨 学习通自动抢答失败", formatFailureBody(item, e.Code)
+			}
+			if err := r.sender.Send(ctx, notify.Message{Title: title, Body: body}); err != nil {
+				log.Printf("activity watch: notify failed: %v", err)
+				continue
+			}
+			r.state[k] = entry{LastSent: now, Count: e.Count + 1, Status: e.Status, Method: e.Method, Code: e.Code, LastAttempt: e.LastAttempt}
+			changed = true
+			continue
+		}
 		if r.cfg.AutoSign && autoSignType(item, classes[k]) && (!seen || e.LastAttempt.IsZero()) {
 			changed = r.autoSign(ctx, classes[k], item, e) || changed
 			continue
@@ -301,6 +338,28 @@ func (r *Runner) Tick(ctx context.Context) {
 			log.Printf("activity watch: state write failed: %v", err)
 		}
 	}
+}
+
+func (r *Runner) autoAnswer(ctx context.Context, item upstream.Activity, e entry) bool {
+	result, err := r.answerer.AnswerActivity(ctx, item.CourseID, item.ClassID, item.ID)
+	now := r.now()
+	next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: e.Status, Method: e.Method, Code: e.Code}
+	title, body := "✅ 学习通自动抢答成功", formatSuccessBody(item, result)
+	if err != nil {
+		safe := upstream.SafeFault(err)
+		next.Status, next.Code = "failed", safe.Code
+		title, body = "🚨 学习通自动抢答失败", formatFailureBody(item, safe.Code)
+	} else {
+		next.Status, next.Method, next.Code = "answered", result.Method, ""
+	}
+	r.state[key(item)] = next
+	if sendErr := r.sender.Send(ctx, notify.Message{Title: title, Body: body}); sendErr != nil {
+		log.Printf("activity watch: notify failed: %v", sendErr)
+	} else {
+		next.LastSent, next.Count = now, e.Count+1
+	}
+	log.Printf("activity watch: auto answer %s: status=%s", item.ID, next.Status)
+	return true
 }
 
 func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activity, e entry) bool {
