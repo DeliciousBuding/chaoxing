@@ -17,6 +17,19 @@ The service is designed to be operated remotely by an agent, not merely called a
 - Every adapter uses `internal/operation` as the single contract; MCP, local API and direct query cannot define parallel argument or result formats.
 - Account operations are queued and bounded, upstream URLs are allowlisted, and callers cannot supply arbitrary URLs, shells or filesystem paths.
 
+### Remote control model
+
+One daemon owns the upstream session, caches and watcher state. Agents choose the interface that matches their trust boundary, but every interface reaches the same validated operations:
+
+| Interface | Audience | Authentication | Boundary |
+| --- | --- | --- | --- |
+| `POST /mcp` | Remote MCP clients | Owner OAuth and operation scopes | Published through HTTPS only; no raw tokens or challenge secrets in tool results |
+| `POST /call` | Host-local automation | Private bearer token | Loopback-only listener; never exposed by the tunnel |
+| `chaoxing call` | Local operator or scripts | Reads the private local configuration | One JSON request per invocation through the same operation registry |
+| `chaoxing query` | Isolated diagnostics | Private configuration | Direct upstream client; do not run concurrently with `serve` |
+
+Agents do not receive a general shell, arbitrary URL fetcher, file browser or unrestricted account writer. `get_capabilities` is the source of truth for the current contract, including unsupported domains; `schema <operation>` describes the exact input and output before a call is made.
+
 | OAuth scope | Capability |
 | --- | --- |
 | `chaoxing.read` | Course, assignment, exam, notice, schedule, material, chapter, activity and work-question reads |
@@ -24,6 +37,14 @@ The service is designed to be operated remotely by an agent, not merely called a
 | `chaoxing.work` | Create, update, list, delete and export local answer drafts |
 
 There is intentionally no generic `write` scope. Refresh tokens can narrow scopes but never widen them. The upstream password and cookie vault use AES-GCM with a separately stored key; the owner OAuth password is stored only as a salted PBKDF2 hash. See [security policy](SECURITY.md).
+
+The security design is deliberately layered:
+
+- Authorization is operation-scoped and checked before upstream state or the draft store is touched.
+- Upstream routes, request bodies and response sizes are bounded by the operation registry and transport layer.
+- Raw upstream bodies, credentials, cookies, OAuth tokens and captcha challenge secrets are never returned by tool contracts.
+- Account operations are serialized per account; process-wide outbound capacity and public MCP admission have explicit saturation behavior.
+- Each account has private credentials, cookies, caches, OAuth state, watcher state and notification destinations; only trusted transport health is shared.
 
 The global assignment feed remains incomplete. A course-name query scans matching classes through the signed work list and can report `complete: true` when pagination agrees with upstream totals. That verifies the matched classes, not the whole account. An empty global pending list does not prove that every assignment is submitted. See [coverage and tool contracts](docs/tools.md).
 
@@ -61,6 +82,16 @@ Use `chaoxing capabilities` for the verified tool catalog and unsupported domain
 An optional activity watcher can poll selected classes during their course times, merge sign-in cards published in course-group messages, send operator alerts, and automatically submit normal, location, and password/gesture sign-ins when the matching class has a preset sign code. Per-class preset coordinates, persistent device identity, interval jitter and one-attempt state are built in. If upstream returns a slider-captcha challenge, the watcher alerts once; an agent can complete the bounded `get_sign_captcha` -> `answer_sign_captcha` -> `sign_activity` flow manually. QR sign-in accepts an operator-scanned raw payload through `sign_activity`; photo and face requirements stay alert-only.
 
 Notifications can be sent simultaneously to Feishu webhooks, ntfy and Gotify. Watch state is atomic, private and separate from upstream credentials. Each tenant account can run its own watcher with independent classes, schedules, coordinates, sign codes, state and notification destinations.
+
+The notification layer is a one-way, provider-fan-out boundary:
+
+| Channel | Required configuration | Delivery |
+| --- | --- | --- |
+| Feishu | `feishu_webhook` | JSON text card; nonzero provider acknowledgements are rejected |
+| ntfy | `ntfy_url` + `ntfy_topic` | `POST <topic>` with title and priority 5 |
+| Gotify | `gotify_url` + `gotify_token` | `POST /message` with `X-Gotify-Key` and priority 5 |
+
+Enabled channels are tried independently, so one provider outage does not suppress the others. Enabling the watcher without at least one complete channel is a startup error rather than a silent dead alert. Messages carry only operator-facing activity identity and result; credentials and sign codes are never placed in notifications or watch state.
 
 Manual answering is deliberately local-first:
 

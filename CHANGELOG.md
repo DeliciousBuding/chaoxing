@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Document the agent control matrix, layered authorization/security invariants and independent notification fan-out behavior in the project README and architecture guide.
 - Add password and gesture sign-in using an operator-provided sign code, including reference-compatible code verification, ordered submission, attendance verification and watcher presets.
 - Add QR sign-in with local parsing of both reference payload formats, `signDetail` expiry verification, ordered `enc` submission and no QR URL fetching.
 - Add the reference two-pass slider-captcha state machine with `get_sign_captcha` and `answer_sign_captcha`. Raw `enc2`, captcha keys and validation tokens stay in memory; the watcher never solves or blind-retries a challenge.

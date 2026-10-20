@@ -12,6 +12,19 @@ Chaoxing 是面向 Agent 的可自托管学习通控制面，用于查询课程�
 - MCP、本地 API 和直接查询共用 `internal/operation` 的唯一契约，不允许适配层定义平行参数。
 - 账号操作有队列与预算，上游 URL 全部 allowlist，调用方不能传任意 URL、shell 或路径。
 
+### 远程控制模型
+
+一个 daemon 独占上游会话、缓存和 watcher 状态。Agent 根据信任边界选择接口，但所有接口最终都进入同一份校验后的 operation：
+
+| 接口 | 使用者 | 认证 | 边界 |
+| --- | --- | --- | --- |
+| `POST /mcp` | 远程 MCP 客户端 | owner OAuth 与 operation scope | 只经 HTTPS 发布；工具结果不含原始 token 或验证码密钥 |
+| `POST /call` | 主机本地自动化 | 私有 bearer token | 仅 loopback 监听；绝不接 Tunnel |
+| `chaoxing call` | 本地运维者或脚本 | 读取私有本地配置 | 每次一个 JSON 请求，走同一 operation registry |
+| `chaoxing query` | 隔离诊断 | 私有配置 | 直接使用上游客户端；不要与 `serve` 并发 |
+
+Agent 拿到的是完整课程控制面，不是通用 shell、任意 URL fetcher、文件浏览器或无限账号写入器。`get_capabilities` 是当前契约的事实源，包括明确不支持的领域；`schema <operation>` 在调用前描述精确输入输出。
+
 | OAuth scope | 能力 |
 | --- | --- |
 | `chaoxing.read` | 课程、作业、考试、通知、课表、资料、章节、活动、题目读取 |
@@ -19,6 +32,14 @@ Chaoxing 是面向 Agent 的可自托管学习通控制面，用于查询课程�
 | `chaoxing.work` | 创建、修改、查看、删除和导出本地答题草稿 |
 
 不提供泛化的 `write` scope。refresh token 只能收窄权限，不能扩大。上游密码和 cookie 使用 AES-GCM 加密，密钥单独存放；owner OAuth 密码只保存加盐 PBKDF2 哈希。详见[安全政策](SECURITY.md)。
+
+安全设计按层收口：
+
+- 授权按 operation scope 判断，并发生在触碰上游状态或本地草稿存储之前。
+- 上游路由、请求体和响应大小都由 operation registry 与传输层限定。
+- 工具契约不返回原始上游 body、凭据、cookie、OAuth token 或验证码 challenge 密钥。
+- 同一账号的上游操作串行执行；进程级出站预算和公开 MCP admission 都有明确饱和行为。
+- 每个账号拥有独立凭据、cookie、缓存、OAuth 状态、watcher 状态和通知目的地；只有可信传输健康状态共享。
 
 全局作业 feed 仍不完整。按课程名查询会通过带签名的作业列表扫描匹配班级，分页结果与上游总数一致时可以返回 `complete: true`。这一标记只确认匹配班级的覆盖，不代表全账户完整。全局待交列表为空，不能证明所有作业都已提交。详见[工具与覆盖范围](docs/tools.md)。
 
@@ -56,6 +77,16 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 可选的课堂活动监视器会按课程时间轮询指定班级，合并课程群消息里的签到卡片，发送运维告警，并自动提交普通、位置，以及配置了签到码的密码/手势签到。内置班级预设坐标、持久化设备身份、轮询抖动和单次尝试状态。上游返回滑块验证码时，watcher 只告警一次，Agent 可人工完成 `get_sign_captcha` -> `answer_sign_captcha` -> `sign_activity` 的有界链路；二维码签到通过 `sign_activity` 接收运营者扫到的原始 payload；拍照和人脸仍只告警。
 
 通知可同时发送到飞书 webhook、ntfy 和 Gotify。watch 状态原子写入、私有保存，并与上游凭据分离。每个租户账号可以运行独立 watcher，拥有独立班级、课表、坐标、签到码、状态文件和通知目的地。
+
+通知层是单向 provider fan-out：
+
+| 通道 | 必需配置 | 投递方式 |
+| --- | --- | --- |
+| 飞书 | `feishu_webhook` | JSON text card；非零 provider acknowledgement 视为失败 |
+| ntfy | `ntfy_url` + `ntfy_topic` | `POST <topic>`，携带 title 与 priority 5 |
+| Gotify | `gotify_url` + `gotify_token` | `POST /message`，携带 `X-Gotify-Key` 与 priority 5 |
+
+启用多个通道时各自独立投递，一个 provider 故障不会压制其他通道。watcher 启用但没有任何完整通道时直接启动失败，而不是静默丢告警。通知只携带运营者可读的活动身份和结果；凭据和签到码不会进入通知或 watch 状态。
 
 手动答题按本地优先设计：
 
