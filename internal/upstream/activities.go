@@ -1,0 +1,251 @@
+package upstream
+
+import (
+	"context"
+	"encoding/json"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// activityAPI is the class activity feed used by the Chaoxing mobile pages.
+const activityAPI = "https://mobilelearn.chaoxing.com/v2/apis/active/student/activelist"
+
+// Activity is the normalized, read-only projection of one class activity.
+type Activity struct {
+	ID            string     `json:"id"`
+	CourseID      string     `json:"course_id"`
+	ClassID       string     `json:"class_id"`
+	Course        string     `json:"course"`
+	Title         string     `json:"title"`
+	Kind          string     `json:"kind"`
+	State         string     `json:"state"`
+	UserState     string     `json:"user_state"`
+	RawType       int        `json:"raw_type"`
+	RawStatus     int        `json:"raw_status"`
+	RawUserStatus int        `json:"raw_user_status"`
+	Signable      bool       `json:"signable"`
+	StartsAt      *time.Time `json:"starts_at,omitempty"`
+	EndsAt        *time.Time `json:"ends_at,omitempty"`
+}
+
+// flexInt accepts upstream numbers that are sometimes encoded as strings.
+type flexInt struct {
+	value int64
+	ok    bool
+}
+
+func (f *flexInt) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(strings.TrimSpace(string(b)), `"`)
+	if s == "" || s == "null" {
+		return nil
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		f.value, f.ok = 0, false
+		return nil
+	}
+	f.value, f.ok = v, true
+	return nil
+}
+
+type rawActivity struct {
+	ID         json.Number `json:"id"`
+	Title      string      `json:"nameOne"`
+	NameFour   string      `json:"nameFour"`
+	Type       flexInt     `json:"type"`
+	ActiveType flexInt     `json:"activeType"`
+	Status     flexInt     `json:"status"`
+	UserStatus flexInt     `json:"userStatus"`
+	StartTime  flexInt     `json:"startTime"`
+	EndTime    flexInt     `json:"endTime"`
+}
+
+func (c *Client) activities(ctx context.Context, args map[string]any) (any, error) {
+	limit := number(args, "limit", 50)
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	courses, err := c.fetchCourses(ctx)
+	if err != nil {
+		return nil, err
+	}
+	selected, err := academicSelection(courses, args)
+	if err != nil {
+		return nil, err
+	}
+	items := []Activity{}
+	classes := []any{}
+	warnings := []string{}
+	failed := 0
+	var firstErr error
+	for _, co := range selected {
+		rows, err := c.fetchActivities(ctx, co)
+		if err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			code := academicCode(err)
+			classes = append(classes, map[string]any{"course_id": co.ID, "class_id": co.ClassID, "complete": false, "code": code})
+			warnings = append(warnings, "class "+co.ClassID+": "+code)
+			continue
+		}
+		items = append(items, rows...)
+		classes = append(classes, map[string]any{"course_id": co.ID, "class_id": co.ClassID, "complete": true})
+	}
+	if failed == len(selected) && firstErr != nil {
+		return nil, firstErr
+	}
+	items = dedupeActivities(items)
+	total := len(items)
+	hasMore := total > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	return map[string]any{
+		"items":            items,
+		"returned":         len(items),
+		"total_in_feed":    total,
+		"limit":            limit,
+		"has_more":         hasMore,
+		"complete":         failed == 0,
+		"coverage":         "class_activity_list",
+		"coverage_details": map[string]any{"classes": classes, "sources_checked": len(selected), "sources_failed": failed},
+		"warnings":         warnings,
+		"fetched_at":       time.Now().UTC(),
+	}, nil
+}
+
+func (c *Client) fetchActivities(ctx context.Context, co Course) ([]Activity, error) {
+	q := url.Values{
+		"fid":                  {"0"},
+		"showNotStartedActive": {"0"},
+		"courseId":             {co.ID},
+		"classId":              {co.ClassID},
+		"_":                    {strconv.FormatInt(time.Now().UnixMilli(), 10)},
+	}
+	b, err := c.get(ctx, activityAPI+"?"+q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Result int `json:"result"`
+		Data   struct {
+			ActiveList []rawActivity `json:"activeList"`
+		} `json:"data"`
+	}
+	if err = json.Unmarshal(b, &payload); err != nil {
+		return nil, fault("UPSTREAM_SCHEMA", "class activity list not recognized")
+	}
+	if payload.Result != 1 {
+		return nil, fault("UPSTREAM_SCHEMA", "class activity list not recognized")
+	}
+	rows := make([]Activity, 0, len(payload.Data.ActiveList))
+	for _, raw := range payload.Data.ActiveList {
+		id := raw.ID.String()
+		if id == "" || id == "0" {
+			return nil, fault("UPSTREAM_SCHEMA", "activity row without a stable id")
+		}
+		rows = append(rows, normalizeActivity(raw, co))
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].StartsAt == nil || rows[j].StartsAt == nil {
+			return rows[i].StartsAt != nil
+		}
+		return rows[i].StartsAt.After(*rows[j].StartsAt)
+	})
+	return rows, nil
+}
+
+func normalizeActivity(raw rawActivity, co Course) Activity {
+	kind := "activity"
+	if raw.Type.value == 2 || raw.Type.value == 74 {
+		kind = "signin"
+	}
+	state := "unknown"
+	switch raw.Status.value {
+	case 1:
+		state = "active"
+	case 2:
+		state = "finished"
+	}
+	userState := "unknown"
+	switch raw.UserStatus.value {
+	case 0:
+		userState = "unsigned"
+	case 1:
+		userState = "signed"
+	case 2:
+		userState = "teacher_signed"
+	case 4:
+		userState = "leave"
+	case 5:
+		userState = "absence"
+	case 9:
+		userState = "late"
+	case 10:
+		userState = "leave_early"
+	case 11:
+		userState = "expired"
+	}
+	a := Activity{
+		ID:            raw.ID.String(),
+		CourseID:      co.ID,
+		ClassID:       co.ClassID,
+		Course:        co.Name,
+		Title:         firstNonBlank(raw.Title, raw.NameFour),
+		Kind:          kind,
+		State:         state,
+		UserState:     userState,
+		RawType:       int(raw.Type.value),
+		RawStatus:     int(raw.Status.value),
+		RawUserStatus: int(raw.UserStatus.value),
+	}
+	a.Signable = kind == "signin" && state == "active" && userState == "unsigned"
+	a.StartsAt = msTime(raw.StartTime.value)
+	a.EndsAt = msTime(raw.EndTime.value)
+	return a
+}
+
+func firstNonBlank(values ...string) string {
+	for _, v := range values {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func msTime(ms int64) *time.Time {
+	if ms <= 0 {
+		return nil
+	}
+	t := time.UnixMilli(ms).UTC()
+	return &t
+}
+
+func dedupeActivities(rows []Activity) []Activity {
+	seen := map[string]bool{}
+	out := make([]Activity, 0, len(rows))
+	for _, row := range rows {
+		key := row.CourseID + ":" + row.ClassID + ":" + row.ID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartsAt == nil || out[j].StartsAt == nil {
+			return out[i].StartsAt != nil
+		}
+		return out[i].StartsAt.After(*out[j].StartsAt)
+	})
+	return out
+}
