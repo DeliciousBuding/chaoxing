@@ -12,7 +12,12 @@ go vet ./...
 go build ./cmd/chaoxing
 go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
 govulncheck -scan=package ./...
+npm --prefix web ci
+npm --prefix web run build
+git diff --exit-code -- internal/webui/dist
 ```
+
+The Web UI commands install from the lockfile, rebuild the embedded React bundle in `internal/webui/dist`, and fail if the committed bundle is stale. Commit the resulting hashed assets so `go build` remains self-contained without a Node runtime. `web/node_modules` and `web/tsconfig.tsbuildinfo` are ignored.
 
 Formatting output should be empty. Race checks require a supported native platform and C compiler. The package-level vulnerability scan checks imported dependency packages, even when vulnerable symbols may not be reachable. CI repeats these checks, and tagged releases depend on them.
 

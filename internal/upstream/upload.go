@@ -68,7 +68,7 @@ func (c *Client) UploadFile(ctx context.Context, filename string, content []byte
 		return UploadResult{}, fault("INTERNAL", "upload form failed")
 	}
 	uploadURL := panUploadAPI + "?" + url.Values{"_from": {"mobilelearn"}, "_token": {tokenPayload.Token}}.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, &body)
+	req, err := http.NewRequestWithContext(c.requestContext(ctx), http.MethodPost, uploadURL, &body)
 	if err != nil {
 		return UploadResult{}, fault("INVALID_URL", "upload endpoint not permitted")
 	}

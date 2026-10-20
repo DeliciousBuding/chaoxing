@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DeliciousBuding/chaoxing/internal/capture"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/persist"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
@@ -49,6 +50,10 @@ type SignCode struct {
 type Config struct {
 	Interval              time.Duration
 	IntervalJitterPercent int
+	ClassPollDelayMin     time.Duration
+	ClassPollDelayMax     time.Duration
+	AutoSignDelayMin      time.Duration
+	AutoSignDelayMax      time.Duration
 	RepeatEvery           time.Duration
 	MaxRepeats            int
 	Window                string
@@ -57,6 +62,12 @@ type Config struct {
 	AutoAnswer            bool
 	Classes               []Class
 	StatePath             string
+	Capture               bool
+	CaptureAccount        string
+	CaptureRetention      time.Duration
+	CaptureActivityPages  bool
+	CaptureStore          capture.Store
+	ActivityPageSource    ActivityPageSource
 }
 
 type ActivitySource interface {
@@ -77,6 +88,10 @@ type AnswerActivitySource interface {
 	AnswerActivity(ctx context.Context, courseID, classID, activityID string) (upstream.SignResult, error)
 }
 
+type ActivityPageSource interface {
+	ActivityPage(ctx context.Context, args map[string]any) (any, error)
+}
+
 type entry struct {
 	LastSent    time.Time `json:"last_sent"`
 	LastAttempt time.Time `json:"last_attempt,omitempty"`
@@ -92,14 +107,16 @@ type stateFile struct {
 }
 
 type Runner struct {
-	cfg      Config
-	source   ActivitySource
-	signer   Signer
-	answerer AnswerActivitySource
-	sender   notify.Sender
-	state    map[string]entry
-	now      func() time.Time
-	random   func() float64
+	cfg              Config
+	source           ActivitySource
+	signer           Signer
+	answerer         AnswerActivitySource
+	sender           notify.Sender
+	state            map[string]entry
+	now              func() time.Time
+	random           func() float64
+	wait             func(context.Context, time.Duration) bool
+	lastCapturePrune time.Time
 }
 
 var shanghai = time.FixedZone("CST", 8*60*60)
@@ -129,6 +146,12 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 	}
 	if cfg.IntervalJitterPercent > 25 {
 		return nil, errors.New("watch interval jitter must be at most 25 percent")
+	}
+	if cfg.ClassPollDelayMin < 0 || cfg.ClassPollDelayMax < cfg.ClassPollDelayMin || cfg.ClassPollDelayMax > 10*time.Second {
+		return nil, errors.New("class poll delay must be between 0 and 10 seconds")
+	}
+	if cfg.AutoSignDelayMin < 0 || cfg.AutoSignDelayMax < cfg.AutoSignDelayMin || cfg.AutoSignDelayMax > 2*time.Minute {
+		return nil, errors.New("auto sign delay must be between 0 and 120 seconds")
 	}
 	if cfg.RepeatEvery < 30*time.Second {
 		cfg.RepeatEvery = 60 * time.Second
@@ -162,10 +185,21 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 	if err := validateClasses(cfg.Classes); err != nil {
 		return nil, err
 	}
+	if cfg.Capture {
+		if cfg.CaptureStore == nil || cfg.CaptureAccount == "" {
+			return nil, errors.New("activity capture requires a store and account key")
+		}
+		if cfg.CaptureRetention < time.Hour || cfg.CaptureRetention > 30*24*time.Hour {
+			return nil, errors.New("activity capture retention must be between 1 hour and 30 days")
+		}
+		if cfg.CaptureActivityPages && cfg.ActivityPageSource == nil {
+			return nil, errors.New("activity page capture requires an activity page source")
+		}
+	}
 	r := &Runner{
 		cfg: cfg, source: source, signer: signer, sender: sender,
 		answerer: answerSource,
-		state:    map[string]entry{}, now: time.Now, random: rand.Float64,
+		state:    map[string]entry{}, now: time.Now, random: rand.Float64, wait: waitContext,
 	}
 	if loadErr := r.load(); loadErr != nil {
 		return nil, loadErr
@@ -237,15 +271,23 @@ func (r *Runner) Tick(ctx context.Context) {
 	active := map[string]upstream.Activity{}
 	classes := map[string]Class{}
 	byCourseClass := map[string]Class{}
+	polledClasses := 0
 	for _, class := range r.cfg.Classes {
 		byCourseClass[class.CourseID+":"+class.ClassID] = class
 		if !classActive(now, class, r.cfg.Lead) {
 			continue
 		}
+		if polledClasses > 0 && !r.wait(ctx, r.classPollDelay()) {
+			return
+		}
+		polledClasses++
 		items, err := r.source.ListClassActivities(ctx, class.CourseID, class.ClassID)
 		if err != nil {
 			log.Printf("activity watch: class %s: %s", class.ClassID, upstream.SafeFault(err).Code)
 			continue
+		}
+		if r.cfg.Capture {
+			r.captureActivities(ctx, items, now)
 		}
 		for _, item := range items {
 			if item.Signable || item.Answerable {
@@ -256,9 +298,14 @@ func (r *Runner) Tick(ctx context.Context) {
 		}
 	}
 	if groupSource, ok := r.source.(GroupActivitySource); ok {
+		if polledClasses > 0 && !r.wait(ctx, r.classPollDelay()) {
+			return
+		}
 		groupRows, err := groupSource.ListGroupActivities(ctx)
 		if err != nil {
 			log.Printf("activity watch: group feed: %s", upstream.SafeFault(err).Code)
+		} else if r.cfg.Capture {
+			r.captureActivities(ctx, groupRows, now)
 		}
 		for _, item := range groupRows {
 			class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
@@ -290,7 +337,11 @@ func (r *Runner) Tick(ctx context.Context) {
 			if seen && e.Status == "failed" {
 				title, body = "🚨 学习通自动抢答失败", formatFailureBody(item, e.Code)
 			}
-			if err := r.sender.Send(ctx, notify.Message{Title: title, Body: body}); err != nil {
+			priority := 6
+			if seen && e.Status == "failed" {
+				priority = 8
+			}
+			if err := r.sender.Send(ctx, notify.Message{Title: title, Body: body, Priority: priority}); err != nil {
 				log.Printf("activity watch: notify failed: %v", err)
 				continue
 			}
@@ -315,7 +366,14 @@ func (r *Runner) Tick(ctx context.Context) {
 		if seen && e.Status == "failed" {
 			title, body = "🚨 学习通自动签到失败", formatFailureBody(item, e.Code)
 		}
-		if err := r.sender.Send(ctx, notify.Message{Title: title, Body: body}); err != nil {
+		priority := 6
+		if seen && e.Status == "failed" {
+			priority = 8
+			if e.Count >= 1 {
+				priority = 9
+			}
+		}
+		if err := r.sender.Send(ctx, notify.Message{Title: title, Body: body, Priority: priority}); err != nil {
 			log.Printf("activity watch: notify failed: %v", err)
 			continue
 		}
@@ -333,9 +391,81 @@ func (r *Runner) Tick(ctx context.Context) {
 			changed = true
 		}
 	}
+	if r.cfg.Capture && (r.lastCapturePrune.IsZero() || now.Sub(r.lastCapturePrune) >= time.Hour) {
+		if err := r.cfg.CaptureStore.PruneActivityCaptures(ctx, now.Add(-r.cfg.CaptureRetention)); err != nil {
+			log.Printf("activity capture prune failed: %v", err)
+		} else {
+			r.lastCapturePrune = now
+		}
+	}
 	if changed {
 		if err := r.save(); err != nil {
 			log.Printf("activity watch: state write failed: %v", err)
+		}
+	}
+}
+
+func (r *Runner) classPollDelay() time.Duration {
+	return randomDuration(r.cfg.ClassPollDelayMin, r.cfg.ClassPollDelayMax, r.random)
+}
+
+func (r *Runner) autoSignDelay() time.Duration {
+	return randomDuration(r.cfg.AutoSignDelayMin, r.cfg.AutoSignDelayMax, r.random)
+}
+
+func randomDuration(min, max time.Duration, random func() float64) time.Duration {
+	if min <= 0 || max <= min {
+		return min
+	}
+	return min + time.Duration(random()*float64(max-min))
+}
+
+func waitContext(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (r *Runner) captureActivities(ctx context.Context, items []upstream.Activity, now time.Time) {
+	for _, item := range items {
+		payload, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		record := capture.Activity{
+			AccountKey: r.cfg.CaptureAccount, ActivityKey: capture.Key(item.CourseID, item.ClassID, item.ID),
+			CourseID: item.CourseID, ClassID: item.ClassID, ActivityID: item.ID, Kind: item.Kind,
+			State: item.State, UserState: item.UserState, SignType: item.SignType, Source: item.Source,
+			FirstSeenAt: now.UTC(), LastSeenAt: now.UTC(), ActivityJSON: payload,
+		}
+		saved, err := r.cfg.CaptureStore.SaveActivityCapture(ctx, record)
+		if err != nil {
+			log.Printf("activity capture save failed: class=%s code=%s", item.ClassID, upstream.SafeFault(err).Code)
+			continue
+		}
+		if !r.cfg.CaptureActivityPages || item.Kind != "practice" || saved.HadPage {
+			continue
+		}
+		page, err := r.cfg.ActivityPageSource.ActivityPage(ctx, map[string]any{
+			"course_id": item.CourseID, "class_id": item.ClassID, "activity_id": item.ID,
+		})
+		var pageJSON []byte
+		pageError := ""
+		if err != nil {
+			pageError = upstream.SafeFault(err).Code
+		} else if pageJSON, err = json.Marshal(page); err != nil || len(pageJSON) > capture.MaxPageJSONBytes {
+			pageJSON, pageError = nil, "CAPTURE_TOO_LARGE"
+		}
+		if err := r.cfg.CaptureStore.SaveActivityPage(ctx, record.AccountKey, record.ActivityKey, pageJSON, pageError); err != nil {
+			log.Printf("activity page capture save failed: class=%s code=%s", item.ClassID, upstream.SafeFault(err).Code)
 		}
 	}
 }
@@ -353,7 +483,11 @@ func (r *Runner) autoAnswer(ctx context.Context, item upstream.Activity, e entry
 		next.Status, next.Method, next.Code = "answered", result.Method, ""
 	}
 	r.state[key(item)] = next
-	if sendErr := r.sender.Send(ctx, notify.Message{Title: title, Body: body}); sendErr != nil {
+	priority := 6
+	if err != nil {
+		priority = 8
+	}
+	if sendErr := r.sender.Send(ctx, notify.Message{Title: title, Body: body, Priority: priority}); sendErr != nil {
 		log.Printf("activity watch: notify failed: %v", sendErr)
 	} else {
 		next.LastSent, next.Count = now, e.Count+1
@@ -363,6 +497,9 @@ func (r *Runner) autoAnswer(ctx context.Context, item upstream.Activity, e entry
 }
 
 func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activity, e entry) bool {
+	if delay := r.autoSignDelay(); delay > 0 && !r.wait(ctx, delay) {
+		return false
+	}
 	req := upstream.SignRequest{CourseID: item.CourseID, ClassID: item.ClassID, ActivityID: item.ID}
 	if class.Location != nil {
 		lat, lng := class.Location.Latitude, class.Location.Longitude
@@ -383,7 +520,11 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 		next.Status, next.Method, next.Code = "signed", result.Method, ""
 	}
 	r.state[key(item)] = next
-	if sendErr := r.sender.Send(ctx, notify.Message{Title: title, Body: body}); sendErr != nil {
+	priority := 6
+	if err != nil {
+		priority = 8
+	}
+	if sendErr := r.sender.Send(ctx, notify.Message{Title: title, Body: body, Priority: priority}); sendErr != nil {
 		log.Printf("activity watch: notify failed: %v", sendErr)
 	} else {
 		next.LastSent, next.Count = now, e.Count+1

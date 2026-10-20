@@ -56,6 +56,18 @@ func TestNtfySetsPriorityAndTopic(t *testing.T) {
 	}
 }
 
+func TestMessagePriorityIsBoundedAndDefaultsToFive(t *testing.T) {
+	if p := (Message{}).priority(); p != 5 {
+		t.Fatal(p)
+	}
+	if p := (Message{Priority: -3}).priority(); p != 5 {
+		t.Fatal(p)
+	}
+	if p := (Message{Priority: 42}).priority(); p != 10 {
+		t.Fatal(p)
+	}
+}
+
 func TestGotifySendsMessage(t *testing.T) {
 	var path, token string
 	var payload map[string]any
@@ -71,6 +83,22 @@ func TestGotifySendsMessage(t *testing.T) {
 	}
 	if path != "/message" || token != "synthetic-token" || payload["title"] != "title" || payload["message"] != "body" || payload["priority"] != float64(5) {
 		t.Fatalf("path=%q token=%q payload=%+v", path, token, payload)
+	}
+}
+
+func TestGotifyUsesMessagePriority(t *testing.T) {
+	var payload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &payload)
+		io.WriteString(w, `{"id":1}`)
+	}))
+	defer srv.Close()
+	if err := (Gotify{BaseURL: srv.URL, Token: "synthetic-token", Client: srv.Client()}).Send(context.Background(), Message{Title: "urgent", Body: "body", Priority: 9}); err != nil {
+		t.Fatal(err)
+	}
+	if payload["priority"] != float64(9) {
+		t.Fatal(payload)
 	}
 }
 

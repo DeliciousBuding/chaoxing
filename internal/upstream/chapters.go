@@ -153,7 +153,7 @@ func (c *Client) chapterGETAttempt(ctx context.Context, endpoint string) ([]byte
 		}
 		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(c.requestContext(ctx), http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fault("INVALID_URL", "invalid chapter endpoint")
 	}

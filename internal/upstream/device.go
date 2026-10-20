@@ -22,8 +22,10 @@ import (
 )
 
 const (
-	defaultUserAgent   = "Dalvik/2.1.0 (Linux; U; Android 12; SM-N9006 Build/8aba9e4.0) (schild:2d97f7b9439f21333c946878fc4d6ccb) (device:SM-N9006) Language/zh_CN com.chaoxing.mobile/ChaoXingStudy_3_6.7.5_android_phone_10941_314 (@Kalimdor)_68f184fd763546c1a04ab3a09b3deebb"
+	defaultUserAgent   = "Dalvik/2.1.0 (Linux; U; Android 12; SM-N9006 Build/8aba9e4.0) (schild:2d97f7b9439f21333c946878fc4d6ccb) (device:SM-N9006) Language/zh_CN com.chaoxing.mobile/ChaoXingStudy_3_7.0.4_android_phone_10995_314 (@Kalimdor)_68f184fd763546c1a04ab3a09b3deebb"
 	defaultPackageName = "com.chaoxing.mobile"
+	defaultAppVersion  = "7.0.4"
+	defaultVersionCode = "10995"
 	deviceFingerprint  = "samsung/SM-N9006/SM-N9006:12/8aba9e4.0/8aba9e4.0"
 	userInfoAPI        = "https://sso.chaoxing.com/apis/login/userLogin4Uname.do"
 )
@@ -137,7 +139,10 @@ func newDeviceState(code, userAgent, packageName string) (deviceState, error) {
 		}
 	}
 	if userAgent == "" {
-		userAgent = defaultUserAgent
+		var err error
+		if userAgent, err = newDefaultUserAgent(); err != nil {
+			return deviceState{}, err
+		}
 	}
 	if packageName == "" {
 		packageName = defaultPackageName
@@ -156,6 +161,20 @@ func newDeviceState(code, userAgent, packageName string) (deviceState, error) {
 		DeviceUniqueID: unique, UserAgent: userAgent, PackageName: packageName,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
+}
+
+func newDefaultUserAgent() (string, error) {
+	schild, err := randomHex(16)
+	if err != nil {
+		return "", err
+	}
+	installID, err := randomHex(16)
+	if err != nil {
+		return "", err
+	}
+	return "Dalvik/2.1.0 (Linux; U; Android 12; SM-N9006 Build/8aba9e4.0) (schild:" + schild +
+		") (device:SM-N9006) Language/zh_CN com.chaoxing.mobile/ChaoXingStudy_3_" + defaultAppVersion +
+		"_android_phone_" + defaultVersionCode + "_314 (@Kalimdor)_" + installID, nil
 }
 
 func deviceUniqueID(packageName, androidID string) string {
@@ -223,12 +242,13 @@ type deviceInfoPayload struct {
 }
 
 func (c *Client) encryptedDeviceInfo() (string, error) {
+	appVersion, versionCode := deviceAppVersion(c.userAgent())
 	payload := deviceInfoPayload{
 		DeviceUniqueID: c.device.DeviceUniqueID, CDID: c.device.DeviceUniqueID, DeviceID: c.device.DeviceUniqueID,
 		AndroidID: c.device.AndroidID, MediaDrmID: c.device.MediaDrmID, Platform: "android", OSName: "android",
 		OSVer: "12", OSLang: "zh-CN", Brand: "samsung", Board: "universal8890", Hardware: "exynos5422",
-		Model: "SM-N9006", CPUAR: "armeabi-v7a,armeabi", AppName: c.device.PackageName, AppVer: "6.7.5",
-		VersionCode: "10941", Signatures: "1e27068798b6697821abbeb44a17da5483c4fb7fad7b9ce7890465ed04d0cbe0",
+		Model: "SM-N9006", CPUAR: "armeabi-v7a,armeabi", AppName: c.device.PackageName, AppVer: appVersion,
+		VersionCode: versionCode, Signatures: "1e27068798b6697821abbeb44a17da5483c4fb7fad7b9ce7890465ed04d0cbe0",
 		Resolution: "1080*1920", DPI: "3.0", TimeStamp: time.Now().UnixMilli(),
 	}
 	plain, err := json.Marshal(payload)
@@ -356,6 +376,14 @@ func devicePublicKeyBytes() []byte {
 }
 
 var validPackageName = regexp.MustCompile(`^[a-z0-9_]+(\.[a-z0-9_]+)+$`)
+var appVersionPattern = regexp.MustCompile(`ChaoXingStudy_3_([0-9]+\.[0-9]+\.[0-9]+)_android_phone_([0-9]+)_`)
+
+func deviceAppVersion(userAgent string) (string, string) {
+	if matches := appVersionPattern.FindStringSubmatch(userAgent); len(matches) == 3 {
+		return matches[1], matches[2]
+	}
+	return defaultAppVersion, defaultVersionCode
+}
 
 func validateDeviceConfig(code, userAgent, packageName string) error {
 	if code != "" && (len(code) > 512 || !validBase64(code)) {

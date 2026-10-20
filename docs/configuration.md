@@ -16,9 +16,25 @@ On Linux, use a root-owned private state directory (0700), config and state file
 
 Run `chaoxing serve` under the trusted service identity. Keep one daemon per state directory. The local identity running `chaoxing call` must have permission to read the private configuration; do not grant untrusted clients access to the vault key.
 
-## Optional egress proxy pool
+## Egress proxy pool and request pacing
 
-Upstream requests use direct egress by default. To route through SOCKS5 endpoints, add a private `proxies` array to the config (each entry has `url` (a socks5 URL with optional userinfo) and optional `bind` (a local source IP); at most 16). Selection is round-robin among healthy endpoints; transport failures cool an endpoint down with exponential backoff (30 s up to 5 min) and the direct path is the permanent fallback. There is no background probing. Endpoint health persists in `<state_dir>/chaoxing.db` (SQLite, WAL, mode 0600), which exists only when proxies are configured. Proxy URLs contain credentials: keep the config private and never log it; status output identifies endpoints by a truncated hash only. The local management listener exposes `GET /status` (same bearer token as `POST /call`) returning the version, sanitized egress health and tenant ids.
+Upstream requests use direct egress by default. To route through SOCKS5 endpoints, add a private `proxies` array to the config (each entry has `url` (a socks5 URL with optional userinfo) and optional `bind` (a local source IP); at most 16). Selection is account-sticky: each root/tenant account is bound to one healthy endpoint and keeps that assignment across restarts. Transport failures cool the selected endpoint with exponential backoff (30 s up to 5 min); while it cools, requests use the direct fallback, then return to the configured assignment when healthy. There is no background probing. Endpoint health and sticky assignments persist in `<state_dir>/chaoxing.db` (SQLite, WAL, mode 0600), created when proxies or watcher capture are enabled. Proxy URLs contain credentials: keep the config private and never log them; status output identifies endpoints by a truncated hash only.
+
+Add a top-level `request_pacing` object (tenants may override it) to avoid fixed-interval and same-second bursts. `min_interval_ms` defaults to 650 and accepts 0–60000; `jitter_percent` defaults to 35 and accepts 0–50. The interval applies to redirects and retries as well as ordinary upstream calls.
+
+```json
+{
+  "request_pacing": {
+    "min_interval_ms": 650,
+    "jitter_percent": 35
+  },
+  "proxies": [
+    {"url": "socks5://127.0.0.1:1080"}
+  ]
+}
+```
+
+For a stable residential route, configure it once and let each account remain bound to it. Do not rotate one account randomly across datacenter and residential exits.
 
 ## Optional additional tenants
 
@@ -30,7 +46,7 @@ Discovery supports both existing `/t/<id>/.well-known/...` routes and standard p
 
 ## Publish only the MCP listener
 
-Default listeners are `127.0.0.1:8792` (public MCP and OAuth behind the tunnel) and `127.0.0.1:8793` (private CLI). Both stay bound to loopback. The issuer must match the public HTTPS origin.
+Default listeners are `127.0.0.1:8792` (public Web UI, OAuth and MCP behind the tunnel) and `127.0.0.1:8793` (private CLI). Both stay bound to loopback. The issuer must match the public HTTPS origin.
 
 Use this ingress fragment in your own private Cloudflare Tunnel configuration:
 
@@ -49,9 +65,32 @@ OAuth state v2 uses a separate `oauth-refresh.key` to authenticate refresh proof
 
 Before use, verify that listeners are loopback-only, 8793 has no public route, and an unauthenticated MCP request cannot call tools.
 
+## Owner Web UI
+
+Open `https://mcp.example.com/` in a browser and log in with the same owner password used for OAuth login. The Web UI is embedded in the Go binary; no Node runtime is needed in production.
+
+- Session cookies use the `__Host-` prefix, `Secure`, `HttpOnly` and `SameSite=Strict`; sessions last eight hours absolutely and thirty minutes while idle.
+- Sessions are also bound to the login client address; a cookie replayed from a different remote address is rejected and invalidated.
+- Active sessions are capped at 128 and expired sessions are pruned during login.
+- Every write request uses CSRF double submission and an origin check.
+- Login is limited to ten attempts per minute and thirty per fifteen minutes.
+- The browser API reuses the operation allowlist. It cannot fetch arbitrary URLs, read arbitrary files, run commands or expose cookies.
+- The static bundle is same-origin only and contains no analytics or third-party tracker. Hashed assets are cached immutably; HTML and API responses are not cached.
+- Capture page evidence is omitted from list responses and fetched only through the explicit page-detail action.
+- Root and each configured tenant appear as account contexts. The UI can switch between their isolated executors.
+- Coursework submission and sign-in actions require explicit confirmation in the interface.
+
+Rebuild the embedded bundle after changing `web/src`:
+
+```sh
+npm --prefix web install
+npm --prefix web run build
+go build ./cmd/chaoxing
+```
+
 ## Persistent device identity
 
-The first startup creates `<state_dir>/device-state.json` (0600) with a stable randomized device code, Android-like device identifiers, the configured user agent and package name. The file is not a credential, but keep it private and stable: changing it makes the account appear to move to a new device. A private top-level `device` object can pin these values:
+The first startup creates `<state_dir>/device-state.json` (0600) with a stable randomized device code, Android-like device identifiers, the configured user agent and package name. New profiles default to Chaoxing Android 7.0.4 / versionCode 10995. The file is not a credential, but keep it private and stable: changing it makes the account appear to move to a new device; existing files are not automatically upgraded. A private top-level `device` object can pin these values:
 
 ```json
 {
@@ -78,6 +117,10 @@ The watcher turns the class activity feed and optional course-group sign-in card
     "auto_answer": false,
     "interval_seconds": 60,
     "interval_jitter_percent": 10,
+    "class_poll_delay_min_ms": 750,
+    "class_poll_delay_max_ms": 3000,
+    "auto_sign_delay_min_seconds": 5,
+    "auto_sign_delay_max_seconds": 25,
     "repeat_seconds": 120,
     "max_repeats": 5,
     "lead_seconds": 120,
@@ -97,6 +140,11 @@ The watcher turns the class activity feed and optional course-group sign-in card
         "sign_code": {"code": "1234"}
       }
     ],
+    "capture": {
+      "enabled": true,
+      "retention_hours": 168,
+      "activity_pages": true
+    },
     "feishu_webhook": "https://example.com/feishu-webhook",
     "ntfy_url": "https://ntfy.example.com",
     "ntfy_topic": "synthetic-topic",
@@ -112,6 +160,7 @@ Bounds and behavior:
 - `auto_answer` defaults to false. When true, an active `kind:"answer"` activity is claimed once through `answer_activity`; failed attempts do not resubmit and only repeat the alert.
 - `auto_sign` defaults to false. When true, normal and location activities are attempted once. Password and gesture activities are attempted only when the matching class has a nonempty `sign_code.code`. A slider-captcha response is solved automatically when `captcha_solver` is configured; otherwise it returns `CAPTCHA_REQUIRED`, sends one alert, and uses the manual MCP tools. QR activities alert because they require the operator-scanned raw payload in `sign_activity`; the watcher also leaves photo and face alert-only. Explicit `upload_file`, `sign_activity` and `sign_activity_with_face` tools support those flows when the operator supplies the object IDs.
 - `interval_seconds` is at least 30 (default 60), with `interval_jitter_percent` randomized around it (default 10, maximum 25). Each poll uses the account-bounded query queue.
+- `class_poll_delay_min_ms` / `class_poll_delay_max_ms` default to 750–3000 and add a randomized pause between two class polls. `auto_sign_delay_min_seconds` / `auto_sign_delay_max_seconds` default to 5–25 and delay the automatic sign attempt after discovery.
 - `repeat_seconds` defaults to 120 and must be at least 30; `max_repeats` defaults to 5 and is capped at 20. Manual reminders repeat only while the activity is still `signable`.
 - `lead_seconds` defaults to 120 and is capped at 600. A class schedule is polled from `start - lead_seconds` through `end`; set it to `-1` to poll only from the exact start.
 - `window` is a global `HH:MM-HH:MM` bound in China Standard Time. Per-class `schedule` further limits polling to listed days/times; a class without `schedule` follows the global window. Midnight-crossing ranges are supported.
@@ -119,6 +168,7 @@ Bounds and behavior:
 - A class `location` is the preset latitude/longitude/address for location sign-in. Coordinates are validated against the activity's published range. Before submission, the service applies the reference client's ±0.00005-degree random offset; after `errorLocation`, it retries once with the tightened ±0.00001 offset.
 - Configure any combination of `feishu_webhook`, `ntfy_url` + `ntfy_topic`, and `gotify_url` + `gotify_token`. ntfy and Gotify require both fields; a partially configured channel is a startup error instead of being silently dropped. With no complete channel, serve also refuses to start. ntfy and Gotify use priority 5; Feishu uses a text card.
 - Watch state persists in `<state_dir>/watch-state.json` (0600). It records the last alert/attempt time, result and safe fault code so a restart neither repeats a successful sign-in nor blindly retries a failed one. A failed attempt remains eligible for repeated manual alerts, but not another sign submission. Entries are pruned after 24 hours; no message bodies are stored.
+- `capture.enabled` stores sanitized activity observations in `<state_dir>/chaoxing.db`. `retention_hours` defaults to 168 (one week). `activity_pages` fetches a sanitized practice H5 page once through `get_activity_page`. Hidden values, cookies, credentials and raw HTML are never stored.
 - A tenant can contain its own `group_activities` and `watch` object. Its watcher uses that tenant's upstream client, private state directory, classes, sign codes and notification destinations. The default account remains controlled by the top-level `watch` object.
 
 The watcher logs class failures by safe fault code, continues with the other classes, and never exposes raw upstream bodies. Notification text contains course/activity identity and result; it is operator data and must not be treated as instructions.

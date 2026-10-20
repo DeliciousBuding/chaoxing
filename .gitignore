@@ -1,5 +1,8 @@
 /dist/
 /.local/
+/chaoxing
+web/node_modules/
+web/tsconfig.tsbuildinfo
 *.exe
 *.sealed
 *.key

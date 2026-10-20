@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #09090b;
+  --color-foreground: #fafafa;
+  --color-card: #101014;
+  --color-card-foreground: #fafafa;
+  --color-popover: #121218;
+  --color-popover-foreground: #fafafa;
+  --color-primary: #22d3ee;
+  --color-primary-foreground: #052e33;
+  --color-secondary: #1f2937;
+  --color-secondary-foreground: #f8fafc;
+  --color-muted: #18181b;
+  --color-muted-foreground: #a1a1aa;
+  --color-accent: #155e75;
+  --color-accent-foreground: #ecfeff;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #fee2e2;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-border: #27272a;
+  --color-input: #27272a;
+  --color-ring: #22d3ee;
+  --radius-card: 1rem;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-primary) 30%, transparent);
+}

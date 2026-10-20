@@ -46,3 +46,9 @@ func verifyPassword(raw, password string) bool {
 	got, err := pbkdf2.Key(sha256.New, password, salt, n, 32)
 	return err == nil && subtle.ConstantTimeCompare(got, want) == 1
 }
+
+// VerifyPassword lets independently mounted operator UIs authenticate against
+// the same private owner hash without learning the password or hash format.
+func VerifyPassword(raw, password string) bool {
+	return verifyPassword(raw, password)
+}

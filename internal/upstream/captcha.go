@@ -217,7 +217,7 @@ func (c *Client) captchaGet(ctx context.Context, endpoint, referer string) ([]by
 	if err != nil || !safeURL(parsed) {
 		return nil, fault("INVALID_URL", "captcha endpoint not permitted")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(c.requestContext(ctx), http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fault("INVALID_URL", "captcha endpoint not permitted")
 	}

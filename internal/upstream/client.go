@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/admission"
+	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
 	"golang.org/x/net/publicsuffix"
@@ -125,6 +126,9 @@ type Config struct {
 	DeviceStatePath                       string
 	DeviceCode                            string
 	UserAgent, PackageName                string
+	EgressAccountKey                      string
+	RequestMinInterval                    time.Duration
+	RequestJitterPercent                  int
 	GroupActivities                       bool
 	Transport                             http.RoundTripper
 	CaptchaSolver                         CaptchaSolver
@@ -174,6 +178,9 @@ func New(c Config) (*Client, error) {
 	if err := validateDeviceConfig(c.DeviceCode, c.UserAgent, c.PackageName); err != nil {
 		return nil, err
 	}
+	if c.RequestJitterPercent < 0 || c.RequestJitterPercent > 50 {
+		return nil, fault("INVALID_ARGUMENT", "request jitter must be between 0 and 50 percent")
+	}
 	jar, e := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	if e != nil {
 		return nil, e
@@ -181,6 +188,9 @@ func New(c Config) (*Client, error) {
 	rt := c.Transport
 	if rt == nil {
 		rt = &http.Transport{Proxy: nil, MaxIdleConns: 4, MaxIdleConnsPerHost: 2, IdleConnTimeout: 60 * time.Second, TLSHandshakeTimeout: 10 * time.Second}
+	}
+	if c.RequestMinInterval > 0 {
+		rt = newPacedTransport(rt, c.RequestMinInterval, c.RequestJitterPercent)
 	}
 	h := &http.Client{Jar: jar, Timeout: 20 * time.Second, Transport: rt}
 	h.CheckRedirect = func(r *http.Request, via []*http.Request) error {
@@ -210,6 +220,10 @@ func New(c Config) (*Client, error) {
 		clear(b)
 	}
 	return x, nil
+}
+
+func (c *Client) requestContext(ctx context.Context) context.Context {
+	return egress.WithAccount(ctx, c.config.EgressAccountKey)
 }
 func safeURL(u *url.URL) bool {
 	if u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") || !(u.Hostname() == "chaoxing.com" || strings.HasSuffix(u.Hostname(), ".chaoxing.com")) {
@@ -274,7 +288,7 @@ func (c *Client) raw(ctx context.Context, method, rawurl string, form url.Values
 	if form != nil {
 		body = strings.NewReader(form.Encode())
 	}
-	r, e := http.NewRequestWithContext(ctx, method, rawurl, body)
+	r, e := http.NewRequestWithContext(c.requestContext(ctx), method, rawurl, body)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -311,7 +325,7 @@ func (c *Client) rawWrite(ctx context.Context, method, rawurl string, body io.Re
 	if e != nil || (!safeURL(u) && u.String() != workSubmitAPI) {
 		return nil, nil, fault("INVALID_URL", "upstream URL not permitted")
 	}
-	r, e := http.NewRequestWithContext(ctx, method, rawurl, body)
+	r, e := http.NewRequestWithContext(c.requestContext(ctx), method, rawurl, body)
 	if e != nil {
 		return nil, nil, e
 	}

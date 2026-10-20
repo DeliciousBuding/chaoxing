@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
+	"github.com/DeliciousBuding/chaoxing/internal/capture"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/mcphttp"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
@@ -25,6 +26,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/statestore"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 	"github.com/DeliciousBuding/chaoxing/internal/watch"
+	"github.com/DeliciousBuding/chaoxing/internal/webui"
 	"github.com/DeliciousBuding/chaoxing/internal/workdraft"
 )
 
@@ -46,6 +48,15 @@ func (a healthAdapter) ProxyHealth() (map[string]egress.Health, error) {
 }
 func (a healthAdapter) SetProxyHealth(key string, h egress.Health) error {
 	return a.s.SetProxyHealth(key, statestore.ProxyHealth{Failures: h.Failures, CoolUntil: h.CoolUntil})
+}
+func (a healthAdapter) ProxyAssignments() (map[string]string, error) {
+	return a.s.ProxyAssignments()
+}
+func (a healthAdapter) SetProxyAssignment(accountKey, endpointKey string) error {
+	return a.s.SetProxyAssignment(accountKey, endpointKey)
+}
+func (a healthAdapter) DeleteProxyAssignment(accountKey string) error {
+	return a.s.DeleteProxyAssignment(accountKey)
 }
 
 var tenantID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
@@ -205,7 +216,7 @@ func validateTenants(c config) error {
 
 // publicMux mounts the root account and all configured tenants. It returns the
 // mux and the ordered tenant ids for the management status endpoint.
-func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool, rootExecute func(context.Context, string, map[string]any) (any, error)) (*http.ServeMux, []string, []*tenantRuntime, error) {
+func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool, captures capture.Store, rootExecute func(context.Context, string, map[string]any) (any, error)) (*http.ServeMux, []string, []*tenantRuntime, error) {
 	mux := http.NewServeMux()
 	a.Register(mux)
 	mux.Handle("/mcp", a.ProtectMCP(mcphttp.NewWithVersion(rootExecute, version)))
@@ -239,7 +250,7 @@ func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool
 			if e != nil {
 				return nil, nil, nil, e
 			}
-			tr.watch, e = newWatcher(*tc.Watch, tc.StateDir, cl)
+			tr.watch, e = newWatcher(*tc.Watch, tc.StateDir, cl, captures, tc.ID)
 			if e != nil {
 				return nil, nil, nil, e
 			}
@@ -249,7 +260,7 @@ func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool
 	return mux, tenantIDs, runtimes, nil
 }
 
-func newWatcher(c watchConfig, stateDir string, client *upstream.Client) (*watch.Runner, error) {
+func newWatcher(c watchConfig, stateDir string, client *upstream.Client, captures capture.Store, accountKey string) (*watch.Runner, error) {
 	sender, err := watchSender(c)
 	if err != nil {
 		return nil, err
@@ -261,6 +272,10 @@ func newWatcher(c watchConfig, stateDir string, client *upstream.Client) (*watch
 	cfg := watch.Config{
 		Interval:              interval,
 		IntervalJitterPercent: c.IntervalJitterPercent,
+		ClassPollDelayMin:     time.Duration(c.ClassPollDelayMinMs) * time.Millisecond,
+		ClassPollDelayMax:     time.Duration(c.ClassPollDelayMaxMs) * time.Millisecond,
+		AutoSignDelayMin:      time.Duration(c.AutoSignDelayMinSecs) * time.Second,
+		AutoSignDelayMax:      time.Duration(c.AutoSignDelayMaxSecs) * time.Second,
 		RepeatEvery:           time.Duration(c.RepeatSeconds) * time.Second,
 		MaxRepeats:            c.MaxRepeats,
 		Window:                c.Window,
@@ -269,11 +284,45 @@ func newWatcher(c watchConfig, stateDir string, client *upstream.Client) (*watch
 		Classes:               c.Classes,
 		StatePath:             filepath.Join(stateDir, "watch-state.json"),
 	}
+	if cfg.ClassPollDelayMin == 0 && cfg.ClassPollDelayMax == 0 {
+		cfg.ClassPollDelayMin, cfg.ClassPollDelayMax = 750*time.Millisecond, 3*time.Second
+	}
+	if cfg.AutoSignDelayMin == 0 && cfg.AutoSignDelayMax == 0 {
+		cfg.AutoSignDelayMin, cfg.AutoSignDelayMax = 5*time.Second, 25*time.Second
+	}
+	if c.Capture != nil && c.Capture.Enabled {
+		retention := 7 * 24 * time.Hour
+		if c.Capture.RetentionHours > 0 {
+			retention = time.Duration(c.Capture.RetentionHours) * time.Hour
+		}
+		cfg.Capture = true
+		cfg.CaptureAccount = accountKey
+		cfg.CaptureRetention = retention
+		cfg.CaptureActivityPages = c.Capture.ActivityPages
+		cfg.CaptureStore = captures
+		cfg.ActivityPageSource = client
+	}
 	var answerer []watch.AnswerActivitySource
 	if c.AutoAnswer {
 		answerer = append(answerer, client)
 	}
 	return watch.New(cfg, client, sender, client, answerer...)
+}
+
+func watchCaptureEnabled(w *watchConfig) bool {
+	return w != nil && w.Capture != nil && w.Capture.Enabled
+}
+
+func stateStoreNeeded(c config) bool {
+	if len(c.Proxies) > 0 || watchCaptureEnabled(c.Watch) {
+		return true
+	}
+	for _, tenant := range c.Tenants {
+		if watchCaptureEnabled(tenant.Watch) {
+			return true
+		}
+	}
+	return false
 }
 
 func serve() error {
@@ -287,18 +336,22 @@ func serve() error {
 	if e = validateTenants(c); e != nil {
 		return e
 	}
-	// Egress pool: direct by default, SOCKS5 endpoints when configured. Pool
-	// health persists in SQLite only when proxies exist, keeping the default
-	// deployment free of the database file.
+	// Egress pool: direct by default, SOCKS5 endpoints when configured. The
+	// same private SQLite store retains proxy health, sticky account egress
+	// and production activity captures only when one of those features is on.
 	var store *statestore.Store
 	var health egress.HealthStore
-	if len(c.Proxies) > 0 {
+	var captures capture.Store
+	if stateStoreNeeded(c) {
 		store, e = statestore.Open(filepath.Join(c.StateDir, "chaoxing.db"))
 		if e != nil {
 			return e
 		}
 		defer store.Close()
-		health = healthAdapter{store}
+		if len(c.Proxies) > 0 {
+			health = healthAdapter{store}
+		}
+		captures = store
 	}
 	pool, e := egress.New(c.Proxies, health)
 	if e != nil {
@@ -319,7 +372,7 @@ func serve() error {
 	}
 	var watcher *watch.Runner
 	if c.Watch != nil && c.Watch.Enabled {
-		watcher, e = newWatcher(*c.Watch, c.StateDir, x)
+		watcher, e = newWatcher(*c.Watch, c.StateDir, x, captures, "root")
 		if e != nil {
 			return e
 		}
@@ -328,19 +381,56 @@ func serve() error {
 	if e != nil {
 		return e
 	}
-	mux, tenantIDs, tenants, e := publicMux(c, x, a, pool, rootExecute)
+	mux, tenantIDs, tenants, e := publicMux(c, x, a, pool, captures, rootExecute)
 	if e != nil {
 		return e
 	}
+	uiAccounts := []webui.Account{}
+	for _, tc := range c.Tenants {
+		uiAccounts = append(uiAccounts, webui.Account{ID: tc.ID, Name: tc.ID})
+	}
+	accountExecute := func(ctx context.Context, account, tool string, arguments map[string]any) (any, error) {
+		if account == "root" {
+			return rootExecute(ctx, tool, arguments)
+		}
+		for _, tenant := range tenants {
+			if tenant.cfg.ID != account {
+				continue
+			}
+			execute, err := tenant.operationExecutor()
+			if err != nil {
+				return nil, err
+			}
+			return execute(ctx, tool, arguments)
+		}
+		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "unknown management account"}
+	}
+	captureList := func(ctx context.Context, limit int) ([]capture.Activity, error) {
+		if store == nil {
+			return []capture.Activity{}, nil
+		}
+		return store.ListActivityCaptures(ctx, limit)
+	}
+	ui, err := webui.New(webui.Config{
+		Version:           version,
+		Issuer:            c.Issuer,
+		OwnerPasswordHash: c.OwnerPasswordHash,
+		Accounts:          uiAccounts,
+		Execute:           accountExecute,
+		Status: func() any {
+			return map[string]any{"egress": pool.Status(), "tenants": tenantIDs}
+		},
+		Captures: captureList,
+	})
+	if err != nil {
+		return err
+	}
+	ui.Register(mux)
 	execute := func(ctx context.Context, name string, args map[string]any) (any, error) {
 		return rootExecute(ctx, name, args)
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version})
-	})
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Chaoxing MCP</title><h1>Chaoxing MCP</h1><p>Connect your MCP client to /mcp using OAuth. This service does not provide public course data.</p></html>`))
 	})
 	local := http.NewServeMux()
 	localAuth := func(w http.ResponseWriter, r *http.Request) bool {

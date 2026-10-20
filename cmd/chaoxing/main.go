@@ -39,6 +39,7 @@ type config struct {
 	CaptchaSolver     *captchaSolverConfig `json:"captcha_solver,omitempty"`
 	Answer            *answerConfig        `json:"answer,omitempty"`
 	Device            *deviceConfig        `json:"device,omitempty"`
+	RequestPacing     *requestPacingConfig `json:"request_pacing,omitempty"`
 	GroupActivities   bool                 `json:"group_activities,omitempty"`
 	// Proxies optionally routes upstream traffic through SOCKS5 endpoints;
 	// empty means direct egress. Tenants are additional isolated accounts
@@ -50,21 +51,37 @@ type config struct {
 // watchConfig enables the optional activity watcher. Notifications are
 // outbound only.
 type watchConfig struct {
-	Enabled               bool          `json:"enabled"`
-	AutoSign              bool          `json:"auto_sign"`
-	AutoAnswer            bool          `json:"auto_answer"`
-	IntervalSeconds       int           `json:"interval_seconds"`
-	IntervalJitterPercent int           `json:"interval_jitter_percent"`
-	RepeatSeconds         int           `json:"repeat_seconds"`
-	MaxRepeats            int           `json:"max_repeats"`
-	LeadSeconds           int           `json:"lead_seconds"`
-	Window                string        `json:"window,omitempty"`
-	Classes               []watch.Class `json:"classes"`
-	FeishuWebhook         string        `json:"feishu_webhook,omitempty"`
-	NtfyURL               string        `json:"ntfy_url,omitempty"`
-	NtfyTopic             string        `json:"ntfy_topic,omitempty"`
-	GotifyURL             string        `json:"gotify_url,omitempty"`
-	GotifyToken           string        `json:"gotify_token,omitempty"`
+	Enabled               bool                `json:"enabled"`
+	AutoSign              bool                `json:"auto_sign"`
+	AutoAnswer            bool                `json:"auto_answer"`
+	IntervalSeconds       int                 `json:"interval_seconds"`
+	IntervalJitterPercent int                 `json:"interval_jitter_percent"`
+	ClassPollDelayMinMs   int                 `json:"class_poll_delay_min_ms,omitempty"`
+	ClassPollDelayMaxMs   int                 `json:"class_poll_delay_max_ms,omitempty"`
+	AutoSignDelayMinSecs  int                 `json:"auto_sign_delay_min_seconds,omitempty"`
+	AutoSignDelayMaxSecs  int                 `json:"auto_sign_delay_max_seconds,omitempty"`
+	RepeatSeconds         int                 `json:"repeat_seconds"`
+	MaxRepeats            int                 `json:"max_repeats"`
+	LeadSeconds           int                 `json:"lead_seconds"`
+	Window                string              `json:"window,omitempty"`
+	Classes               []watch.Class       `json:"classes"`
+	Capture               *watchCaptureConfig `json:"capture,omitempty"`
+	FeishuWebhook         string              `json:"feishu_webhook,omitempty"`
+	NtfyURL               string              `json:"ntfy_url,omitempty"`
+	NtfyTopic             string              `json:"ntfy_topic,omitempty"`
+	GotifyURL             string              `json:"gotify_url,omitempty"`
+	GotifyToken           string              `json:"gotify_token,omitempty"`
+}
+
+type watchCaptureConfig struct {
+	Enabled        bool `json:"enabled"`
+	RetentionHours int  `json:"retention_hours,omitempty"`
+	ActivityPages  bool `json:"activity_pages,omitempty"`
+}
+
+type requestPacingConfig struct {
+	MinIntervalMs int `json:"min_interval_ms,omitempty"`
+	JitterPercent int `json:"jitter_percent,omitempty"`
 }
 
 type deviceConfig struct {
@@ -79,10 +96,24 @@ type tenantConfig struct {
 	KeyPath           string               `json:"key_path"`
 	OwnerPasswordHash string               `json:"owner_password_hash"`
 	Device            *deviceConfig        `json:"device,omitempty"`
+	RequestPacing     *requestPacingConfig `json:"request_pacing,omitempty"`
 	GroupActivities   bool                 `json:"group_activities,omitempty"`
 	Watch             *watchConfig         `json:"watch,omitempty"`
 	CaptchaSolver     *captchaSolverConfig `json:"captcha_solver,omitempty"`
 	Answer            *answerConfig        `json:"answer,omitempty"`
+}
+
+func (c *requestPacingConfig) settings() (time.Duration, int, error) {
+	if c == nil {
+		return 650 * time.Millisecond, 35, nil
+	}
+	if c.MinIntervalMs < 0 || c.MinIntervalMs > 60000 {
+		return 0, 0, errors.New("request pacing min interval must be between 0 and 60000 ms")
+	}
+	if c.JitterPercent < 0 || c.JitterPercent > 50 {
+		return 0, 0, errors.New("request pacing jitter must be between 0 and 50 percent")
+	}
+	return time.Duration(c.MinIntervalMs) * time.Millisecond, c.JitterPercent, nil
 }
 
 // captchaSolverConfig selects a private recognition provider. The user_key is
@@ -286,15 +317,21 @@ func (c config) client() (*upstream.Client, error) {
 
 func (c config) upstreamConfig() (upstream.Config, error) {
 	cfg := upstream.Config{
-		CredentialsPath: filepath.Join(c.StateDir, "credentials.sealed"),
-		KeyPath:         c.KeyPath,
-		SessionPath:     filepath.Join(c.StateDir, "session.sealed"),
-		DeviceStatePath: filepath.Join(c.StateDir, "device-state.json"),
+		CredentialsPath:  filepath.Join(c.StateDir, "credentials.sealed"),
+		KeyPath:          c.KeyPath,
+		SessionPath:      filepath.Join(c.StateDir, "session.sealed"),
+		DeviceStatePath:  filepath.Join(c.StateDir, "device-state.json"),
+		EgressAccountKey: "root",
 	}
 	if c.Device != nil {
 		cfg.DeviceCode, cfg.UserAgent, cfg.PackageName = c.Device.Code, c.Device.UserAgent, c.Device.PackageName
 	}
 	cfg.GroupActivities = c.GroupActivities
+	interval, jitter, err := c.RequestPacing.settings()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.RequestMinInterval, cfg.RequestJitterPercent = interval, jitter
 	solver, err := c.CaptchaSolver.solver()
 	if err != nil {
 		return cfg, err
@@ -305,15 +342,21 @@ func (c config) upstreamConfig() (upstream.Config, error) {
 
 func (c tenantConfig) upstreamConfig() (upstream.Config, error) {
 	cfg := upstream.Config{
-		CredentialsPath: filepath.Join(c.StateDir, "credentials.sealed"),
-		KeyPath:         c.KeyPath,
-		SessionPath:     filepath.Join(c.StateDir, "session.sealed"),
-		DeviceStatePath: filepath.Join(c.StateDir, "device-state.json"),
+		CredentialsPath:  filepath.Join(c.StateDir, "credentials.sealed"),
+		KeyPath:          c.KeyPath,
+		SessionPath:      filepath.Join(c.StateDir, "session.sealed"),
+		DeviceStatePath:  filepath.Join(c.StateDir, "device-state.json"),
+		EgressAccountKey: c.ID,
 	}
 	if c.Device != nil {
 		cfg.DeviceCode, cfg.UserAgent, cfg.PackageName = c.Device.Code, c.Device.UserAgent, c.Device.PackageName
 	}
 	cfg.GroupActivities = c.GroupActivities
+	interval, jitter, err := c.RequestPacing.settings()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.RequestMinInterval, cfg.RequestJitterPercent = interval, jitter
 	solver, err := c.CaptchaSolver.solver()
 	if err != nil {
 		return cfg, err
