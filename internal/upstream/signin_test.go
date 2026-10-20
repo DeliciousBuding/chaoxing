@@ -117,6 +117,12 @@ func TestLocationSignUsesPresetJitterAndSingleTightRetry(t *testing.T) {
 			if err := json.Unmarshal([]byte(q.Get("locationResult")), &location); err != nil || location.Result != 1 || location.Address != "Synthetic room" {
 				t.Fatalf("locationResult=%q err=%v", q.Get("locationResult"), err)
 			}
+			for _, value := range []float64{location.Latitude, location.Longitude} {
+				decimal := strings.Split(strconv.FormatFloat(value, 'f', -1, 64), ".")
+				if len(decimal) == 2 && len(decimal[1]) > 6 {
+					t.Fatalf("locationResult coordinate exceeds reference precision: %v", value)
+				}
+			}
 			if r.URL.Query().Get("deviceCode") != c.device.DeviceCode {
 				t.Fatal("device code missing")
 			}

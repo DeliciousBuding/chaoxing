@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -38,6 +37,14 @@ type imGroup struct {
 // ListGroupActivities reads sign-in cards from Easemob group history. It is a
 // read-only discovery source; actual submission still goes through SignActivity.
 func (c *Client) ListGroupActivities(ctx context.Context) ([]Activity, error) {
+	if err := c.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer c.queries.Release()
+	return c.listGroupActivities(ctx)
+}
+
+func (c *Client) listGroupActivities(ctx context.Context) ([]Activity, error) {
 	if !c.config.GroupActivities {
 		return []Activity{}, nil
 	}
@@ -110,8 +117,13 @@ func (c *Client) imConfig(ctx context.Context) (imConfig, error) {
 	if err != nil {
 		return imConfig{}, fault("UPSTREAM_SCHEMA", "IM account password not recognized")
 	}
-	form := url.Values{"grant_type": {"password"}, "username": {identity.UID}, "password": {password}}
-	body, err := c.imDo(ctx, http.MethodPost, imTokenURL, strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", "")
+	tokenRequest, err := json.Marshal(map[string]string{
+		"grant_type": "password", "username": identity.UID, "password": password,
+	})
+	if err != nil {
+		return imConfig{}, fault("UPSTREAM_SCHEMA", "IM token request not recognized")
+	}
+	body, err := c.imDo(ctx, http.MethodPost, imTokenURL, bytes.NewReader(tokenRequest), "application/x-www-form-urlencoded", "")
 	if err != nil {
 		return imConfig{}, err
 	}
@@ -144,8 +156,9 @@ func (c *Client) fetchIMGroups(ctx context.Context) ([]imGroup, error) {
 	}
 	var payload struct {
 		Data []struct {
-			Name string `json:"name"`
-			ID   string `json:"id"`
+			Name        string `json:"name"`
+			ID          string `json:"id"`
+			Description string `json:"description"`
 		} `json:"data"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
@@ -154,7 +167,18 @@ func (c *Client) fetchIMGroups(ctx context.Context) ([]imGroup, error) {
 	groups := []imGroup{}
 	for _, item := range payload.Data {
 		if strings.TrimSpace(item.ID) != "" {
-			groups = append(groups, imGroup{Name: strings.TrimSpace(item.Name), ID: strings.TrimSpace(item.ID)})
+			name := strings.TrimSpace(item.Name)
+			if name == "" {
+				var description struct {
+					CourseInfo struct {
+						CourseName string `json:"coursename"`
+					} `json:"courseInfo"`
+				}
+				if json.Unmarshal([]byte(item.Description), &description) == nil {
+					name = strings.TrimSpace(description.CourseInfo.CourseName)
+				}
+			}
+			groups = append(groups, imGroup{Name: name, ID: strings.TrimSpace(item.ID)})
 		}
 	}
 	c.imGroups, c.imGroupsAt = groups, time.Now()
@@ -260,7 +284,8 @@ func parseIMAttachment(value string) (Activity, bool) {
 		ID: fmt.Sprintf("%d", sign.AID), CourseID: fmt.Sprintf("%d", sign.CourseInfo.CourseID),
 		ClassID: fmt.Sprintf("%d", sign.CourseInfo.ClassID), Course: sign.CourseInfo.CourseName,
 		Title: firstNonBlank(sign.Title, sign.SubTitle, sign.ATypeName), Kind: "signin",
-		State: "active", UserState: "unknown", RawType: sign.AType, RawOtherID: int(signTypeNumber(sign.ATypeName)),
+		StartsAtTitle: strings.TrimSpace(sign.SubTitle),
+		State:         "active", UserState: "unknown", RawType: sign.AType, RawOtherID: int(signTypeNumber(sign.ATypeName)),
 		SignType: signType(signTypeNumber(sign.ATypeName)), Signable: true,
 	}, true
 }

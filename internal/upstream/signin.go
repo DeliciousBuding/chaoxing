@@ -30,13 +30,15 @@ var analysisCodePattern = regexp.MustCompile(`code='\+'([a-f0-9]+)'`)
 // supply exact coordinates; the sign layer still applies the reference client's
 // small random offset before submission.
 type SignRequest struct {
-	CourseID   string
-	ClassID    string
-	ActivityID string
-	Latitude   *float64
-	Longitude  *float64
-	Address    string
-	SignCode   string
+	CourseID        string
+	ClassID         string
+	ActivityID      string
+	Latitude        *float64
+	Longitude       *float64
+	Address         string
+	SignCode        string
+	SignEnc2        string
+	CaptchaValidate string
 }
 
 type SignResult struct {
@@ -68,9 +70,19 @@ type locationResultPayload struct {
 	MockData  string  `json:"mockData"`
 }
 
-// SignActivity submits exactly one selected activity, supports only normal and
-// location sign-in, and verifies the upstream attendance state after submit.
+// SignActivity is the watcher-facing boundary. It uses the same account queue
+// as MCP/CLI calls so sign state cannot race a concurrent query.
 func (c *Client) SignActivity(ctx context.Context, req SignRequest) (SignResult, error) {
+	if err := c.lock(ctx); err != nil {
+		return SignResult{}, err
+	}
+	defer c.queries.Release()
+	return c.signActivity(ctx, req)
+}
+
+// signActivity submits exactly one selected activity and verifies attendance.
+// Callers must already hold the account query slot.
+func (c *Client) signActivity(ctx context.Context, req SignRequest) (SignResult, error) {
 	if strings.TrimSpace(req.CourseID) == "" || strings.TrimSpace(req.ClassID) == "" || strings.TrimSpace(req.ActivityID) == "" {
 		return SignResult{}, fault("INVALID_ARGUMENT", "course, class and activity IDs are required")
 	}
@@ -112,8 +124,23 @@ func (c *Client) SignActivity(ctx context.Context, req SignRequest) (SignResult,
 	if !info.OtherID.ok {
 		return SignResult{}, fault("UPSTREAM_SCHEMA", "activity sign type is missing")
 	}
-	if info.IfNeedVCode.ok && info.IfNeedVCode.value == 1 || info.OpenCheckFace.ok && info.OpenCheckFace.value == 1 {
-		return SignResult{}, fault("UNSUPPORTED", "activity requires manual verification")
+	if info.OpenCheckFace.ok && info.OpenCheckFace.value == 1 {
+		return SignResult{}, fault("UNSUPPORTED", "activity requires face verification")
+	}
+	if info.IfNeedVCode.ok && info.IfNeedVCode.value == 1 {
+		if challenge, ok := c.captchaChallenges[activity.ID]; ok {
+			if time.Since(challenge.CreatedAt) > 10*time.Minute {
+				delete(c.captchaChallenges, activity.ID)
+				return SignResult{}, fault("CAPTCHA_REQUIRED", "captcha challenge expired; call sign_activity again")
+			}
+			if challenge.Validate == "" {
+				return SignResult{}, fault("CAPTCHA_REQUIRED", "answer the captcha challenge before retrying")
+			}
+			req.SignEnc2, req.CaptchaValidate = challenge.Enc2, challenge.Validate
+		}
+		// Without a stored challenge, submit once. The reference protocol returns
+		// `validate_<enc2>` for a captcha-required activity; blind pre-rejection
+		// would make that state unreachable.
 	}
 	var method string
 	switch {
@@ -135,6 +162,18 @@ func (c *Client) SignActivity(ctx context.Context, req SignRequest) (SignResult,
 	if err != nil {
 		return SignResult{}, err
 	}
+	if strings.HasPrefix(state, "validate_") || strings.HasPrefix(state, "checkFace_") {
+		enc2 := strings.TrimPrefix(strings.TrimPrefix(state, "validate_"), "checkFace_")
+		if enc2 == "" {
+			return SignResult{}, fault("UPSTREAM_SCHEMA", "captcha challenge token not recognized")
+		}
+		if strings.HasPrefix(state, "checkFace_") {
+			return SignResult{}, fault("UNSUPPORTED", "activity requires face verification")
+		}
+		c.storeCaptchaChallenge(activity, enc2)
+		return SignResult{}, fault("CAPTCHA_REQUIRED", "captcha challenge is ready")
+	}
+	delete(c.captchaChallenges, activity.ID)
 	verified, err := c.attendanceVerified(ctx, activity.ID)
 	if err != nil {
 		return SignResult{}, err
@@ -160,6 +199,14 @@ func findCourseClass(courses []Course, courseID, classID string) (Course, bool) 
 // ListClassActivities is the watcher-facing read boundary: it resolves one
 // exact enrolled class and returns its current activity feed.
 func (c *Client) ListClassActivities(ctx context.Context, courseID, classID string) ([]Activity, error) {
+	if err := c.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer c.queries.Release()
+	return c.listClassActivities(ctx, courseID, classID)
+}
+
+func (c *Client) listClassActivities(ctx context.Context, courseID, classID string) ([]Activity, error) {
 	courses, err := c.fetchCourses(ctx)
 	if err != nil {
 		return nil, err
@@ -233,12 +280,19 @@ func (c *Client) signSelected(ctx context.Context, activity Activity, info activ
 		return "", err
 	}
 	if method == "normal" {
-		q := orderedQuery(
+		pairs := []string{
 			"activeId", activity.ID, "courseId", activity.CourseID, "uid", identity.UID,
 			"clientip", "", "useragent", "", "latitude", "-1", "longitude", "-1",
 			"appType", "15", "fid", identity.FID, "name", identity.Name,
-			"deviceCode", c.device.DeviceCode,
-		)
+		}
+		if req.CaptchaValidate != "" {
+			pairs = append(pairs, "validate", req.CaptchaValidate)
+		}
+		pairs = append(pairs, "deviceCode", c.device.DeviceCode)
+		if req.SignEnc2 != "" {
+			pairs = append(pairs, "enc2", req.SignEnc2)
+		}
+		q := orderedQuery(pairs...)
 		b, err := c.get(ctx, stuSignAPI+"?"+q)
 		if err != nil {
 			return "", err
@@ -249,12 +303,19 @@ func (c *Client) signSelected(ctx context.Context, activity Activity, info activ
 		if err := c.checkSignCode(ctx, activity.ID, req.SignCode); err != nil {
 			return "", err
 		}
-		q := orderedQuery(
+		pairs := []string{
 			"activeId", activity.ID, "courseId", activity.CourseID, "uid", identity.UID,
 			"clientip", "", "latitude", "-1", "longitude", "-1", "appType", "15",
 			"fid", identity.FID, "name", identity.Name, "signCode", req.SignCode,
 			"deviceCode", c.device.DeviceCode,
-		)
+		}
+		if req.SignEnc2 != "" {
+			pairs = append(pairs, "enc2", req.SignEnc2)
+		}
+		if req.CaptchaValidate != "" {
+			pairs = append(pairs, "validate", req.CaptchaValidate)
+		}
+		q := orderedQuery(pairs...)
 		b, err := c.get(ctx, stuSignAPI+"?"+q)
 		if err != nil {
 			return "", err
@@ -302,25 +363,41 @@ func (c *Client) signLocation(ctx context.Context, activity Activity, info activ
 	}
 	lat, lng = jitterLocation(lat, lng, tight)
 	address := firstNonBlank(req.Address, activity.Course, "课堂位置")
+	resultLat, resultLng := roundCoordinate(lat, 6), roundCoordinate(lng, 6)
 	locationResult, err := json.Marshal(locationResultPayload{
-		Result: 1, Latitude: lat, Longitude: lng, Address: address,
+		Result: 1, Latitude: resultLat, Longitude: resultLng, Address: address,
 		MockData: `{"strategy":0,"probability":-1}`,
 	})
 	if err != nil {
 		return "", fault("INTERNAL", "location payload failed")
 	}
-	q := orderedQuery(
+	pairs := []string{
 		"name", identity.Name, "address", address, "activeId", activity.ID,
 		"courseId", activity.CourseID, "uid", identity.UID, "clientip", "",
 		"latitude", formatCoordinate(lat), "longitude", formatCoordinate(lng),
-		"fid", identity.FID, "appType", "15", "ifTiJiao", "1", "deviceCode", c.device.DeviceCode,
-		"vpProbability", "-1", "vpStrategy", "", "locationResult", string(locationResult),
+		"fid", identity.FID, "appType", "15", "ifTiJiao", "1",
+	}
+	if req.CaptchaValidate != "" {
+		pairs = append(pairs, "validate", req.CaptchaValidate)
+	}
+	pairs = append(pairs,
+		"deviceCode", c.device.DeviceCode, "vpProbability", "-1", "vpStrategy", "",
 	)
+	if req.SignEnc2 != "" {
+		pairs = append(pairs, "enc2", req.SignEnc2)
+	}
+	pairs = append(pairs, "locationResult", string(locationResult))
+	q := orderedQuery(pairs...)
 	b, err := c.get(ctx, stuSignAPI+"?"+q)
 	if err != nil {
 		return "", err
 	}
 	return signResponseState(string(b))
+}
+
+func roundCoordinate(value float64, digits int) float64 {
+	factor := math.Pow(10, float64(digits))
+	return math.Round(value*factor) / factor
 }
 
 func (c *Client) preSign(ctx context.Context, activity Activity, identity signIdentity) error {
@@ -383,6 +460,9 @@ func signResponseState(body string) (string, error) {
 	case body == "success2":
 		return "", fault("SIGN_EXPIRED", "sign-in has ended")
 	case strings.HasPrefix(body, "validate_"), strings.HasPrefix(body, "[face]"), strings.HasPrefix(body, "checkFace_"):
+		if strings.HasPrefix(body, "validate_") || strings.HasPrefix(body, "checkFace_") {
+			return body, nil
+		}
 		return "", fault("UNSUPPORTED", "activity requires manual verification")
 	case strings.HasPrefix(body, "errorLocation"):
 		return "", fault("SIGN_LOCATION_REJECTED", "location was rejected")

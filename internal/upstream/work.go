@@ -112,7 +112,7 @@ func (c *Client) ListWorkJobs(ctx context.Context, args map[string]any) (any, er
 // WorkQuestions reads the editable question page for one cached work job. It
 // never posts answers or enters an exam.
 func (c *Client) WorkQuestions(ctx context.Context, args map[string]any) (any, error) {
-	set, err := c.GetWorkQuestions(ctx, str(args, "course_id"), str(args, "class_id"), str(args, "job_id"))
+	set, err := c.getWorkQuestions(ctx, str(args, "course_id"), str(args, "class_id"), str(args, "job_id"))
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +124,14 @@ func (c *Client) WorkQuestions(ctx context.Context, args map[string]any) (any, e
 }
 
 func (c *Client) GetWorkQuestions(ctx context.Context, courseID, classID, jobID string) (WorkQuestionSet, error) {
+	if err := c.lock(ctx); err != nil {
+		return WorkQuestionSet{}, err
+	}
+	defer c.queries.Release()
+	return c.getWorkQuestions(ctx, courseID, classID, jobID)
+}
+
+func (c *Client) getWorkQuestions(ctx context.Context, courseID, classID, jobID string) (WorkQuestionSet, error) {
 	job, ok := c.workJobs[workJobKey(WorkJob{CourseID: courseID, ClassID: classID, ID: jobID})]
 	if !ok {
 		return WorkQuestionSet{}, fault("NOT_FOUND", "work job is not in the current cache; call list_work_jobs first")

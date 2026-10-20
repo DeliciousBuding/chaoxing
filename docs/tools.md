@@ -1,6 +1,6 @@
 # Tools and coverage
 
-Chaoxing exposes 21 operations through the CLI, local daemon and HTTP MCP. The operation registry in `internal/operation/registry.go` defines their names, arguments, schemas and required OAuth scopes; `internal/upstream` implements the source reads, activity/group discovery, work-question parsing and sign-in state machine, while `internal/workdraft` implements local answer drafts.
+Chaoxing exposes 23 operations through the CLI, local daemon and HTTP MCP. The operation registry in `internal/operation/registry.go` defines their names, arguments, schemas and required OAuth scopes; `internal/upstream` implements the source reads, activity/group discovery, work-question parsing, sign-in state machine and manual captcha state, while `internal/workdraft` implements local answer drafts.
 
 ## Calls, schemas and transport results
 
@@ -58,6 +58,8 @@ Arguments are optional unless marked required. CLI operation IDs use two words, 
 | `workdrafts.delete` | `delete_work_draft` | required `course_id`, `class_id`, `job_id`, `question_id` | Deletes one local draft. Requires `chaoxing.work`. |
 | `workdrafts.export` | `export_work_draft` | required `course_id`, `class_id`, `job_id` | Exports current form data plus drafts as `pyFlag=1` save and final submit payloads. Requires `chaoxing.work`; does not POST. |
 | `activities.sign` | `sign_activity` | required `course_id`, `class_id`, `activity_id`; optional `latitude`, `longitude`, `address`, `sign_code` | Submits one normal, location, password or gesture sign-in, then re-reads attendance state. Password/gesture require `sign_code`. Requires the separate `chaoxing.sign` OAuth scope. |
+| `signcaptcha.get` | `get_sign_captcha` | required `course_id`, `class_id`, `activity_id` | Returns the slider background/cutout image URLs and expiry for a challenge created by `sign_activity`. Requires `chaoxing.sign`. |
+| `signcaptcha.answer` | `answer_sign_captcha` | required `course_id`, `class_id`, `activity_id`, `x_position` | Submits one slider coordinate and stores the upstream validation token for the next `sign_activity` retry. Requires `chaoxing.sign`. |
 
 ## Shared validation and metadata
 
@@ -135,7 +137,18 @@ The operation uses the reference Android client's protocol chain: persistent dev
 
 Location requests may supply `latitude`, `longitude` and `address`. Coordinates must lie inside the activity's published range. The service applies the reference client's independent ±0.00005-degree random offset; if upstream returns `errorLocation`, it retries once with the tightened ±0.00001 offset. Without preset coordinates, it uses the activity's published center with the same jitter. A successful submission is verified through `getAttendInfo`; a still-unsigned state returns `SIGN_REJECTED`.
 
-Password and gesture requests first call the reference `checkSignCode` endpoint. A rejected code returns `SIGN_CODE_REJECTED` before attendance is changed. Photo, QR, captcha and face requirements return `UNSUPPORTED`. The watcher sends a manual alert for those types and does not blind-retry a failed activity. Remote MCP callers need `chaoxing.sign`; a `chaoxing.read` token receives an insufficient-scope error before upstream is contacted.
+Password and gesture requests first call the reference `checkSignCode` endpoint. A rejected code returns `SIGN_CODE_REJECTED` before attendance is changed. Photo, QR and face requirements return `UNSUPPORTED`. Remote MCP callers need `chaoxing.sign`; a `chaoxing.read` token receives an insufficient-scope error before upstream is contacted.
+
+### Manual slider captcha
+
+When upstream requires a slider captcha, the first `sign_activity` call follows the reference protocol and may receive `validate_<enc2>`. The service stores only the in-memory challenge token, returns `CAPTCHA_REQUIRED`, and does not verify attendance. The caller then:
+
+```text
+get_sign_captcha -> inspect shade_image/cutout_image
+answer_sign_captcha(x_position) -> sign_activity
+```
+
+`answer_sign_captcha` submits one x-coordinate in the upstream `-8..280` coordinate space and stores the returned validation token in memory. The next `sign_activity` automatically adds `enc2` and `validate` in the reference query order. A wrong answer returns `SIGN_CAPTCHA_REJECTED`; the caller may fetch a new challenge but the watcher never blind-retries. Challenges expire after 10 minutes and raw `enc2`, `captchaKey`, `iv`, token and validate values are never returned by the tool contract.
 
 ## Manual work questions and drafts
 

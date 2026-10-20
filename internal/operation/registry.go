@@ -89,6 +89,8 @@ var definitions = []Definition{
 		"address":     text("Optional location label submitted with location sign-in.", false),
 		"sign_code":   text("Required for password or gesture sign-in.", false),
 	}, Scope: "chaoxing.sign"},
+	{ID: "signcaptcha.get", Name: "get_sign_captcha", Title: "Get sign captcha", Description: "Fetch the slider images for a captcha challenge created by sign_activity. The image URLs are operator data and expire quickly.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact enrolled class ID from list_courses.", true), "activity_id": text("Stable activity ID from list_activities.", true)}, Scope: "chaoxing.sign"},
+	{ID: "signcaptcha.answer", Name: "answer_sign_captcha", Title: "Answer sign captcha", Description: "Submit one slider x-coordinate and store the upstream validation token for the next sign_activity retry.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact enrolled class ID from list_courses.", true), "activity_id": text("Stable activity ID from list_activities.", true), "x_position": number("Slider x-coordinate in the upstream coordinate space.", -8, 280)}, Scope: "chaoxing.sign"},
 }
 
 func All() []Definition { return append([]Definition(nil), definitions...) }
@@ -193,6 +195,7 @@ func activitySchema() map[string]any {
 		"group_name":      stringSchema(),
 		"starts_at":       stringSchema(),
 		"ends_at":         stringSchema(),
+		"starts_at_title": stringSchema(),
 	})
 }
 
@@ -263,6 +266,14 @@ func (d Definition) OutputSchema() map[string]any {
 	if d.Name == "sign_activity" {
 		delete(properties, "items")
 		properties["result"] = signResultSchema()
+	}
+	if d.Name == "get_sign_captcha" {
+		delete(properties, "items")
+		properties["captcha"] = map[string]any{"type": "object"}
+	}
+	if d.Name == "answer_sign_captcha" {
+		delete(properties, "items")
+		properties["validated"] = map[string]any{"type": "boolean"}
 	}
 	if d.Name == "get_study_digest" {
 		properties["items"] = arraySchema(actionItemSchema())
@@ -515,6 +526,6 @@ func capabilities(defs []Definition) map[string]any {
 		names = append(names, d.Name)
 		ops = append(ops, map[string]any{"id": d.ID, "name": d.Name, "title": d.Title, "description": d.Description, "scope": RequiredScope(d), "input_schema": d.InputSchema(), "output_schema": d.OutputSchema()})
 	}
-	return map[string]any{"contract_version": "7", "tools": names, "operations": ops, "unsupported_domains": []string{"group_message_history", "inbox", "task_points", "folder_traversal", "automatic_work_submission"}, "complete": true, "coverage": "verified_tool_catalog"}
+	return map[string]any{"contract_version": "8", "tools": names, "operations": ops, "unsupported_domains": []string{"group_message_history", "inbox", "task_points", "folder_traversal", "automatic_work_submission", "automatic_captcha_solver"}, "complete": true, "coverage": "verified_tool_catalog"}
 }
 func Capabilities() map[string]any { return capabilities(All()) }

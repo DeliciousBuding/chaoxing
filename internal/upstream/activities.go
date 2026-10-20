@@ -31,6 +31,7 @@ type Activity struct {
 	Signable      bool       `json:"signable"`
 	StartsAt      *time.Time `json:"starts_at,omitempty"`
 	EndsAt        *time.Time `json:"ends_at,omitempty"`
+	StartsAtTitle string     `json:"starts_at_title,omitempty"`
 	Ext           string     `json:"-"`
 	Source        string     `json:"source,omitempty"`
 	GroupName     string     `json:"group_name,omitempty"`
@@ -106,7 +107,7 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 		classes = append(classes, map[string]any{"course_id": co.ID, "class_id": co.ClassID, "complete": true})
 	}
 	groupAvailable := false
-	if groupRows, err := c.ListGroupActivities(ctx); err == nil {
+	if groupRows, err := c.listGroupActivities(ctx); err == nil {
 		groupAvailable = true
 		known := map[string]bool{}
 		for _, item := range items {

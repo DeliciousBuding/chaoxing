@@ -82,6 +82,13 @@ func SafeFault(err error) *Fault {
 	case "SIGN_EXPIRED", "SIGN_ALREADY":
 		f.Category = "upstream_state"
 		f.Message = "The sign-in activity state changed."
+	case "SIGN_CODE_REJECTED", "SIGN_CAPTCHA_REJECTED":
+		f.Category = "upstream_state"
+		f.Message = "The sign-in verification value was not accepted."
+	case "CAPTCHA_REQUIRED":
+		f.Category = "verification"
+		f.Message = "A slider captcha challenge is required."
+		f.Hint = "Call get_sign_captcha, answer_sign_captcha, then retry sign_activity."
 	case "WORK_UNAVAILABLE":
 		f.Category = "upstream_state"
 		f.Message = "The work is not currently available for manual answering."
@@ -112,26 +119,27 @@ type SavedCookies struct {
 	Cookies []*http.Cookie `json:"cookies"`
 }
 type Client struct {
-	queries          *admission.Gate
-	config           Config
-	http             *http.Client
-	saved            map[string]SavedCookies
-	lastLogin        time.Time
-	loginFailedAt    time.Time
-	courses          []Course
-	coursesAt        time.Time
-	assignments      []Assignment
-	assignmentsAt    time.Time
-	coverage         string
-	extraAssignments map[string]Assignment
-	device           deviceState
-	identity         *signIdentity
-	im               *imConfig
-	imGroups         []imGroup
-	imGroupsAt       time.Time
-	imActivities     []Activity
-	imActivitiesAt   time.Time
-	workJobs         map[string]WorkJob
+	queries           *admission.Gate
+	config            Config
+	http              *http.Client
+	saved             map[string]SavedCookies
+	lastLogin         time.Time
+	loginFailedAt     time.Time
+	courses           []Course
+	coursesAt         time.Time
+	assignments       []Assignment
+	assignmentsAt     time.Time
+	coverage          string
+	extraAssignments  map[string]Assignment
+	device            deviceState
+	identity          *signIdentity
+	im                *imConfig
+	imGroups          []imGroup
+	imGroupsAt        time.Time
+	imActivities      []Activity
+	imActivitiesAt    time.Time
+	workJobs          map[string]WorkJob
+	captchaChallenges map[string]signCaptchaChallenge
 }
 
 func New(c Config) (*Client, error) {
@@ -310,6 +318,7 @@ func (c *Client) login(ctx context.Context) error {
 	c.imActivities = nil
 	c.imActivitiesAt = time.Time{}
 	c.workJobs = nil
+	c.captchaChallenges = nil
 	return nil
 }
 func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
@@ -410,6 +419,10 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		return c.ListWorkJobs(ctx, args)
 	case "get_work_questions":
 		return c.WorkQuestions(ctx, args)
+	case "get_sign_captcha":
+		return c.getSignCaptcha(ctx, args)
+	case "answer_sign_captcha":
+		return c.answerSignCaptcha(ctx, args)
 	case "sign_activity":
 		req := SignRequest{
 			CourseID: str(args, "course_id"), ClassID: str(args, "class_id"),
@@ -422,7 +435,7 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		if v, ok := floatArg(args, "longitude"); ok {
 			req.Longitude = &v
 		}
-		result, e := c.SignActivity(ctx, req)
+		result, e := c.signActivity(ctx, req)
 		if e != nil {
 			return nil, e
 		}
