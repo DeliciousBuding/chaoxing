@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -23,6 +25,32 @@ func TestCaptchaSolverConfig(t *testing.T) {
 	}
 	bad := &captchaSolverConfig{Provider: "unknown"}
 	if _, err = bad.solver(); err == nil || !strings.Contains(err.Error(), "provider") {
+		t.Fatalf("err=%v", err)
+	}
+}
+func TestCaptchaSolverUserKeySources(t *testing.T) {
+	direct := &captchaSolverConfig{Provider: "damagou", UserKey: "synthetic-user_key"}
+	if key, err := direct.resolveUserKey(); err != nil || key != "synthetic-user_key" {
+		t.Fatalf("key=%q err=%v", key, err)
+	}
+
+	path := filepath.Join(t.TempDir(), "damagou.key")
+	if err := os.WriteFile(path, []byte(" file-key \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fromFile := &captchaSolverConfig{Provider: "damagou", UserKeyFile: path}
+	if key, err := fromFile.resolveUserKey(); err != nil || key != "file-key" {
+		t.Fatalf("key=%q err=%v", key, err)
+	}
+
+	t.Setenv("CHAOXING_TEST_DAMAGOU_KEY", "env-key")
+	fromEnv := &captchaSolverConfig{Provider: "damagou", UserKeyEnv: "CHAOXING_TEST_DAMAGOU_KEY"}
+	if key, err := fromEnv.resolveUserKey(); err != nil || key != "env-key" {
+		t.Fatalf("key=%q err=%v", key, err)
+	}
+
+	ambiguous := &captchaSolverConfig{Provider: "damagou", UserKey: "a", UserKeyEnv: "B"}
+	if _, err := ambiguous.resolveUserKey(); err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("err=%v", err)
 	}
 }

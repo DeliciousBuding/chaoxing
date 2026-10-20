@@ -129,13 +129,13 @@ Set a private top-level `captcha_solver` object to let `sign_activity` resolve s
 {
   "captcha_solver": {
     "provider": "damagou",
-    "user_key": "synthetic-user_key",
+    "user_key_file": "/etc/chaoxing/damagou.key",
     "timeout_seconds": 60
   }
 }
 ```
 
-`provider` currently accepts `damagou`. `user_key` is private deployment secret material; keep it out of Git and public issue reports. `timeout_seconds` defaults to 60. A solved challenge is submitted through the same `answer_sign_captcha` protocol and followed by exactly one sign retry. If the provider fails, the safe fault code is `CAPTCHA_SOLVER_FAILED` and the manual `get_sign_captcha` -> `answer_sign_captcha` -> `sign_activity` flow remains available. A tenant can contain its own `captcha_solver` object.
+`provider` currently accepts `damagou`. Provide exactly one of `user_key`, `user_key_file`, or `user_key_env`; `user_key_file` is recommended so the secret stays outside the main JSON. Use an absolute path to a root-only file containing only the key. `timeout_seconds` defaults to 60. A solved challenge is submitted through the same `answer_sign_captcha` protocol and followed by exactly one sign retry. If the provider fails, the safe fault code is `CAPTCHA_SOLVER_FAILED` and the manual `get_sign_captcha` -> `answer_sign_captcha` -> `sign_activity` flow remains available. A tenant can contain its own `captcha_solver` object.
 ## Manual answer drafts
 
 Manual answer support needs no extra configuration. The first `upsert_work_draft`, `list_work_drafts`, `delete_work_draft` or `export_work_draft` call creates `<state_dir>/work-drafts.json` with mode 0600. Drafts are validated against the current work question set, persisted atomically, and exported as both a `pyFlag=1` save payload and a final submit payload. The daemon never posts either payload upstream.

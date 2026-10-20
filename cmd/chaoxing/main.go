@@ -85,6 +85,8 @@ type tenantConfig struct {
 type captchaSolverConfig struct {
 	Provider       string `json:"provider"`
 	UserKey        string `json:"user_key,omitempty"`
+	UserKeyFile    string `json:"user_key_file,omitempty"`
+	UserKeyEnv     string `json:"user_key_env,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
@@ -95,7 +97,11 @@ func (c *captchaSolverConfig) solver() (upstream.CaptchaSolver, error) {
 	if strings.TrimSpace(c.Provider) != "damagou" {
 		return nil, errors.New("captcha_solver.provider must be damagou")
 	}
-	solver, err := captchasolver.NewDamaGou(c.UserKey)
+	userKey, err := c.resolveUserKey()
+	if err != nil {
+		return nil, err
+	}
+	solver, err := captchasolver.NewDamaGou(userKey)
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +109,38 @@ func (c *captchaSolverConfig) solver() (upstream.CaptchaSolver, error) {
 		solver.Client.Timeout = time.Duration(c.TimeoutSeconds) * time.Second
 	}
 	return solver, nil
+}
+
+func (c *captchaSolverConfig) resolveUserKey() (string, error) {
+	sources := 0
+	for _, value := range []string{c.UserKey, c.UserKeyFile, c.UserKeyEnv} {
+		if strings.TrimSpace(value) != "" {
+			sources++
+		}
+	}
+	if sources != 1 {
+		return "", errors.New("captcha_solver requires exactly one of user_key, user_key_file, or user_key_env")
+	}
+	switch {
+	case strings.TrimSpace(c.UserKey) != "":
+		return strings.TrimSpace(c.UserKey), nil
+	case strings.TrimSpace(c.UserKeyFile) != "":
+		b, err := os.ReadFile(c.UserKeyFile)
+		if err != nil {
+			return "", errors.New("captcha solver user key file is unavailable")
+		}
+		key := strings.TrimSpace(string(b))
+		if key == "" || len(key) > 512 {
+			return "", errors.New("captcha solver user key file is invalid")
+		}
+		return key, nil
+	default:
+		key := strings.TrimSpace(os.Getenv(c.UserKeyEnv))
+		if key == "" {
+			return "", errors.New("captcha solver user key environment variable is empty")
+		}
+		return key, nil
+	}
 }
 
 type request struct {
