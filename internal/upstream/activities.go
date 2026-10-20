@@ -32,6 +32,8 @@ type Activity struct {
 	StartsAt      *time.Time `json:"starts_at,omitempty"`
 	EndsAt        *time.Time `json:"ends_at,omitempty"`
 	Ext           string     `json:"-"`
+	Source        string     `json:"source,omitempty"`
+	GroupName     string     `json:"group_name,omitempty"`
 }
 
 // flexInt accepts upstream numbers that are sometimes encoded as strings.
@@ -103,6 +105,22 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 		items = append(items, rows...)
 		classes = append(classes, map[string]any{"course_id": co.ID, "class_id": co.ClassID, "complete": true})
 	}
+	groupAvailable := false
+	if groupRows, err := c.ListGroupActivities(ctx); err == nil {
+		groupAvailable = true
+		known := map[string]bool{}
+		for _, item := range items {
+			known[item.CourseID+":"+item.ClassID+":"+item.ID] = true
+		}
+		for _, item := range groupRows {
+			if !known[item.CourseID+":"+item.ClassID+":"+item.ID] {
+				items = append(items, item)
+			}
+		}
+	} else {
+		code := academicCode(err)
+		warnings = append(warnings, "group activity feed unavailable: "+code)
+	}
 	if failed == len(selected) && firstErr != nil {
 		return nil, firstErr
 	}
@@ -118,7 +136,7 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 		"total_in_feed":    total,
 		"limit":            limit,
 		"has_more":         hasMore,
-		"complete":         failed == 0,
+		"complete":         failed == 0 && groupAvailable,
 		"coverage":         "class_activity_list",
 		"coverage_details": map[string]any{"classes": classes, "sources_checked": len(selected), "sources_failed": failed},
 		"warnings":         warnings,
@@ -213,6 +231,7 @@ func normalizeActivity(raw rawActivity, co Course, ext string) Activity {
 		RawStatus:     int(raw.Status.value),
 		RawUserStatus: int(raw.UserStatus.value),
 		Ext:           strings.TrimSpace(ext),
+		Source:        "class",
 	}
 	a.SignType = signType(raw.OtherID.value)
 	a.Signable = kind == "signin" && state == "active" && userState == "unsigned"

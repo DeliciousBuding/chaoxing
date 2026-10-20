@@ -82,6 +82,9 @@ func SafeFault(err error) *Fault {
 	case "SIGN_EXPIRED", "SIGN_ALREADY":
 		f.Category = "upstream_state"
 		f.Message = "The sign-in activity state changed."
+	case "WORK_UNAVAILABLE":
+		f.Category = "upstream_state"
+		f.Message = "The work is not currently available for manual answering."
 	case "UNSUPPORTED":
 		f.Category = "capability"
 		f.Message = "Capability is not implemented."
@@ -101,6 +104,7 @@ type Config struct {
 	DeviceStatePath                       string
 	DeviceCode                            string
 	UserAgent, PackageName                string
+	GroupActivities                       bool
 	Transport                             http.RoundTripper
 }
 type SavedCookies struct {
@@ -122,6 +126,12 @@ type Client struct {
 	extraAssignments map[string]Assignment
 	device           deviceState
 	identity         *signIdentity
+	im               *imConfig
+	imGroups         []imGroup
+	imGroupsAt       time.Time
+	imActivities     []Activity
+	imActivitiesAt   time.Time
+	workJobs         map[string]WorkJob
 }
 
 func New(c Config) (*Client, error) {
@@ -172,7 +182,7 @@ func safeURL(u *url.URL) bool {
 	// GET is not proof of read-only behavior. Block known learning mutations and
 	// task-entry paths even if supplied by a known feed or a server redirect.
 	p := strings.ToLower(u.Path)
-	for _, blocked := range []string{"studentstudyajax", "/knowledge/cards", "/log/setlog", "/ananas/job/", "/multimedia/log/", "/savetimepc", "/mooc-ans/api/work", "/markread", "/setread"} {
+	for _, blocked := range []string{"studentstudyajax", "/log/setlog", "/ananas/job/", "/multimedia/log/", "/savetimepc", "/work/addstudentworknew", "/markread", "/setread"} {
 		if strings.Contains(p, blocked) {
 			return false
 		}
@@ -294,6 +304,12 @@ func (c *Client) login(ctx context.Context) error {
 	c.assignments = nil
 	c.extraAssignments = nil
 	c.identity = nil
+	c.im = nil
+	c.imGroups = nil
+	c.imGroupsAt = time.Time{}
+	c.imActivities = nil
+	c.imActivitiesAt = time.Time{}
+	c.workJobs = nil
 	return nil
 }
 func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
@@ -390,10 +406,15 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		return c.materials(ctx, args)
 	case "list_activities":
 		return c.activities(ctx, args)
+	case "list_work_jobs":
+		return c.ListWorkJobs(ctx, args)
+	case "get_work_questions":
+		return c.WorkQuestions(ctx, args)
 	case "sign_activity":
 		req := SignRequest{
 			CourseID: str(args, "course_id"), ClassID: str(args, "class_id"),
 			ActivityID: str(args, "activity_id"), Address: str(args, "address"),
+			SignCode: str(args, "sign_code"),
 		}
 		if v, ok := floatArg(args, "latitude"); ok {
 			req.Latitude = &v

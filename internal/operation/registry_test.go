@@ -3,6 +3,7 @@ package operation
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -65,6 +66,28 @@ func TestSignArgumentsAcceptBoundedNumbers(t *testing.T) {
 	}
 }
 
+func TestWorkContractsUseDedicatedScopeAndBoundedAnswer(t *testing.T) {
+	d, ok := Find("workdrafts.upsert")
+	if !ok || RequiredScope(d) != "chaoxing.work" {
+		t.Fatal(d, ok)
+	}
+	answer := strings.Repeat("a", 4096)
+	valid := map[string]any{"course_id": "course-1", "class_id": "class-1", "job_id": "work-1", "question_id": "q1", "answer": answer}
+	if err := Validate(d, valid); err != nil {
+		t.Fatal(err)
+	}
+	valid["answer"] = strings.Repeat("a", 4097)
+	if err := Validate(d, valid); err == nil {
+		t.Fatal("oversized answer accepted")
+	}
+	for _, name := range []string{"list_work_drafts", "delete_work_draft", "export_work_draft"} {
+		d, ok := Find(name)
+		if !ok || RequiredScope(d) != "chaoxing.work" {
+			t.Fatal(name, d, ok)
+		}
+	}
+}
+
 func TestRegistryCatalogAndNoUnsupportedArguments(t *testing.T) {
 	ids := map[string]bool{}
 	for _, d := range All() {
@@ -100,7 +123,7 @@ func TestStudyDigestContract(t *testing.T) {
 	if e != nil || out["meta"].(map[string]any)["status"] != "partial" {
 		t.Fatal(out, e)
 	}
-	if Capabilities()["contract_version"] != "6" {
+	if Capabilities()["contract_version"] != "7" {
 		t.Fatal(Capabilities()["contract_version"])
 	}
 }

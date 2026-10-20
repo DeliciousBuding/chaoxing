@@ -24,6 +24,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/statestore"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 	"github.com/DeliciousBuding/chaoxing/internal/watch"
+	"github.com/DeliciousBuding/chaoxing/internal/workdraft"
 )
 
 func ownerHash(s string) (string, error) { return access.HashPassword(s) }
@@ -54,11 +55,15 @@ const maxTenants = 32
 // session and upstream client. The client is created lazily so unused tenants
 // cost nothing on memory-constrained hosts.
 type tenantRuntime struct {
-	cfg    tenantConfig
-	pool   *egress.Pool
-	once   sync.Once
-	client *upstream.Client
-	err    error
+	cfg       tenantConfig
+	pool      *egress.Pool
+	once      sync.Once
+	client    *upstream.Client
+	err       error
+	watch     *watch.Runner
+	draftOnce sync.Once
+	drafts    *workdraft.Store
+	draftErr  error
 }
 
 func (t *tenantRuntime) upstreamClient() (*upstream.Client, error) {
@@ -68,6 +73,40 @@ func (t *tenantRuntime) upstreamClient() (*upstream.Client, error) {
 		t.client, t.err = upstream.New(cfg)
 	})
 	return t.client, t.err
+}
+
+func (t *tenantRuntime) workDrafts() (*workdraft.Store, error) {
+	t.draftOnce.Do(func() {
+		client, err := t.upstreamClient()
+		if err != nil {
+			t.draftErr = err
+			return
+		}
+		t.drafts, t.draftErr = workdraft.Open(filepath.Join(t.cfg.StateDir, "work-drafts.json"), client)
+	})
+	return t.drafts, t.draftErr
+}
+
+func isWorkDraftOperation(name string) bool {
+	switch name {
+	case "upsert_work_draft", "list_work_drafts", "delete_work_draft", "export_work_draft":
+		return true
+	default:
+		return false
+	}
+}
+
+func operationExecutor(client *upstream.Client, stateDir string) (func(context.Context, string, map[string]any) (any, error), error) {
+	drafts, err := workdraft.Open(filepath.Join(stateDir, "work-drafts.json"), client)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, name string, args map[string]any) (any, error) {
+		if isWorkDraftOperation(name) {
+			return operation.Execute(ctx, name, args, drafts.Call)
+		}
+		return operation.Execute(ctx, name, args, client.Call)
+	}, nil
 }
 
 func validateTenants(c config) error {
@@ -99,39 +138,77 @@ func validateTenants(c config) error {
 
 // publicMux mounts the root account and all configured tenants. It returns the
 // mux and the ordered tenant ids for the management status endpoint.
-func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool) (*http.ServeMux, []string, error) {
+func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool, rootExecute func(context.Context, string, map[string]any) (any, error)) (*http.ServeMux, []string, []*tenantRuntime, error) {
 	mux := http.NewServeMux()
 	a.Register(mux)
-	execute := func(ctx context.Context, name string, args map[string]any) (any, error) {
-		return operation.Execute(ctx, name, args, x.Call)
-	}
-	mux.Handle("/mcp", a.ProtectMCP(mcphttp.NewWithVersion(execute, version)))
+	mux.Handle("/mcp", a.ProtectMCP(mcphttp.NewWithVersion(rootExecute, version)))
 	// Additional tenants mount a complete isolated OAuth + MCP stack under
 	// /t/<id>/. Discovery metadata lives at /t/<id>/.well-known/...; clients
 	// requiring RFC 8414 path-insertion discovery must configure endpoints
 	// explicitly for tenant issuers.
 	tenantIDs := []string{}
+	runtimes := []*tenantRuntime{}
 	for _, tc := range c.Tenants {
 		tr := &tenantRuntime{cfg: tc, pool: pool}
 		ta, e := access.New(access.Config{Issuer: c.Issuer + "/t/" + tc.ID, StateDir: filepath.Join(tc.StateDir, "oauth"), OwnerPasswordHash: tc.OwnerPasswordHash, EnableCIMD: os.Getenv("CHAOXING_ENABLE_CIMD") == "true"})
 		if e != nil {
-			return nil, nil, e
+			return nil, nil, nil, e
 		}
 		tm := http.NewServeMux()
 		ta.Register(tm)
 		ta.RegisterPathDiscovery(mux)
+		runtimes = append(runtimes, tr)
 		texec := func(ctx context.Context, name string, args map[string]any) (any, error) {
 			cl, e := tr.upstreamClient()
 			if e != nil {
 				return nil, e
 			}
+			if isWorkDraftOperation(name) {
+				drafts, e := tr.workDrafts()
+				if e != nil {
+					return nil, e
+				}
+				return operation.Execute(ctx, name, args, drafts.Call)
+			}
 			return operation.Execute(ctx, name, args, cl.Call)
 		}
 		tm.Handle("/mcp", ta.ProtectMCP(mcphttp.NewWithVersion(texec, version)))
 		mux.Handle("/t/"+tc.ID+"/", http.StripPrefix("/t/"+tc.ID, tm))
+		if tc.Watch != nil && tc.Watch.Enabled {
+			cl, e := tr.upstreamClient()
+			if e != nil {
+				return nil, nil, nil, e
+			}
+			tr.watch, e = newWatcher(*tc.Watch, tc.StateDir, cl)
+			if e != nil {
+				return nil, nil, nil, e
+			}
+		}
 		tenantIDs = append(tenantIDs, tc.ID)
 	}
-	return mux, tenantIDs, nil
+	return mux, tenantIDs, runtimes, nil
+}
+
+func newWatcher(c watchConfig, stateDir string, client *upstream.Client) (*watch.Runner, error) {
+	sender, err := watchSender(c)
+	if err != nil {
+		return nil, err
+	}
+	interval := time.Duration(c.IntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	return watch.New(watch.Config{
+		Interval:              interval,
+		IntervalJitterPercent: c.IntervalJitterPercent,
+		RepeatEvery:           time.Duration(c.RepeatSeconds) * time.Second,
+		MaxRepeats:            c.MaxRepeats,
+		Window:                c.Window,
+		Lead:                  time.Duration(c.LeadSeconds) * time.Second,
+		AutoSign:              c.AutoSign,
+		Classes:               c.Classes,
+		StatePath:             filepath.Join(stateDir, "watch-state.json"),
+	}, client, sender, client)
 }
 
 func serve() error {
@@ -168,42 +245,27 @@ func serve() error {
 	if e != nil {
 		return e
 	}
+	rootExecute, e := operationExecutor(x, c.StateDir)
+	if e != nil {
+		return e
+	}
 	var watcher *watch.Runner
 	if c.Watch != nil && c.Watch.Enabled {
-		sender, err := watchSender(*c.Watch)
-		if err != nil {
-			return err
-		}
-		interval := time.Duration(c.Watch.IntervalSeconds) * time.Second
-		if interval <= 0 {
-			interval = time.Minute
-		}
-		repeat := time.Duration(c.Watch.RepeatSeconds) * time.Second
-		watcher, err = watch.New(watch.Config{
-			Interval:              interval,
-			IntervalJitterPercent: c.Watch.IntervalJitterPercent,
-			RepeatEvery:           repeat,
-			MaxRepeats:            c.Watch.MaxRepeats,
-			Window:                c.Watch.Window,
-			Lead:                  time.Duration(c.Watch.LeadSeconds) * time.Second,
-			AutoSign:              c.Watch.AutoSign,
-			Classes:               c.Watch.Classes,
-			StatePath:             filepath.Join(c.StateDir, "watch-state.json"),
-		}, x, sender, x)
-		if err != nil {
-			return err
+		watcher, e = newWatcher(*c.Watch, c.StateDir, x)
+		if e != nil {
+			return e
 		}
 	}
 	a, e := access.New(access.Config{Issuer: c.Issuer, StateDir: filepath.Join(c.StateDir, "oauth"), OwnerPasswordHash: c.OwnerPasswordHash, EnableCIMD: os.Getenv("CHAOXING_ENABLE_CIMD") == "true"})
 	if e != nil {
 		return e
 	}
-	mux, tenantIDs, e := publicMux(c, x, a, pool)
+	mux, tenantIDs, tenants, e := publicMux(c, x, a, pool, rootExecute)
 	if e != nil {
 		return e
 	}
 	execute := func(ctx context.Context, name string, args map[string]any) (any, error) {
-		return operation.Execute(ctx, name, args, x.Call)
+		return rootExecute(ctx, name, args)
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version})
@@ -280,6 +342,11 @@ func serve() error {
 	if watcher != nil {
 		go watcher.Run(ctx)
 	}
+	for _, tenant := range tenants {
+		if tenant.watch != nil {
+			go tenant.watch.Run(ctx)
+		}
+	}
 	errs := make(chan error, 2)
 	go func() { errs <- pub.ListenAndServe() }()
 	go func() { errs <- priv.ListenAndServe() }()
@@ -306,8 +373,11 @@ func watchSender(c watchConfig) (notify.Sender, error) {
 	if strings.TrimSpace(c.NtfyURL) != "" && strings.TrimSpace(c.NtfyTopic) != "" {
 		senders = append(senders, notify.Ntfy{BaseURL: c.NtfyURL, Topic: c.NtfyTopic})
 	}
+	if strings.TrimSpace(c.GotifyURL) != "" && strings.TrimSpace(c.GotifyToken) != "" {
+		senders = append(senders, notify.Gotify{BaseURL: c.GotifyURL, Token: c.GotifyToken})
+	}
 	if len(senders) == 0 {
-		return nil, errors.New("watch is enabled but no feishu_webhook or ntfy_url/ntfy_topic is configured")
+		return nil, errors.New("watch is enabled but no feishu_webhook, ntfy_url/ntfy_topic, or gotify_url/gotify_token is configured")
 	}
 	return senders, nil
 }

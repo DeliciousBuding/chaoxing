@@ -85,7 +85,11 @@ func TestTenantIsolationAndDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux, ids, err := publicMux(c, x, a, pool)
+	execute, err := operationExecutor(x, c.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux, ids, _, err := publicMux(c, x, a, pool, execute)
 	if err != nil {
 		t.Fatal(err)
 	}

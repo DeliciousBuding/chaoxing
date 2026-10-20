@@ -21,6 +21,7 @@ const (
 	analysisAPI   = "https://mobilelearn.chaoxing.com/pptSign/analysis?vs=1&DB_STRATEGY=RANDOM"
 	analysis2API  = "https://mobilelearn.chaoxing.com/pptSign/analysis2?DB_STRATEGY=RANDOM"
 	stuSignAPI    = "https://mobilelearn.chaoxing.com/pptSign/stuSignajax"
+	checkCodeAPI  = "https://mobilelearn.chaoxing.com/widget/sign/pcStuSignController/checkSignCode"
 )
 
 var analysisCodePattern = regexp.MustCompile(`code='\+'([a-f0-9]+)'`)
@@ -35,6 +36,7 @@ type SignRequest struct {
 	Latitude   *float64
 	Longitude  *float64
 	Address    string
+	SignCode   string
 }
 
 type SignResult struct {
@@ -119,8 +121,15 @@ func (c *Client) SignActivity(ctx context.Context, req SignRequest) (SignResult,
 		method = "normal"
 	case info.OtherID.value == 4 && info.IfOpenAddress.ok && info.IfOpenAddress.value == 1:
 		method = "location"
+	case info.OtherID.value == 5 && req.SignCode != "":
+		method = "password"
+	case info.OtherID.value == 3 && req.SignCode != "":
+		method = "gesture"
 	default:
-		return SignResult{}, fault("UNSUPPORTED", "only normal and location sign-in are implemented")
+		if info.OtherID.value == 3 || info.OtherID.value == 5 {
+			return SignResult{}, fault("INVALID_ARGUMENT", "sign_code is required for gesture or password sign-in")
+		}
+		return SignResult{}, fault("UNSUPPORTED", "only normal, location, gesture and password sign-in are implemented")
 	}
 	state, err := c.signSelected(ctx, activity, info, req, method)
 	if err != nil {
@@ -236,6 +245,22 @@ func (c *Client) signSelected(ctx context.Context, activity Activity, info activ
 		}
 		return signResponseState(string(b))
 	}
+	if method == "password" || method == "gesture" {
+		if err := c.checkSignCode(ctx, activity.ID, req.SignCode); err != nil {
+			return "", err
+		}
+		q := orderedQuery(
+			"activeId", activity.ID, "courseId", activity.CourseID, "uid", identity.UID,
+			"clientip", "", "latitude", "-1", "longitude", "-1", "appType", "15",
+			"fid", identity.FID, "name", identity.Name, "signCode", req.SignCode,
+			"deviceCode", c.device.DeviceCode,
+		)
+		b, err := c.get(ctx, stuSignAPI+"?"+q)
+		if err != nil {
+			return "", err
+		}
+		return signResponseState(string(b))
+	}
 
 	state, err := c.signLocation(ctx, activity, info, req, identity, false)
 	if err == nil {
@@ -248,6 +273,20 @@ func (c *Client) signSelected(ctx context.Context, activity Activity, info activ
 	// The reference client tightens its random offset after errorLocation and
 	// lets the operator retry once. Automatic mode performs that single retry.
 	return c.signLocation(ctx, activity, info, req, identity, true)
+}
+
+func (c *Client) checkSignCode(ctx context.Context, activityID, code string) error {
+	b, err := c.get(ctx, checkCodeAPI+"?"+orderedQuery("activeId", activityID, "signCode", code))
+	if err != nil {
+		return err
+	}
+	var payload struct {
+		Result int `json:"result"`
+	}
+	if json.Unmarshal(b, &payload) != nil || payload.Result != 1 {
+		return fault("SIGN_CODE_REJECTED", "sign code was not accepted")
+	}
+	return nil
 }
 
 func (c *Client) signLocation(ctx context.Context, activity Activity, info activeInfo, req SignRequest, identity signIdentity, tight bool) (string, error) {

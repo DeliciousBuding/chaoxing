@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,17 @@ type fakeSource struct {
 func (f *fakeSource) ListClassActivities(context.Context, string, string) ([]upstream.Activity, error) {
 	f.calls++
 	return f.items, nil
+}
+
+type fakeGroupSource struct {
+	fakeSource
+	groupItems []upstream.Activity
+	groupCalls int
+}
+
+func (f *fakeGroupSource) ListGroupActivities(context.Context) ([]upstream.Activity, error) {
+	f.groupCalls++
+	return f.groupItems, nil
 }
 
 type fakeSigner struct {
@@ -108,6 +120,35 @@ func TestWatchAutoSignsOnceAndUsesPresetLocation(t *testing.T) {
 		t.Fatalf("%+v", req)
 	}
 	if len(snd.sent) != 1 || snd.sent[0].Title != "✅ 学习通自动签到成功" {
+		t.Fatalf("%+v", snd.sent)
+	}
+}
+
+func TestWatchMergesGroupCardAndUsesPresetSignCode(t *testing.T) {
+	src := &fakeGroupSource{}
+	item := signIn("c", "k", "group-1", true)
+	item.SignType = "password"
+	item.Source, item.GroupName = "group", "Synthetic course group"
+	src.groupItems = []upstream.Activity{item}
+	snd := &fakeSender{}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "password", State: "signed", Verified: true}}
+	r, err := New(Config{
+		Interval: time.Minute, AutoSign: true,
+		Classes:   []Class{{CourseID: "c", ClassID: "k", SignCode: &SignCode{Code: "1234"}}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, snd, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai) }
+	r.Tick(context.Background())
+	if src.groupCalls != 1 || len(signer.requests) != 1 {
+		t.Fatalf("groupCalls=%d requests=%d", src.groupCalls, len(signer.requests))
+	}
+	if signer.requests[0].SignCode != "1234" {
+		t.Fatalf("%+v", signer.requests[0])
+	}
+	if len(snd.sent) != 1 || !strings.Contains(snd.sent[0].Body, "Synthetic course group") {
 		t.Fatalf("%+v", snd.sent)
 	}
 }

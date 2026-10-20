@@ -92,6 +92,57 @@ type Ntfy struct {
 	Client  *http.Client
 }
 
+type Gotify struct {
+	BaseURL string
+	Token   string
+	Client  *http.Client
+}
+
+func (g Gotify) Send(ctx context.Context, m Message) error {
+	base, err := url.Parse(strings.TrimSpace(g.BaseURL))
+	if err != nil || base.Scheme != "https" && base.Scheme != "http" || base.Host == "" {
+		return errors.New("gotify base url is invalid")
+	}
+	if strings.TrimSpace(g.Token) == "" {
+		return errors.New("gotify token is not configured")
+	}
+	payload := map[string]any{"title": m.Title, "message": m.Body, "priority": 5}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	target := strings.TrimRight(base.String(), "/") + "/message"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gotify-Key", g.Token)
+	resp, err := g.client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("gotify returned HTTP %d", resp.StatusCode)
+	}
+	var ack struct {
+		ID *int `json:"id"`
+	}
+	if json.Unmarshal(body, &ack) == nil && ack.ID != nil && *ack.ID <= 0 {
+		return fmt.Errorf("gotify rejected message")
+	}
+	return nil
+}
+
+func (g Gotify) client() *http.Client {
+	if g.Client != nil {
+		return g.Client
+	}
+	return &http.Client{Timeout: 10 * time.Second}
+}
+
 func (n Ntfy) Send(ctx context.Context, m Message) error {
 	base, err := url.Parse(strings.TrimSpace(n.BaseURL))
 	if err != nil || base.Scheme != "https" && base.Scheme != "http" || base.Host == "" {

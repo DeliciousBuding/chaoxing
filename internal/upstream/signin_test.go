@@ -151,6 +151,51 @@ func TestLocationSignUsesPresetJitterAndSingleTightRetry(t *testing.T) {
 	}
 }
 
+func TestPasswordSignChecksCodeAndUsesReferenceQuery(t *testing.T) {
+	c := academicClient(t, []Course{{ID: "course-1", ClassID: "class-1", Name: "Synthetic"}}, roundtrip(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/v2/apis/active/student/activelist":
+			return response(r, signActivityResponse(5, "")), nil
+		case "/v2/apis/active/getPPTActiveInfo":
+			return response(r, `{"result":1,"data":{"otherId":5,"ifNeedVCode":0,"openCheckFaceFlag":0}}`), nil
+		case "/apis/login/userLogin4Uname.do":
+			return response(r, `{"status":true,"msg":{"name":"Synthetic User","uid":"10001","puid":"10001","fid":"20002"}}`), nil
+		case "/newsign/preSign":
+			return response(r, `<html>ready</html>`), nil
+		case "/pptSign/analysis":
+			return response(r, `code='+'a1b2c3'`), nil
+		case "/pptSign/analysis2":
+			return response(r, ``), nil
+		case "/widget/sign/pcStuSignController/checkSignCode":
+			if r.URL.RawQuery != "activeId=9001&signCode=1234" {
+				t.Fatal(r.URL.RawQuery)
+			}
+			return response(r, `{"result":1}`), nil
+		case "/pptSign/stuSignajax":
+			want := "activeId=9001&courseId=course-1&uid=10001&clientip=&latitude=-1&longitude=-1&appType=15&fid=20002&name=Synthetic+User&signCode=1234&deviceCode="
+			if !strings.HasPrefix(r.URL.RawQuery, want) {
+				t.Fatal(r.URL.RawQuery)
+			}
+			return response(r, "success"), nil
+		case "/v2/apis/sign/getAttendInfo":
+			return response(r, `{"result":1,"data":{"status":1}}`), nil
+		default:
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	}))
+	v, err := c.Call(context.Background(), "sign_activity", map[string]any{
+		"course_id": "course-1", "class_id": "class-1", "activity_id": "9001", "sign_code": "1234",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := v.(map[string]any)["result"].(SignResult)
+	if result.Method != "password" || result.State != "signed" || !result.Verified {
+		t.Fatalf("%+v", result)
+	}
+}
+
 func parseFloat(t *testing.T, s string) float64 {
 	t.Helper()
 	var v float64

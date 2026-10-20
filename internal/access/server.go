@@ -204,11 +204,11 @@ func oauthError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
 }
 func (s *Server) resourceMetadata(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, 200, map[string]any{"resource": s.cfg.Issuer + "/mcp", "authorization_servers": []string{s.cfg.Issuer}, "scopes_supported": []string{scopeRead, scopeSign}, "bearer_methods_supported": []string{"header"}})
+	writeJSON(w, 200, map[string]any{"resource": s.cfg.Issuer + "/mcp", "authorization_servers": []string{s.cfg.Issuer}, "scopes_supported": []string{scopeRead, scopeSign, scopeWork}, "bearer_methods_supported": []string{"header"}})
 }
 func (s *Server) serverMetadata(w http.ResponseWriter, _ *http.Request) {
 	i := s.cfg.Issuer
-	writeJSON(w, 200, map[string]any{"issuer": i, "authorization_endpoint": i + "/oauth/authorize", "token_endpoint": i + "/oauth/token", "registration_endpoint": i + "/oauth/register", "revocation_endpoint": i + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"}, "scopes_supported": []string{scopeRead, scopeSign}, "client_id_metadata_document_supported": s.cfg.EnableCIMD, "authorization_response_iss_parameter_supported": true})
+	writeJSON(w, 200, map[string]any{"issuer": i, "authorization_endpoint": i + "/oauth/authorize", "token_endpoint": i + "/oauth/token", "registration_endpoint": i + "/oauth/register", "revocation_endpoint": i + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"}, "scopes_supported": []string{scopeRead, scopeSign, scopeWork}, "client_id_metadata_document_supported": s.cfg.EnableCIMD, "authorization_response_iss_parameter_supported": true})
 }
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
@@ -424,7 +424,7 @@ type pageData struct {
 	Scopes                                      string
 }
 
-var pageTemplate = template.Must(template.New("owner").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><title>MCP authorization</title><h1>{{if .Consent}}Authorize access{{else}}Owner login{{end}}</h1>{{if .Consent}}<p>Self-reported client name (not verified): {{.Name}}</p><p>Client ID: {{.ClientID}}</p><p>Callback origin (receives authorization): {{.CallbackOrigin}}</p><p>Permissions: {{.Scopes}}. chaoxing.sign can submit class sign-in.</p><form method="post" action="/oauth/consent"><input type="hidden" name="consent_token" value="{{.Nonce}}"><button name="decision" value="approve">Approve</button><button name="decision" value="deny">Deny</button></form>{{else}}<form method="post" action="/oauth/login"><input type="hidden" name="csrf" value="{{.Nonce}}"><input type="hidden" name="next" value="{{.Next}}"><label>Owner password <input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button>Log in</button></form>{{end}}</html>`))
+var pageTemplate = template.Must(template.New("owner").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><title>MCP authorization</title><h1>{{if .Consent}}Authorize access{{else}}Owner login{{end}}</h1>{{if .Consent}}<p>Self-reported client name (not verified): {{.Name}}</p><p>Client ID: {{.ClientID}}</p><p>Callback origin (receives authorization): {{.CallbackOrigin}}</p><p>Permissions: {{.Scopes}}. chaoxing.sign can submit class sign-in; chaoxing.work can edit local answer drafts.</p><form method="post" action="/oauth/consent"><input type="hidden" name="consent_token" value="{{.Nonce}}"><button name="decision" value="approve">Approve</button><button name="decision" value="deny">Deny</button></form>{{else}}<form method="post" action="/oauth/login"><input type="hidden" name="csrf" value="{{.Nonce}}"><input type="hidden" name="next" value="{{.Next}}"><label>Owner password <input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button>Log in</button></form>{{end}}</html>`))
 
 func (s *Server) page(w http.ResponseWriter, d pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

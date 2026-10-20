@@ -33,6 +33,7 @@ type config struct {
 	OwnerPasswordHash string        `json:"owner_password_hash"`
 	Watch             *watchConfig  `json:"watch,omitempty"`
 	Device            *deviceConfig `json:"device,omitempty"`
+	GroupActivities   bool          `json:"group_activities,omitempty"`
 	// Proxies optionally routes upstream traffic through SOCKS5 endpoints;
 	// empty means direct egress. Tenants are additional isolated accounts
 	// served under /t/<id>/; empty keeps the single-tenant deployment.
@@ -55,6 +56,8 @@ type watchConfig struct {
 	FeishuWebhook         string        `json:"feishu_webhook,omitempty"`
 	NtfyURL               string        `json:"ntfy_url,omitempty"`
 	NtfyTopic             string        `json:"ntfy_topic,omitempty"`
+	GotifyURL             string        `json:"gotify_url,omitempty"`
+	GotifyToken           string        `json:"gotify_token,omitempty"`
 }
 
 type deviceConfig struct {
@@ -69,6 +72,8 @@ type tenantConfig struct {
 	KeyPath           string        `json:"key_path"`
 	OwnerPasswordHash string        `json:"owner_password_hash"`
 	Device            *deviceConfig `json:"device,omitempty"`
+	GroupActivities   bool          `json:"group_activities,omitempty"`
+	Watch             *watchConfig  `json:"watch,omitempty"`
 }
 type request struct {
 	Tool      string         `json:"tool"`
@@ -119,6 +124,7 @@ func (c config) upstreamConfig() upstream.Config {
 	if c.Device != nil {
 		cfg.DeviceCode, cfg.UserAgent, cfg.PackageName = c.Device.Code, c.Device.UserAgent, c.Device.PackageName
 	}
+	cfg.GroupActivities = c.GroupActivities
 	return cfg
 }
 
@@ -132,6 +138,7 @@ func (c tenantConfig) upstreamConfig() upstream.Config {
 	if c.Device != nil {
 		cfg.DeviceCode, cfg.UserAgent, cfg.PackageName = c.Device.Code, c.Device.UserAgent, c.Device.PackageName
 	}
+	cfg.GroupActivities = c.GroupActivities
 	return cfg
 }
 func randomToken() string {
@@ -198,13 +205,17 @@ func run() error {
 		if e != nil {
 			return e
 		}
+		execute, e := operationExecutor(x, c.StateDir)
+		if e != nil {
+			return e
+		}
 		r, e := readRequest()
 		if e != nil {
 			return e
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
-		v, e := operation.Execute(ctx, r.Tool, r.Arguments, x.Call)
+		v, e := execute(ctx, r.Tool, r.Arguments)
 		if e != nil {
 			return e
 		}

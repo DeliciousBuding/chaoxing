@@ -20,6 +20,7 @@ import (
 const (
 	scopeRead     = "chaoxing.read"
 	scopeSign     = "chaoxing.sign"
+	scopeWork     = "chaoxing.work"
 	maxClients    = 128
 	maxTokens     = 4096
 	maxPending    = 128
@@ -82,7 +83,7 @@ func normalizeScope(raw string) (string, bool) {
 	seen := map[string]bool{}
 	out := []string{}
 	for _, scope := range strings.Fields(raw) {
-		if scope != scopeRead && scope != scopeSign || seen[scope] {
+		if scope != scopeRead && scope != scopeSign && scope != scopeWork || seen[scope] {
 			return "", false
 		}
 		seen[scope] = true

@@ -52,7 +52,8 @@ func TestInitializeListCall(t *testing.T) {
 	}
 	for _, v := range list {
 		tool := v.(map[string]any)
-		readOnly := tool["name"] != "sign_activity"
+		def, _ := operation.Find(tool["name"].(string))
+		readOnly := operation.RequiredScope(def) == "chaoxing.read"
 		if tool["annotations"].(map[string]any)["readOnlyHint"] != readOnly || tool["securitySchemes"] == nil || tool["title"] == "" {
 			t.Fatal(tool)
 		}

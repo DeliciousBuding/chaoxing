@@ -56,6 +56,34 @@ func TestNtfySetsPriorityAndTopic(t *testing.T) {
 	}
 }
 
+func TestGotifySendsMessage(t *testing.T) {
+	var path, token string
+	var payload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, token = r.URL.Path, r.Header.Get("X-Gotify-Key")
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &payload)
+		io.WriteString(w, `{"id":1}`)
+	}))
+	defer srv.Close()
+	if err := (Gotify{BaseURL: srv.URL, Token: "synthetic-token", Client: srv.Client()}).Send(context.Background(), Message{Title: "title", Body: "body"}); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/message" || token != "synthetic-token" || payload["title"] != "title" || payload["message"] != "body" || payload["priority"] != float64(5) {
+		t.Fatalf("path=%q token=%q payload=%+v", path, token, payload)
+	}
+}
+
+func TestGotifyRejectsHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	if err := (Gotify{BaseURL: srv.URL, Token: "synthetic-token", Client: srv.Client()}).Send(context.Background(), Message{}); err == nil {
+		t.Fatal("error accepted")
+	}
+}
+
 func TestMultiReportsFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)

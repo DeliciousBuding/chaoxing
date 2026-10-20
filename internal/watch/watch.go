@@ -25,6 +25,7 @@ type Class struct {
 	ClassID  string     `json:"class_id"`
 	Schedule []Schedule `json:"schedule,omitempty"`
 	Location *Location  `json:"location,omitempty"`
+	SignCode *SignCode  `json:"sign_code,omitempty"`
 }
 
 type Schedule struct {
@@ -37,6 +38,12 @@ type Location struct {
 	Latitude  float64 `json:"latitude"`
 	Longitude float64 `json:"longitude"`
 	Address   string  `json:"address,omitempty"`
+}
+
+// SignCode holds an operator-provided password or gesture code. It stays in
+// private configuration and is never copied into watch state or notifications.
+type SignCode struct {
+	Code string `json:"code"`
 }
 
 type Config struct {
@@ -53,6 +60,12 @@ type Config struct {
 
 type ActivitySource interface {
 	ListClassActivities(ctx context.Context, courseID, classID string) ([]upstream.Activity, error)
+}
+
+// GroupActivitySource is optional. It exposes course-group message cards
+// without teaching the watcher any IM protocol details.
+type GroupActivitySource interface {
+	ListGroupActivities(ctx context.Context) ([]upstream.Activity, error)
 }
 
 type Signer interface {
@@ -209,7 +222,9 @@ func (r *Runner) Tick(ctx context.Context) {
 	}
 	active := map[string]upstream.Activity{}
 	classes := map[string]Class{}
+	byCourseClass := map[string]Class{}
 	for _, class := range r.cfg.Classes {
+		byCourseClass[class.CourseID+":"+class.ClassID] = class
 		if !classActive(now, class, r.cfg.Lead) {
 			continue
 		}
@@ -226,10 +241,27 @@ func (r *Runner) Tick(ctx context.Context) {
 			}
 		}
 	}
+	if groupSource, ok := r.source.(GroupActivitySource); ok {
+		groupRows, err := groupSource.ListGroupActivities(ctx)
+		if err != nil {
+			log.Printf("activity watch: group feed: %s", upstream.SafeFault(err).Code)
+		}
+		for _, item := range groupRows {
+			class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
+			if !ok || !classActive(now, class, r.cfg.Lead) || !item.Signable {
+				continue
+			}
+			k := key(item)
+			if _, exists := active[k]; !exists {
+				active[k] = item
+				classes[k] = class
+			}
+		}
+	}
 	changed := false
 	for k, item := range active {
 		e, seen := r.state[k]
-		if r.cfg.AutoSign && (item.SignType == "normal_or_photo" || item.SignType == "location") && (!seen || e.LastAttempt.IsZero()) {
+		if r.cfg.AutoSign && autoSignType(item, classes[k]) && (!seen || e.LastAttempt.IsZero()) {
 			changed = r.autoSign(ctx, classes[k], item, e) || changed
 			continue
 		}
@@ -277,6 +309,9 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 		lat, lng := class.Location.Latitude, class.Location.Longitude
 		req.Latitude, req.Longitude, req.Address = &lat, &lng, class.Location.Address
 	}
+	if class.SignCode != nil {
+		req.SignCode = class.SignCode.Code
+	}
 	result, err := r.signer.SignActivity(ctx, req)
 	now := r.now()
 	next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: e.Status, Method: e.Method, Code: e.Code}
@@ -296,6 +331,17 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 	}
 	log.Printf("activity watch: auto sign %s: status=%s", item.ID, next.Status)
 	return true
+}
+
+func autoSignType(item upstream.Activity, class Class) bool {
+	switch item.SignType {
+	case "normal_or_photo", "location":
+		return true
+	case "gesture", "password":
+		return class.SignCode != nil && strings.TrimSpace(class.SignCode.Code) != ""
+	default:
+		return false
+	}
 }
 
 func classActive(t time.Time, class Class, lead time.Duration) bool {
@@ -376,6 +422,16 @@ func validDay(day string) bool {
 
 func formatAlertBody(a upstream.Activity) string {
 	lines := []string{"课程：" + firstNonBlank(a.Course, a.CourseID), "活动：" + firstNonBlank(a.Title, a.ID)}
+	if a.Source == "group" && a.GroupName != "" {
+		lines = append(lines, "来源：课程群 "+a.GroupName)
+	}
+	if a.SignType == "gesture" || a.SignType == "password" {
+		kind := "密码签到"
+		if a.SignType == "gesture" {
+			kind = "手势签到"
+		}
+		lines = append(lines, "类型："+kind+"，需要签到码")
+	}
 	if a.StartsAt != nil {
 		lines = append(lines, "开始："+a.StartsAt.In(shanghai).Format("15:04"))
 	}
@@ -384,21 +440,33 @@ func formatAlertBody(a upstream.Activity) string {
 }
 
 func formatSuccessBody(a upstream.Activity, result upstream.SignResult) string {
-	return strings.Join([]string{
+	lines := []string{
 		"课程：" + firstNonBlank(a.Course, a.CourseID),
 		"活动：" + firstNonBlank(a.Title, a.ID),
-		"方式：" + result.Method,
+	}
+	if a.Source == "group" && a.GroupName != "" {
+		lines = append(lines, "来源：课程群 "+a.GroupName)
+	}
+	lines = append(lines,
+		"方式："+result.Method,
 		"状态：已签到并通过上游状态复核",
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 func formatFailureBody(a upstream.Activity, code string) string {
-	return strings.Join([]string{
+	lines := []string{
 		"课程：" + firstNonBlank(a.Course, a.CourseID),
 		"活动：" + firstNonBlank(a.Title, a.ID),
-		"错误：" + code,
+	}
+	if a.Source == "group" && a.GroupName != "" {
+		lines = append(lines, "来源：课程群 "+a.GroupName)
+	}
+	lines = append(lines,
+		"错误："+code,
 		"系统不会自动重试该活动，请立即人工处理。",
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 func firstNonBlank(values ...string) string {

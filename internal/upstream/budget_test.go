@@ -9,9 +9,18 @@ import (
 )
 
 func TestKnownProgressRoutesRejectedBeforeFetch(t *testing.T) {
-	for _, s := range []string{"https://mooc1.chaoxing.com/mooc-ans/mycourse/studentstudyAjax", "https://mooc1.chaoxing.com/ananas/job/document", "https://fystat-ans.chaoxing.com/log/setlog", "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards"} {
+	for _, s := range []string{"https://mooc1.chaoxing.com/mooc-ans/mycourse/studentstudyAjax", "https://mooc1.chaoxing.com/ananas/job/document", "https://fystat-ans.chaoxing.com/log/setlog", "https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew"} {
 		u, _ := url.Parse(s)
 		if safeURL(u) {
+			t.Fatal(s)
+		}
+	}
+}
+
+func TestManualWorkReadRoutesAreAllowed(t *testing.T) {
+	for _, s := range []string{"https://mooc1.chaoxing.com/mooc-ans/knowledge/cards", "https://mooc1.chaoxing.com/mooc-ans/api/work"} {
+		u, _ := url.Parse(s)
+		if !safeURL(u) {
 			t.Fatal(s)
 		}
 	}

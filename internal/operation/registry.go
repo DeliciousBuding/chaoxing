@@ -20,6 +20,7 @@ type Field struct {
 	Required    bool
 	Min, Max    float64
 	Enum        []string
+	MaxLength   int
 }
 type Definition struct {
 	ID, Name, Title, Description string
@@ -28,7 +29,10 @@ type Definition struct {
 }
 
 func text(description string, required bool) Field {
-	return Field{Type: "string", Description: description, Required: required}
+	return Field{Type: "string", Description: description, Required: required, MaxLength: 256}
+}
+func longText(description string, maxLength int) Field {
+	return Field{Type: "string", Description: description, MaxLength: maxLength}
 }
 func integer(description string, min, max int) Field {
 	return Field{Type: "integer", Description: description, Min: float64(min), Max: float64(max)}
@@ -70,13 +74,20 @@ var definitions = []Definition{
 	{ID: "capabilities.list", Name: "get_capabilities", Title: "Get capabilities", Description: "Use to discover verified capabilities and unsupported domains before attempting group, inbox or task-point queries."},
 	{ID: "chapters.list", Name: "list_chapters", Title: "List chapters", Description: "Use to read course chapter summaries and explicitly reported task-point counts. Does not enter learning pages or enumerate individual task cards; missing markers remain unknown.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID.", true), "class_id": text("Exact class ID.", true), "cpi": text("Exact cpi from list_courses.", true), "limit": integer("Maximum chapter summaries.", 1, 100), "offset": integer("Output offset; not upstream page number.", 0, 100000)}},
 	{ID: "activities.list", Name: "list_activities", Title: "List class activities", Description: "Use to read the current activity list of selected classes, including sign-in activities and the account's own sign-in state.", Fields: overviewFields()},
-	{ID: "activities.sign", Name: "sign_activity", Title: "Sign in to an activity", Description: "Submit one normal or location class sign-in for the configured account. Requires the chaoxing.sign OAuth scope.", Fields: map[string]Field{
+	{ID: "works.list", Name: "list_work_jobs", Title: "List work jobs", Description: "Use to discover editable answer-work cards in a course's knowledge points. Exact course/class/cpi IDs are required.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact enrolled class ID from list_courses.", true), "cpi": text("Exact cpi returned by list_courses.", true)}},
+	{ID: "works.questions", Name: "get_work_questions", Title: "Get work questions", Description: "Use to read one editable work's questions and submission form fields. This is manual-answer support only and does not submit.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact enrolled class ID from list_courses.", true), "job_id": text("Stable work job ID from list_work_jobs.", true)}},
+	{ID: "workdrafts.upsert", Name: "upsert_work_draft", Title: "Upsert work draft", Description: "Create or update one local answer draft after validating its question ID. Drafts are not submitted upstream.", Scope: "chaoxing.work", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact enrolled class ID from list_courses.", true), "job_id": text("Stable work job ID from list_work_jobs.", true), "question_id": text("Stable question ID from get_work_questions.", true), "answer": longText("Manual answer text; option letters for objective questions.", 4096)}},
+	{ID: "workdrafts.list", Name: "list_work_drafts", Title: "List work drafts", Description: "List locally persisted manual answer drafts for one work.", Scope: "chaoxing.work", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact enrolled class ID from list_courses.", true), "job_id": text("Stable work job ID from list_work_jobs.", true)}},
+	{ID: "workdrafts.delete", Name: "delete_work_draft", Title: "Delete work draft", Description: "Delete one local answer draft.", Scope: "chaoxing.work", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact enrolled class ID from list_courses.", true), "job_id": text("Stable work job ID from list_work_jobs.", true), "question_id": text("Stable question ID from get_work_questions.", true)}},
+	{ID: "workdrafts.export", Name: "export_work_draft", Title: "Export work draft", Description: "Export one work's local drafts as save/submit request payloads. The service does not send them upstream.", Scope: "chaoxing.work", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact enrolled class ID from list_courses.", true), "job_id": text("Stable work job ID from list_work_jobs.", true)}},
+	{ID: "activities.sign", Name: "sign_activity", Title: "Sign in to an activity", Description: "Submit one normal, location, password or gesture class sign-in for the configured account. Password and gesture require the operator-provided sign code. Requires the chaoxing.sign OAuth scope.", Fields: map[string]Field{
 		"course_id":   text("Exact enrolled course ID from list_courses.", true),
 		"class_id":    text("Exact class ID from list_courses.", true),
 		"activity_id": text("Stable activity ID from list_activities.", true),
 		"latitude":    number("Optional preset latitude in degrees; use with longitude.", -90, 90),
 		"longitude":   number("Optional preset longitude in degrees; use with latitude.", -180, 180),
 		"address":     text("Optional location label submitted with location sign-in.", false),
+		"sign_code":   text("Required for password or gesture sign-in.", false),
 	}, Scope: "chaoxing.sign"},
 }
 
@@ -115,7 +126,7 @@ func (d Definition) InputSchema() map[string]any {
 			p["maximum"] = f.Max
 		case "boolean":
 		default:
-			p["maxLength"] = 256
+			p["maxLength"] = f.MaxLength
 			if f.Required {
 				p["minLength"] = 1
 			}
@@ -177,15 +188,36 @@ func activitySchema() map[string]any {
 		"raw_status":      map[string]any{"type": "integer"},
 		"raw_user_status": map[string]any{"type": "integer"},
 		"signable":        booleanSchema(),
+		"sign_type":       stringSchema("normal_or_photo", "qrcode", "gesture", "location", "password", "unknown"),
+		"source":          stringSchema("class", "group"),
+		"group_name":      stringSchema(),
 		"starts_at":       stringSchema(),
 		"ends_at":         stringSchema(),
+	})
+}
+
+func workJobSchema() map[string]any {
+	return objectSchema([]string{"id", "course_id", "class_id", "knowledge_id", "knowledge", "title", "type", "is_passed"}, map[string]any{
+		"id": stringSchema(), "course_id": stringSchema(), "class_id": stringSchema(), "knowledge_id": stringSchema(), "knowledge": stringSchema(), "title": stringSchema(), "type": stringSchema("work"), "is_passed": booleanSchema(),
+	})
+}
+
+func workQuestionSchema() map[string]any {
+	return objectSchema([]string{"id", "title", "type", "answer_type", "options"}, map[string]any{
+		"id": stringSchema(), "title": stringSchema(), "type": stringSchema("single", "multiple", "completion", "judgement", "shortanswer", "unknown"), "answer_type": stringSchema(), "options": arraySchema(stringSchema()),
+	})
+}
+
+func workDraftSchema() map[string]any {
+	return objectSchema([]string{"question_id", "title", "type", "answer", "updated_at"}, map[string]any{
+		"question_id": stringSchema(), "title": stringSchema(), "type": stringSchema(), "answer": stringSchema(), "updated_at": stringSchema(),
 	})
 }
 
 func signResultSchema() map[string]any {
 	return objectSchema([]string{"activity_id", "course_id", "class_id", "method", "state", "verified"}, map[string]any{
 		"activity_id": stringSchema(), "course_id": stringSchema(), "class_id": stringSchema(),
-		"method": stringSchema("normal", "location", "none"), "state": stringSchema(),
+		"method": stringSchema("normal", "location", "password", "gesture", "none"), "state": stringSchema(),
 		"verified": booleanSchema(),
 	})
 }
@@ -214,6 +246,19 @@ func (d Definition) OutputSchema() map[string]any {
 	}
 	if d.Name == "list_activities" {
 		properties["items"] = arraySchema(activitySchema())
+	}
+	if d.Name == "list_work_jobs" {
+		properties["items"] = arraySchema(workJobSchema())
+	}
+	if d.Name == "get_work_questions" {
+		properties["questions"] = arraySchema(workQuestionSchema())
+		properties["form_data"] = map[string]any{"type": "object"}
+	}
+	if d.Name == "list_work_drafts" {
+		properties["items"] = arraySchema(workDraftSchema())
+	}
+	if d.Name == "export_work_draft" {
+		properties["payloads"] = map[string]any{"type": "object"}
 	}
 	if d.Name == "sign_activity" {
 		delete(properties, "items")
@@ -316,7 +361,11 @@ func Validate(d Definition, a map[string]any) error {
 		}
 		if f.Type == "string" {
 			s, ok := v.(string)
-			if !ok || len(s) > 256 || (f.Required && strings.TrimSpace(s) == "") {
+			maxLength := f.MaxLength
+			if maxLength == 0 {
+				maxLength = 256
+			}
+			if !ok || len(s) > maxLength || (f.Required && strings.TrimSpace(s) == "") {
 				return fmt.Errorf("INVALID_ARGUMENT")
 			}
 			for _, r := range s {
@@ -466,6 +515,6 @@ func capabilities(defs []Definition) map[string]any {
 		names = append(names, d.Name)
 		ops = append(ops, map[string]any{"id": d.ID, "name": d.Name, "title": d.Title, "description": d.Description, "scope": RequiredScope(d), "input_schema": d.InputSchema(), "output_schema": d.OutputSchema()})
 	}
-	return map[string]any{"contract_version": "6", "tools": names, "operations": ops, "unsupported_domains": []string{"group_messages", "inbox", "task_points", "folder_traversal"}, "complete": true, "coverage": "verified_tool_catalog"}
+	return map[string]any{"contract_version": "7", "tools": names, "operations": ops, "unsupported_domains": []string{"group_message_history", "inbox", "task_points", "folder_traversal", "automatic_work_submission"}, "complete": true, "coverage": "verified_tool_catalog"}
 }
 func Capabilities() map[string]any { return capabilities(All()) }

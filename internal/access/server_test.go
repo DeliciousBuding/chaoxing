@@ -80,6 +80,16 @@ func authorizeFlow(t *testing.T, h http.Handler) flow {
 	return authorizeFlowScopes(t, h, scopeRead)
 }
 
+func TestWorkScopeIsExplicitAndNarrowable(t *testing.T) {
+	scopes, ok := normalizeScope(scopeRead + " " + scopeSign + " " + scopeWork)
+	if !ok || scopes != scopeRead+" "+scopeSign+" "+scopeWork {
+		t.Fatal(scopes, ok)
+	}
+	if _, ok := normalizeScope("chaoxing.write"); ok {
+		t.Fatal("generic write scope accepted")
+	}
+}
+
 func authorizeFlowScopes(t *testing.T, h http.Handler, scopes string) flow {
 	t.Helper()
 	w := request(h, "POST", "/oauth/register", `{"client_name":"Example reader","redirect_uris":["https://client.example.com/callback"],"scope":"`+scopes+`"}`, "application/json")

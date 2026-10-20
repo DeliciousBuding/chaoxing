@@ -42,9 +42,10 @@ type deviceState struct {
 }
 
 type signIdentity struct {
-	UID  string
-	FID  string
-	Name string
+	UID        string
+	FID        string
+	Name       string
+	IMPassword string
 }
 
 func (c *Client) loadDeviceState() error {
@@ -272,10 +273,15 @@ func (c *Client) fetchSignIdentity(ctx context.Context) (signIdentity, error) {
 	}
 	var payload struct {
 		Msg struct {
-			Name string `json:"name"`
-			UID  any    `json:"uid"`
-			FID  any    `json:"fid"`
-			PUID any    `json:"puid"`
+			Name        string `json:"name"`
+			UID         any    `json:"uid"`
+			FID         any    `json:"fid"`
+			PUID        any    `json:"puid"`
+			AccountInfo struct {
+				IMAccount struct {
+					Password string `json:"password"`
+				} `json:"imAccount"`
+			} `json:"accountInfo"`
 		} `json:"msg"`
 	}
 	if json.Unmarshal(b, &payload) != nil {
@@ -290,7 +296,10 @@ func (c *Client) fetchSignIdentity(ctx context.Context) (signIdentity, error) {
 	if uid == "" || fid == "" || strings.TrimSpace(payload.Msg.Name) == "" {
 		return signIdentity{}, fault("UPSTREAM_SCHEMA", "account identity not recognized")
 	}
-	c.identity = &signIdentity{UID: uid, FID: fid, Name: strings.TrimSpace(payload.Msg.Name)}
+	c.identity = &signIdentity{
+		UID: uid, FID: fid, Name: strings.TrimSpace(payload.Msg.Name),
+		IMPassword: strings.TrimSpace(payload.Msg.AccountInfo.IMAccount.Password),
+	}
 	return *c.identity, nil
 }
 
