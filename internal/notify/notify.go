@@ -152,7 +152,7 @@ func (g Gotify) client() *http.Client {
 	if g.Client != nil {
 		return g.Client
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: 30 * time.Second}
 }
 
 func (n Ntfy) Send(ctx context.Context, m Message) error {
