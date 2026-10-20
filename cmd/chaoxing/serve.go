@@ -68,7 +68,11 @@ type tenantRuntime struct {
 
 func (t *tenantRuntime) upstreamClient() (*upstream.Client, error) {
 	t.once.Do(func() {
-		cfg := t.cfg.upstreamConfig()
+		cfg, err := t.cfg.upstreamConfig()
+		if err != nil {
+			t.err = err
+			return
+		}
 		cfg.Transport = t.pool
 		t.client, t.err = upstream.New(cfg)
 	})
@@ -239,7 +243,10 @@ func serve() error {
 	if e != nil {
 		return e
 	}
-	rootConfig := c.upstreamConfig()
+	rootConfig, err := c.upstreamConfig()
+	if err != nil {
+		return err
+	}
 	rootConfig.Transport = pool
 	x, e := upstream.New(rootConfig)
 	if e != nil {

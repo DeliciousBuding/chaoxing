@@ -88,8 +88,13 @@ func SafeFault(err error) *Fault {
 	case "CAPTCHA_REQUIRED":
 		f.Category = "verification"
 		f.Message = "A slider captcha challenge is required."
-		f.Hint = "Call get_sign_captcha, answer_sign_captcha, then retry sign_activity."
+		f.Hint = "Complete the captcha challenge, then retry sign_activity."
+	case "CAPTCHA_SOLVER_FAILED":
+		f.Category = "verification"
+		f.Message = "The configured captcha solver failed."
+		f.Hint = "Use the manual captcha flow or check solver configuration."
 	case "WORK_UNAVAILABLE":
+
 		f.Category = "upstream_state"
 		f.Message = "The work is not currently available for manual answering."
 	case "UNSUPPORTED":
@@ -113,6 +118,13 @@ type Config struct {
 	UserAgent, PackageName                string
 	GroupActivities                       bool
 	Transport                             http.RoundTripper
+	CaptchaSolver                         CaptchaSolver
+}
+
+// CaptchaSolver turns a slider background image into an upstream coordinate.
+// Implementations stay outside upstream so protocol and provider code do not mix.
+type CaptchaSolver interface {
+	Solve(ctx context.Context, image []byte) (int, error)
 }
 type SavedCookies struct {
 	URL     string         `json:"url"`
@@ -435,7 +447,7 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		if v, ok := floatArg(args, "longitude"); ok {
 			req.Longitude = &v
 		}
-		result, e := c.signActivity(ctx, req)
+		result, e := c.signActivityWithSolver(ctx, req)
 		if e != nil {
 			return nil, e
 		}

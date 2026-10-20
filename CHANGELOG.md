@@ -3,11 +3,11 @@
 ## Unreleased
 
 - Reject partially configured ntfy or Gotify notification channels at startup so a mistyped alert destination cannot silently disable one channel.
-- Advertise MCP contract version 10 and explicitly report photo and face sign-in as unsupported capability domains.
+- Advertise MCP contract version 11, remove the obsolete automatic-captcha-solver unsupported marker, and explicitly report photo and face sign-in as unsupported capability domains.
 - Document the agent control matrix, layered authorization/security invariants and independent notification fan-out behavior in the project README and architecture guide.
 - Add password and gesture sign-in using an operator-provided sign code, including reference-compatible code verification, ordered submission, attendance verification and watcher presets.
 - Add QR sign-in with local parsing of both reference payload formats, `signDetail` expiry verification, ordered `enc` submission and no QR URL fetching.
-- Add the reference two-pass slider-captcha state machine with `get_sign_captcha` and `answer_sign_captcha`. Raw `enc2`, captcha keys and validation tokens stay in memory; the watcher never solves or blind-retries a challenge.
+- Add the reference two-pass slider-captcha state machine with `get_sign_captcha` and `answer_sign_captcha`. Raw `enc2`, captcha keys and validation tokens stay in memory; the watcher performs at most one solver-backed retry per sign attempt.
 - Add optional course-group sign-in-card discovery. When enabled, class feeds and Easemob group cards are merged by stable course/class/activity identity for both `list_activities` and the watcher.
 - Extend notifications with Gotify alongside Feishu webhooks and ntfy, and allow multiple channels in one watcher.
 - Add per-tenant watchers with independent schedules, classes, coordinates, sign codes, notification configuration and private watch state.

@@ -166,6 +166,33 @@ func (c *Client) answerSignCaptcha(ctx context.Context, args map[string]any) (an
 	}, nil
 }
 
+// solveSignCaptcha fetches the challenge image, asks the configured solver for
+// one coordinate, submits it, and leaves the validated challenge in memory.
+func (c *Client) solveSignCaptcha(ctx context.Context, req SignRequest) error {
+	args := map[string]any{
+		"course_id": req.CourseID, "class_id": req.ClassID, "activity_id": req.ActivityID,
+	}
+	if _, err := c.getSignCaptcha(ctx, args); err != nil {
+		return err
+	}
+	challenge, ok := c.captchaChallenges[req.ActivityID]
+	if !ok || challenge.ShadeImage == "" {
+		return fault("CAPTCHA_SOLVER_FAILED", "captcha image is unavailable")
+	}
+	image, err := c.captchaGet(ctx, challenge.ShadeImage, preSignReferer(challenge, ""))
+	if err != nil || len(image) == 0 {
+		return fault("CAPTCHA_SOLVER_FAILED", "captcha image could not be downloaded")
+	}
+	x, err := c.config.CaptchaSolver.Solve(ctx, image)
+	if err != nil || x < -8 || x > 280 {
+		return fault("CAPTCHA_SOLVER_FAILED", "captcha solver returned an invalid coordinate")
+	}
+	args["x_position"] = float64(x)
+	if _, err = c.answerSignCaptcha(ctx, args); err != nil {
+		return err
+	}
+	return nil
+}
 func (c *Client) captchaConfTime(ctx context.Context) (int64, error) {
 	q := orderedQuery("callback", "cx_captcha_function", "captchaId", captchaID, "_", strconv.FormatInt(time.Now().UnixMilli(), 10))
 	body, err := c.captchaGet(ctx, captchaConfAPI+"?"+q, "")

@@ -78,6 +78,22 @@ func (c *Client) SignActivity(ctx context.Context, req SignRequest) (SignResult,
 		return SignResult{}, err
 	}
 	defer c.queries.Release()
+	return c.signActivityWithSolver(ctx, req)
+}
+
+// signActivityWithSolver runs the sign state machine and, when a solver is
+// configured, resolves one slider challenge before a single retry.
+func (c *Client) signActivityWithSolver(ctx context.Context, req SignRequest) (SignResult, error) {
+	result, err := c.signActivity(ctx, req)
+	if err == nil || c.config.CaptchaSolver == nil {
+		return result, err
+	}
+	if SafeFault(err).Code != "CAPTCHA_REQUIRED" {
+		return result, err
+	}
+	if solveErr := c.solveSignCaptcha(ctx, req); solveErr != nil {
+		return SignResult{}, solveErr
+	}
 	return c.signActivity(ctx, req)
 }
 

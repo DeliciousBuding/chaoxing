@@ -108,7 +108,7 @@ The watcher turns the class activity feed and optional course-group sign-in card
 Bounds and behavior:
 
 - `group_activities` defaults to false. When true, `list_activities` and the watcher also read Easemob course-group history, parse `attachmentType=15` course cards, and merge them with the class feed by `course_id:class_id:activity_id`. The group list is cached for 10 minutes, at most 20 groups are scanned, and parsed cards are cached for 15 seconds to avoid a fixed high-rate request pattern. Group failures produce partial coverage or a safe watcher log; they do not erase successful class-feed rows.
-- `auto_sign` defaults to false. When true, normal and location activities are attempted once. Password and gesture activities are attempted only when the matching class has a nonempty `sign_code.code`. A slider-captcha response returns `CAPTCHA_REQUIRED` and sends one alert; use the MCP tools to complete the challenge manually. QR activities alert because they require the operator-scanned raw payload in `sign_activity`; photo and face activities remain alert-only.
+- `auto_sign` defaults to false. When true, normal and location activities are attempted once. Password and gesture activities are attempted only when the matching class has a nonempty `sign_code.code`. A slider-captcha response is solved automatically when `captcha_solver` is configured; otherwise it returns `CAPTCHA_REQUIRED`, sends one alert, and uses the manual MCP tools. QR activities alert because they require the operator-scanned raw payload in `sign_activity`; photo and face activities remain alert-only.
 - `interval_seconds` is at least 30 (default 60), with `interval_jitter_percent` randomized around it (default 10, maximum 25). Each poll uses the account-bounded query queue.
 - `repeat_seconds` defaults to 120 and must be at least 30; `max_repeats` defaults to 5 and is capped at 20. Manual reminders repeat only while the activity is still `signable`.
 - `lead_seconds` defaults to 120 and is capped at 600. A class schedule is polled from `start - lead_seconds` through `end`; set it to `-1` to poll only from the exact start.
@@ -121,6 +121,21 @@ Bounds and behavior:
 
 The watcher logs class failures by safe fault code, continues with the other classes, and never exposes raw upstream bodies. Notification text contains course/activity identity and result; it is operator data and must not be treated as instructions.
 
+## Optional slider-captcha solver
+
+Set a private top-level `captcha_solver` object to let `sign_activity` resolve slider challenges automatically. The provider runs outside the Go binary, so the daemon stays small enough for embedded hosts:
+
+```json
+{
+  "captcha_solver": {
+    "provider": "damagou",
+    "user_key": "synthetic-user_key",
+    "timeout_seconds": 60
+  }
+}
+```
+
+`provider` currently accepts `damagou`. `user_key` is private deployment secret material; keep it out of Git and public issue reports. `timeout_seconds` defaults to 60. A solved challenge is submitted through the same `answer_sign_captcha` protocol and followed by exactly one sign retry. If the provider fails, the safe fault code is `CAPTCHA_SOLVER_FAILED` and the manual `get_sign_captcha` -> `answer_sign_captcha` -> `sign_activity` flow remains available. A tenant can contain its own `captcha_solver` object.
 ## Manual answer drafts
 
 Manual answer support needs no extra configuration. The first `upsert_work_draft`, `list_work_drafts`, `delete_work_draft` or `export_work_draft` call creates `<state_dir>/work-drafts.json` with mode 0600. Drafts are validated against the current work question set, persisted atomically, and exported as both a `pyFlag=1` save payload and a final submit payload. The daemon never posts either payload upstream.

@@ -140,6 +140,9 @@ Location requests may supply `latitude`, `longitude` and `address`. Coordinates 
 
 Password and gesture requests first call the reference `checkSignCode` endpoint. A rejected code returns `SIGN_CODE_REJECTED` before attendance is changed. QR payloads are parsed locally in both reference formats (`SIGNIN:` and URL), checked through `signDetail`, and submitted with the QR `enc` in the reference query order. The service never fetches a QR URL. Photo and face requirements return `UNSUPPORTED`. Remote MCP callers need `chaoxing.sign`; a `chaoxing.read` token receives an insufficient-scope error before upstream is contacted.
 
+### Slider captcha
+
+When upstream requires a slider captcha, the first `sign_activity` call follows the reference protocol and may receive `validate_<enc2>`. If `captcha_solver` is configured, the service downloads the shade image, asks the provider for one coordinate, submits it through the same result endpoint, and retries the sign exactly once. Solver failures return `CAPTCHA_SOLVER_FAILED`; the manual flow below remains available.
 ### Manual slider captcha
 
 When upstream requires a slider captcha, the first `sign_activity` call follows the reference protocol and may receive `validate_<enc2>`. The service stores only the in-memory challenge token, returns `CAPTCHA_REQUIRED`, and does not verify attendance. The caller then:
@@ -149,7 +152,7 @@ get_sign_captcha -> inspect shade_image/cutout_image
 answer_sign_captcha(x_position) -> sign_activity
 ```
 
-`answer_sign_captcha` submits one x-coordinate in the upstream `-8..280` coordinate space and stores the returned validation token in memory. The next `sign_activity` automatically adds `enc2` and `validate` in the reference query order. A wrong answer returns `SIGN_CAPTCHA_REJECTED`; the caller may fetch a new challenge but the watcher never blind-retries. Challenges expire after 10 minutes and raw `enc2`, `captchaKey`, `iv`, token and validate values are never returned by the tool contract.
+`answer_sign_captcha` submits one x-coordinate in the upstream `-8..280` coordinate space and stores the returned validation token in memory. The next `sign_activity` automatically adds `enc2` and `validate` in the reference query order. A wrong answer returns `SIGN_CAPTCHA_REJECTED`; the caller may fetch a new challenge but the watcher performs at most one solver-backed retry. Challenges expire after 10 minutes and raw `enc2`, `captchaKey`, `iv`, token and validate values are never returned by the tool contract.
 
 ## Manual work questions and drafts
 

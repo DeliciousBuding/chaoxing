@@ -124,7 +124,7 @@ func TestStudyDigestContract(t *testing.T) {
 		t.Fatal(out, e)
 	}
 	caps := Capabilities()
-	if caps["contract_version"] != "10" {
+	if caps["contract_version"] != "11" {
 		t.Fatal(caps["contract_version"])
 	}
 	unsupported, ok := caps["unsupported_domains"].([]string)

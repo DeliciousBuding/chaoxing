@@ -12,8 +12,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/DeliciousBuding/chaoxing/internal/captchasolver"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
@@ -24,16 +26,17 @@ import (
 var version = "dev"
 
 type config struct {
-	StateDir          string        `json:"state_dir"`
-	KeyPath           string        `json:"key_path"`
-	Issuer            string        `json:"issuer"`
-	Listen            string        `json:"listen"`
-	LocalListen       string        `json:"local_listen"`
-	LocalToken        string        `json:"local_token"`
-	OwnerPasswordHash string        `json:"owner_password_hash"`
-	Watch             *watchConfig  `json:"watch,omitempty"`
-	Device            *deviceConfig `json:"device,omitempty"`
-	GroupActivities   bool          `json:"group_activities,omitempty"`
+	StateDir          string               `json:"state_dir"`
+	KeyPath           string               `json:"key_path"`
+	Issuer            string               `json:"issuer"`
+	Listen            string               `json:"listen"`
+	LocalListen       string               `json:"local_listen"`
+	LocalToken        string               `json:"local_token"`
+	OwnerPasswordHash string               `json:"owner_password_hash"`
+	Watch             *watchConfig         `json:"watch,omitempty"`
+	CaptchaSolver     *captchaSolverConfig `json:"captcha_solver,omitempty"`
+	Device            *deviceConfig        `json:"device,omitempty"`
+	GroupActivities   bool                 `json:"group_activities,omitempty"`
 	// Proxies optionally routes upstream traffic through SOCKS5 endpoints;
 	// empty means direct egress. Tenants are additional isolated accounts
 	// served under /t/<id>/; empty keeps the single-tenant deployment.
@@ -67,14 +70,41 @@ type deviceConfig struct {
 }
 
 type tenantConfig struct {
-	ID                string        `json:"id"`
-	StateDir          string        `json:"state_dir"`
-	KeyPath           string        `json:"key_path"`
-	OwnerPasswordHash string        `json:"owner_password_hash"`
-	Device            *deviceConfig `json:"device,omitempty"`
-	GroupActivities   bool          `json:"group_activities,omitempty"`
-	Watch             *watchConfig  `json:"watch,omitempty"`
+	ID                string               `json:"id"`
+	StateDir          string               `json:"state_dir"`
+	KeyPath           string               `json:"key_path"`
+	OwnerPasswordHash string               `json:"owner_password_hash"`
+	Device            *deviceConfig        `json:"device,omitempty"`
+	GroupActivities   bool                 `json:"group_activities,omitempty"`
+	Watch             *watchConfig         `json:"watch,omitempty"`
+	CaptchaSolver     *captchaSolverConfig `json:"captcha_solver,omitempty"`
 }
+
+// captchaSolverConfig selects a private recognition provider. The user_key is
+// deployment secret material and is never exposed through tool contracts.
+type captchaSolverConfig struct {
+	Provider       string `json:"provider"`
+	UserKey        string `json:"user_key,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+func (c *captchaSolverConfig) solver() (upstream.CaptchaSolver, error) {
+	if c == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(c.Provider) != "damagou" {
+		return nil, errors.New("captcha_solver.provider must be damagou")
+	}
+	solver, err := captchasolver.NewDamaGou(c.UserKey)
+	if err != nil {
+		return nil, err
+	}
+	if c.TimeoutSeconds > 0 {
+		solver.Client.Timeout = time.Duration(c.TimeoutSeconds) * time.Second
+	}
+	return solver, nil
+}
+
 type request struct {
 	Tool      string         `json:"tool"`
 	Arguments map[string]any `json:"arguments"`
@@ -111,10 +141,14 @@ func load() (config, error) {
 	return c, nil
 }
 func (c config) client() (*upstream.Client, error) {
-	return upstream.New(c.upstreamConfig())
+	cfg, err := c.upstreamConfig()
+	if err != nil {
+		return nil, err
+	}
+	return upstream.New(cfg)
 }
 
-func (c config) upstreamConfig() upstream.Config {
+func (c config) upstreamConfig() (upstream.Config, error) {
 	cfg := upstream.Config{
 		CredentialsPath: filepath.Join(c.StateDir, "credentials.sealed"),
 		KeyPath:         c.KeyPath,
@@ -125,10 +159,15 @@ func (c config) upstreamConfig() upstream.Config {
 		cfg.DeviceCode, cfg.UserAgent, cfg.PackageName = c.Device.Code, c.Device.UserAgent, c.Device.PackageName
 	}
 	cfg.GroupActivities = c.GroupActivities
-	return cfg
+	solver, err := c.CaptchaSolver.solver()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.CaptchaSolver = solver
+	return cfg, nil
 }
 
-func (c tenantConfig) upstreamConfig() upstream.Config {
+func (c tenantConfig) upstreamConfig() (upstream.Config, error) {
 	cfg := upstream.Config{
 		CredentialsPath: filepath.Join(c.StateDir, "credentials.sealed"),
 		KeyPath:         c.KeyPath,
@@ -139,7 +178,12 @@ func (c tenantConfig) upstreamConfig() upstream.Config {
 		cfg.DeviceCode, cfg.UserAgent, cfg.PackageName = c.Device.Code, c.Device.UserAgent, c.Device.PackageName
 	}
 	cfg.GroupActivities = c.GroupActivities
-	return cfg
+	solver, err := c.CaptchaSolver.solver()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.CaptchaSolver = solver
+	return cfg, nil
 }
 func randomToken() string {
 	b := make([]byte, 32)

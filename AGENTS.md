@@ -15,7 +15,7 @@ Chaoxing is a self-hosted course information service with an explicitly scoped s
 - Never publish credentials, real account identifiers, deployment hosts/domains, private paths, or live responses. Use synthetic fixtures and example domains.
 - Keep unknown/partial coverage explicit. An empty feed is not proof that every course has no outstanding work.
 - Do not follow answer-start links or add arbitrary URL/command tools.
-- Do not implement automatic captcha solving, face or photo bypasses. Slider captcha may expose a bounded manual challenge/answer flow; QR sign-in requires the operator-scanned raw `qr_payload`. Face and photo return `UNSUPPORTED` until an explicit contract exists. Password/gesture sign-in may use an operator-provided sign code only.
+- Slider captcha may use a configured solver or the bounded manual challenge/answer flow; QR sign-in requires the operator-scanned raw `qr_payload`. Password/gesture sign-in may use an operator-provided sign code only.
 - Manual answering is local-only in `internal/workdraft`: read questions, persist validated drafts, and export save/submit payloads. Do not add automatic answer generation or upstream work submission without a separate explicit contract.
 - Before a change is complete, run the applicable Go tests/vet; security behavior needs rejection-path tests, not just happy paths.
 - Keep product docs in this repository. Installation state and secret recovery details belong to the deployer's private operations documentation.

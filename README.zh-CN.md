@@ -74,7 +74,9 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 
 原有八个工具之外，增加有界学业总览、来源明确的行动项、有界学业摘要与能力发现。`chaoxing capabilities` 查看已验证能力和未支持范围，`chaoxing schema assignments.list` 查看契约。
 
-可选的课堂活动监视器会按课程时间轮询指定班级，合并课程群消息里的签到卡片，发送运维告警，并自动提交普通、位置，以及配置了签到码的密码/手势签到。内置班级预设坐标、持久化设备身份、轮询抖动和单次尝试状态。上游返回滑块验证码时，watcher 只告警一次，Agent 可人工完成 `get_sign_captcha` -> `answer_sign_captcha` -> `sign_activity` 的有界链路；二维码签到通过 `sign_activity` 接收运营者扫到的原始 payload；拍照和人脸仍只告警。
+可选的课堂活动监视器会按课程时间轮询指定班级，合并课程群消息里的签到卡片，发送运维告警，并自动提交普通、位置，以及配置了签到码的密码/手势签到。内置班级预设坐标、持久化设备身份、轮询抖动和单次尝试状态。上游返回滑块验证码时，若配置了 solver，`sign_activity` 会自动完成一次有界识别与重试；未配置时 watcher 只告警一次，Agent 可人工完成手动链路；二维码签到通过 `sign_activity` 接收运营者扫到的原始 payload；拍照和人脸仍只告警。
+
+滑块识别是可选的 provider 边界，通过 `captcha_solver` 配置；daemon 只发送背景图，provider key 保持私有。详见[配置文档](docs/configuration.md)。
 
 通知可同时发送到飞书 webhook、ntfy 和 Gotify。watch 状态原子写入、私有保存，并与上游凭据分离。每个租户账号可以运行独立 watcher，拥有独立班级、课表、坐标、签到码、状态文件和通知目的地。
 
