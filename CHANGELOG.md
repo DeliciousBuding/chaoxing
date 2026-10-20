@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Advertise MCP contract version 10 and explicitly report photo and face sign-in as unsupported capability domains.
 - Document the agent control matrix, layered authorization/security invariants and independent notification fan-out behavior in the project README and architecture guide.
 - Add password and gesture sign-in using an operator-provided sign code, including reference-compatible code verification, ordered submission, attendance verification and watcher presets.
 - Add QR sign-in with local parsing of both reference payload formats, `signDetail` expiry verification, ordered `enc` submission and no QR URL fetching.

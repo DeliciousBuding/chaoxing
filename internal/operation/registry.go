@@ -527,6 +527,6 @@ func capabilities(defs []Definition) map[string]any {
 		names = append(names, d.Name)
 		ops = append(ops, map[string]any{"id": d.ID, "name": d.Name, "title": d.Title, "description": d.Description, "scope": RequiredScope(d), "input_schema": d.InputSchema(), "output_schema": d.OutputSchema()})
 	}
-	return map[string]any{"contract_version": "9", "tools": names, "operations": ops, "unsupported_domains": []string{"group_message_history", "inbox", "task_points", "folder_traversal", "automatic_work_submission", "automatic_captcha_solver"}, "complete": true, "coverage": "verified_tool_catalog"}
+	return map[string]any{"contract_version": "10", "tools": names, "operations": ops, "unsupported_domains": []string{"group_message_history", "inbox", "task_points", "folder_traversal", "automatic_work_submission", "automatic_captcha_solver", "photo_signin", "face_signin"}, "complete": true, "coverage": "verified_tool_catalog"}
 }
 func Capabilities() map[string]any { return capabilities(All()) }

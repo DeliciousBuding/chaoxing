@@ -123,8 +123,25 @@ func TestStudyDigestContract(t *testing.T) {
 	if e != nil || out["meta"].(map[string]any)["status"] != "partial" {
 		t.Fatal(out, e)
 	}
-	if Capabilities()["contract_version"] != "9" {
-		t.Fatal(Capabilities()["contract_version"])
+	caps := Capabilities()
+	if caps["contract_version"] != "10" {
+		t.Fatal(caps["contract_version"])
+	}
+	unsupported, ok := caps["unsupported_domains"].([]string)
+	if !ok {
+		t.Fatalf("unsupported_domains has type %T", caps["unsupported_domains"])
+	}
+	for _, domain := range []string{"photo_signin", "face_signin"} {
+		found := false
+		for _, actual := range unsupported {
+			if actual == domain {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("unsupported_domains missing %s: %#v", domain, unsupported)
+		}
 	}
 }
 func TestRuntimeRejectsMalformedMetadata(t *testing.T) {
