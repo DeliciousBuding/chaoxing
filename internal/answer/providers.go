@@ -16,6 +16,7 @@ type LLMProvider struct {
 	Endpoint  string
 	APIKey    string
 	Model     string
+	MaxTokens int
 	Client    *http.Client
 }
 
@@ -44,7 +45,11 @@ func (p *LLMProvider) Query(ctx context.Context, q Question) (string, float64, e
 		{"role": "system", "content": llmPrompt(q.Type)},
 		{"role": "user", "content": llmUserPrompt(q)},
 	}
-	body, err := json.Marshal(map[string]any{"model": p.Model, "messages": messages, "stream": false, "temperature": 0})
+	payload := map[string]any{"model": p.Model, "messages": messages, "stream": false, "temperature": 0}
+	if p.MaxTokens > 0 {
+		payload["max_tokens"] = p.MaxTokens
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", 0, err
 	}
@@ -61,8 +66,8 @@ func (p *LLMProvider) Query(ctx context.Context, q Question) (string, float64, e
 		return "", 0, fmt.Errorf("llm transport failed")
 	}
 	defer resp.Body.Close()
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024+1))
-	if err != nil || len(payload) > 1024*1024 || resp.StatusCode != http.StatusOK {
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024+1))
+	if err != nil || len(responseBody) > 1024*1024 || resp.StatusCode != http.StatusOK {
 		return "", 0, fmt.Errorf("llm response failed")
 	}
 	var completion struct {
@@ -72,7 +77,7 @@ func (p *LLMProvider) Query(ctx context.Context, q Question) (string, float64, e
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if json.Unmarshal(payload, &completion) != nil || len(completion.Choices) == 0 {
+	if json.Unmarshal(responseBody, &completion) != nil || len(completion.Choices) == 0 {
 		return "", 0, fmt.Errorf("llm response invalid")
 	}
 	values, err := parseAnswerJSON(completion.Choices[0].Message.Content)

@@ -51,32 +51,43 @@ type config struct {
 // watchConfig enables the optional activity watcher. Notifications are
 // outbound only.
 type watchConfig struct {
-	Enabled               bool                `json:"enabled"`
-	AutoSign              bool                `json:"auto_sign"`
-	AutoAnswer            bool                `json:"auto_answer"`
-	IntervalSeconds       int                 `json:"interval_seconds"`
-	IntervalJitterPercent int                 `json:"interval_jitter_percent"`
-	ClassPollDelayMinMs   int                 `json:"class_poll_delay_min_ms,omitempty"`
-	ClassPollDelayMaxMs   int                 `json:"class_poll_delay_max_ms,omitempty"`
-	AutoSignDelayMinSecs  int                 `json:"auto_sign_delay_min_seconds,omitempty"`
-	AutoSignDelayMaxSecs  int                 `json:"auto_sign_delay_max_seconds,omitempty"`
-	RepeatSeconds         int                 `json:"repeat_seconds"`
-	MaxRepeats            int                 `json:"max_repeats"`
-	LeadSeconds           int                 `json:"lead_seconds"`
-	Window                string              `json:"window,omitempty"`
-	Classes               []watch.Class       `json:"classes"`
-	Capture               *watchCaptureConfig `json:"capture,omitempty"`
-	FeishuWebhook         string              `json:"feishu_webhook,omitempty"`
-	NtfyURL               string              `json:"ntfy_url,omitempty"`
-	NtfyTopic             string              `json:"ntfy_topic,omitempty"`
-	GotifyURL             string              `json:"gotify_url,omitempty"`
-	GotifyToken           string              `json:"gotify_token,omitempty"`
+	Enabled               bool                  `json:"enabled"`
+	AutoSign              bool                  `json:"auto_sign"`
+	AutoAnswer            bool                  `json:"auto_answer"`
+	IntervalSeconds       int                   `json:"interval_seconds"`
+	IntervalJitterPercent int                   `json:"interval_jitter_percent"`
+	ClassPollDelayMinMs   int                   `json:"class_poll_delay_min_ms,omitempty"`
+	ClassPollDelayMaxMs   int                   `json:"class_poll_delay_max_ms,omitempty"`
+	AutoSignDelayMinSecs  int                   `json:"auto_sign_delay_min_seconds,omitempty"`
+	AutoSignDelayMaxSecs  int                   `json:"auto_sign_delay_max_seconds,omitempty"`
+	RepeatSeconds         int                   `json:"repeat_seconds"`
+	MaxRepeats            int                   `json:"max_repeats"`
+	LeadSeconds           int                   `json:"lead_seconds"`
+	Window                string                `json:"window,omitempty"`
+	Classes               []watch.Class         `json:"classes"`
+	ClassroomAgent        *classroomAgentConfig `json:"classroom_agent,omitempty"`
+	Capture               *watchCaptureConfig   `json:"capture,omitempty"`
+	FeishuWebhook         string                `json:"feishu_webhook,omitempty"`
+	NtfyURL               string                `json:"ntfy_url,omitempty"`
+	NtfyTopic             string                `json:"ntfy_topic,omitempty"`
+	GotifyURL             string                `json:"gotify_url,omitempty"`
+	GotifyToken           string                `json:"gotify_token,omitempty"`
 }
 
 type watchCaptureConfig struct {
 	Enabled        bool `json:"enabled"`
 	RetentionHours int  `json:"retention_hours,omitempty"`
 	ActivityPages  bool `json:"activity_pages,omitempty"`
+}
+
+// classroomAgentConfig bounds the classroom answer agent. It never widens
+// scope: homework and practice stay manual, and notify_only keeps every
+// decision advisory.
+type classroomAgentConfig struct {
+	Enabled       bool    `json:"enabled"`
+	NotifyOnly    bool    `json:"notify_only"`
+	MinConfidence float64 `json:"min_confidence,omitempty"`
+	MaxQuestions  int     `json:"max_questions,omitempty"`
 }
 
 type requestPacingConfig struct {
@@ -174,10 +185,22 @@ func (c *answerConfig) engine(stateDir string) (*answer.Engine, error) {
 				return nil, errors.New("answer responses provider base_url must be the API root, not a chat-completions endpoint")
 			}
 			providers = append(providers, answer.NewOpenAIResponses(endpoint, key, item.Model, timeout))
+		case "newapi":
+			if item.Model == "" {
+				return nil, errors.New("answer newapi provider requires model")
+			}
+			if key == "" {
+				return nil, errors.New("answer newapi provider requires an api_key source")
+			}
+			provider, err := answer.NewNewAPI(endpoint, key, item.Model, timeout)
+			if err != nil {
+				return nil, err
+			}
+			providers = append(providers, provider)
 		case "tiku":
 			providers = append(providers, answer.NewTiku(endpoint, key, timeout))
 		default:
-			return nil, errors.New("answer provider type must be llm, responses or tiku")
+			return nil, errors.New("answer provider type must be llm, newapi, responses or tiku")
 		}
 	}
 	return answer.NewEngine(providers, filepath.Join(stateDir, "answer-cache.json"), c.MinConfidence)

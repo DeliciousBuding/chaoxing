@@ -115,6 +115,12 @@ The watcher turns the class activity feed and optional course-group sign-in card
     "enabled": true,
     "auto_sign": true,
     "auto_answer": false,
+    "classroom_agent": {
+      "enabled": true,
+      "notify_only": true,
+      "min_confidence": 0.82,
+      "max_questions": 20
+    },
     "interval_seconds": 60,
     "interval_jitter_percent": 10,
     "class_poll_delay_min_ms": 750,
@@ -158,6 +164,7 @@ Bounds and behavior:
 
 - `group_activities` defaults to false. When true, `list_activities` and the watcher also read Easemob course-group history, parse `attachmentType=15` course cards, and merge them with the class feed by `course_id:class_id:activity_id`. The group list is cached for 10 minutes, at most 20 groups are scanned, and parsed cards are cached for 15 seconds to avoid a fixed high-rate request pattern. Group failures produce partial coverage or a safe watcher log; they do not erase successful class-feed rows.
 - `auto_answer` defaults to false. When true, an active `kind:"answer"` activity is claimed once through `answer_activity`; failed attempts do not resubmit and only repeat the alert.
+- `classroom_agent` optionally inserts the bounded classroom decision process in front of that claim. `enabled` turns it on, `notify_only` (recommended for production) degrades every decision to an operator alert, `min_confidence` defaults to 0.82, and `max_questions` defaults to 20 (capped at 100). The agent only ever considers `kind:"answer"` classroom activities: `homework` and `practice` are scope-gated and can never be auto-submitted. With no classroom question source configured it stays in claim-only mode; once question parsing lands, answers must pass normalization and the confidence gate before any action. Low confidence, missing providers, oversized question sets and parse failures all become a review notification instead of an upstream write.
 - `auto_sign` defaults to false. When true, normal and location activities are attempted once. Password and gesture activities are attempted only when the matching class has a nonempty `sign_code.code`. A slider-captcha response is solved automatically when `captcha_solver` is configured; otherwise it returns `CAPTCHA_REQUIRED`, sends one alert, and uses the manual MCP tools. QR activities alert because they require the operator-scanned raw payload in `sign_activity`; the watcher also leaves photo and face alert-only. Explicit `upload_file`, `sign_activity` and `sign_activity_with_face` tools support those flows when the operator supplies the object IDs.
 - `interval_seconds` is at least 30 (default 60), with `interval_jitter_percent` randomized around it (default 10, maximum 25). Each poll uses the account-bounded query queue.
 - `class_poll_delay_min_ms` / `class_poll_delay_max_ms` default to 750–3000 and add a randomized pause between two class polls. `auto_sign_delay_min_seconds` / `auto_sign_delay_max_seconds` default to 5–25 and delay the automatic sign attempt after discovery.
@@ -226,13 +233,20 @@ Enable the answer chain with a private top-level `answer` object (tenants may de
         "api_key_file": "/etc/chaoxing/openai.key",
         "model": "gpt-5.2",
         "timeout_seconds": 45
+      },
+      {
+        "type": "newapi",
+        "base_url": "https://newapi.example.com",
+        "api_key_file": "/etc/chaoxing/newapi.key",
+        "model": "deepseek-v4.1-flash",
+        "timeout_seconds": 45
       }
     ]
   }
 }
 ```
 
-`type:"llm"` accepts any OpenAI-compatible non-streaming chat-completions endpoint. `type:"responses"` uses the official `openai/openai-go` SDK and performs one stateless Responses API call per question; `base_url` is the API root (for example `https://api.openai.com/v1` or a compatible gateway root), never a `/chat/completions` endpoint. It requires `model` and exactly one API-key source, disables server-side response storage, disables SDK retries, and uses `timeout_seconds` (default 45) as both the HTTP and per-request deadline. `type:"tiku"` posts `{question,type,options}` and accepts either TikuAdapter-style `answer.bestAnswer` or `{data:{answer,confidence}}`. API keys may be supplied through at most one of `api_key`, `api_key_file`, or `api_key_env`; file/env forms are preferred. Keys are never returned by tools.
+`type:"llm"` accepts any OpenAI-compatible non-streaming chat-completions endpoint. `type:"responses"` uses the official `openai/openai-go` SDK and performs one stateless Responses API call per question; `base_url` is the API root (for example `https://api.openai.com/v1` or a compatible gateway root), never a `/chat/completions` endpoint. It requires `model` and exactly one API-key source, disables server-side response storage, disables SDK retries, and uses `timeout_seconds` (default 45) as both the HTTP and per-request deadline. `type:"newapi"` targets NewAPI/one-api style gateways: `base_url` must be the API root (for example `https://newapi.example.com`, optionally with a trailing `/v1`), and the provider derives `/v1/chat/completions` itself so accidentally configured full endpoints are rejected. It requires `model` and exactly one API-key source, sends `max_tokens:768` because reasoning-first models spend tokens before the final JSON, and defaults to a 45-second timeout. `type:"tiku"` posts `{question,type,options}` and accepts either TikuAdapter-style `answer.bestAnswer` or `{data:{answer,confidence}}`. API keys may be supplied through at most one of `api_key`, `api_key_file`, or `api_key_env`; file/env forms are preferred. Keys are never returned by tools.
 
 For a global assignment, call `get_assignment_questions` first; it follows the signed task entry to the editable work page and returns the `job_id` accepted by `answer_work`. For knowledge-point work, call `list_work_jobs` and `get_work_questions` instead. `answer_work` only generates and saves local drafts, and requires both `chaoxing.answer` and `chaoxing.work`. `save_work` and `submit_work` remain explicit tools and require the `chaoxing.work.submit` scope; final submission additionally requires every question to have a draft.
 

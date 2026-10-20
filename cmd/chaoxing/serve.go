@@ -19,6 +19,7 @@ import (
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
+	"github.com/DeliciousBuding/chaoxing/internal/classroomagent"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/mcphttp"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
@@ -250,7 +251,7 @@ func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool
 			if e != nil {
 				return nil, nil, nil, e
 			}
-			tr.watch, e = newWatcher(*tc.Watch, tc.StateDir, cl, captures, tc.ID)
+			tr.watch, e = newWatcher(*tc.Watch, tc.StateDir, cl, captures, tc.ID, tc.Answer)
 			if e != nil {
 				return nil, nil, nil, e
 			}
@@ -260,7 +261,7 @@ func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool
 	return mux, tenantIDs, runtimes, nil
 }
 
-func newWatcher(c watchConfig, stateDir string, client *upstream.Client, captures capture.Store, accountKey string) (*watch.Runner, error) {
+func newWatcher(c watchConfig, stateDir string, client *upstream.Client, captures capture.Store, accountKey string, answers *answerConfig) (*watch.Runner, error) {
 	sender, err := watchSender(c)
 	if err != nil {
 		return nil, err
@@ -305,6 +306,22 @@ func newWatcher(c watchConfig, stateDir string, client *upstream.Client, capture
 	var answerer []watch.AnswerActivitySource
 	if c.AutoAnswer {
 		answerer = append(answerer, client)
+	}
+	if c.AutoAnswer && c.ClassroomAgent != nil && c.ClassroomAgent.Enabled {
+		engine, err := answers.engine(stateDir)
+		if err != nil {
+			return nil, err
+		}
+		agent, err := classroomagent.New(classroomagent.Policy{
+			Enabled:       c.ClassroomAgent.Enabled,
+			NotifyOnly:    c.ClassroomAgent.NotifyOnly,
+			MinConfidence: c.ClassroomAgent.MinConfidence,
+			MaxQuestions:  c.ClassroomAgent.MaxQuestions,
+		}, engine, nil)
+		if err != nil {
+			return nil, err
+		}
+		cfg.ClassroomAgent = agent
 	}
 	return watch.New(cfg, client, sender, client, answerer...)
 }
@@ -372,7 +389,7 @@ func serve() error {
 	}
 	var watcher *watch.Runner
 	if c.Watch != nil && c.Watch.Enabled {
-		watcher, e = newWatcher(*c.Watch, c.StateDir, x, captures, "root")
+		watcher, e = newWatcher(*c.Watch, c.StateDir, x, captures, "root", c.Answer)
 		if e != nil {
 			return e
 		}

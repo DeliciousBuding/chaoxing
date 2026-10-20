@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
+	"github.com/DeliciousBuding/chaoxing/internal/classroomagent"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
@@ -471,5 +472,88 @@ func TestWatchCapsRepeatsAndPersistsState(t *testing.T) {
 func TestWindowParsingRejectsGarbage(t *testing.T) {
 	if _, err := New(Config{Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}}, Window: "evening"}, &fakeSource{}, &fakeSender{}, nil); err == nil {
 		t.Fatal("invalid window accepted")
+	}
+}
+
+func TestWatchClassroomAgentNotifyOnlyNeverClaims(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{answerActivity("c", "k", "answer-9")}}
+	snd := &fakeSender{}
+	answerer := &fakeAnswerer{result: upstream.SignResult{Method: "answer", State: "answered", Verified: true}}
+	agent, err := classroomagent.New(classroomagent.Policy{Enabled: true, NotifyOnly: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(Config{
+		Interval: time.Minute, RepeatEvery: time.Minute, MaxRepeats: 3, AutoAnswer: true,
+		ClassroomAgent: agent, Classes: []Class{{CourseID: "c", ClassID: "k"}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, snd, nil, answerer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Tick(context.Background())
+	if len(answerer.requests) != 0 {
+		t.Fatalf("notify_only must not claim: %+v", answerer.requests)
+	}
+	if len(snd.sent) != 1 || snd.sent[0].Title != "🧠 学习通课堂答题需要确认" {
+		t.Fatalf("%+v", snd.sent)
+	}
+	if e := r.state[key(src.items[0])]; e.Status != "review" || e.Code != "CLAIM_ONLY_NO_QUESTIONS" {
+		t.Fatalf("%+v", e)
+	}
+}
+
+func TestWatchClassroomAgentSkipsHomework(t *testing.T) {
+	homework := upstream.Activity{ID: "work-1", CourseID: "c", ClassID: "k", Course: "Synthetic",
+		Title: "Synthetic homework", Kind: "homework", State: "active", UserState: "unsigned", Answerable: true}
+	src := &fakeSource{items: []upstream.Activity{homework}}
+	snd := &fakeSender{}
+	answerer := &fakeAnswerer{result: upstream.SignResult{Method: "answer", State: "answered", Verified: true}}
+	agent, err := classroomagent.New(classroomagent.Policy{Enabled: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(Config{
+		Interval: time.Minute, RepeatEvery: time.Minute, MaxRepeats: 3, AutoAnswer: true,
+		ClassroomAgent: agent, Classes: []Class{{CourseID: "c", ClassID: "k"}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, snd, nil, answerer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Tick(context.Background())
+	if len(answerer.requests) != 0 {
+		t.Fatalf("homework must never be claimed: %+v", answerer.requests)
+	}
+	if len(snd.sent) != 0 {
+		t.Fatalf("scope-gated homework should not alert: %+v", snd.sent)
+	}
+	if _, exists := r.state[key(homework)]; exists {
+		t.Fatal("scope-gated homework must not persist watch state")
+	}
+}
+
+func TestWatchClassroomAgentClaimsWhenAllowed(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{answerActivity("c", "k", "answer-7")}}
+	snd := &fakeSender{}
+	answerer := &fakeAnswerer{result: upstream.SignResult{Method: "answer", State: "answered", Verified: true}}
+	agent, err := classroomagent.New(classroomagent.Policy{Enabled: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(Config{
+		Interval: time.Minute, RepeatEvery: time.Minute, MaxRepeats: 3, AutoAnswer: true,
+		ClassroomAgent: agent, Classes: []Class{{CourseID: "c", ClassID: "k"}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, snd, nil, answerer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Tick(context.Background())
+	if len(answerer.requests) != 1 || answerer.requests[0] != [3]string{"c", "k", "answer-7"} {
+		t.Fatalf("%+v", answerer.requests)
+	}
+	if len(snd.sent) != 1 || snd.sent[0].Title != "✅ 学习通自动抢答成功" {
+		t.Fatalf("%+v", snd.sent)
 	}
 }

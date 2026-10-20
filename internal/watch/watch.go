@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
+	"github.com/DeliciousBuding/chaoxing/internal/classroomagent"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/persist"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
@@ -60,6 +61,7 @@ type Config struct {
 	Lead                  time.Duration
 	AutoSign              bool
 	AutoAnswer            bool
+	ClassroomAgent        *classroomagent.Agent
 	Classes               []Class
 	StatePath             string
 	Capture               bool
@@ -471,6 +473,16 @@ func (r *Runner) captureActivities(ctx context.Context, items []upstream.Activit
 }
 
 func (r *Runner) autoAnswer(ctx context.Context, item upstream.Activity, e entry) bool {
+	if agent := r.cfg.ClassroomAgent; agent != nil {
+		decision := agent.Decide(ctx, classroomagent.FromUpstream(item))
+		switch decision.Action {
+		case classroomagent.ActionSkip:
+			log.Printf("activity watch: classroom agent skipped %s: %s", item.ID, decision.Reason)
+			return false
+		case classroomagent.ActionNotify:
+			return r.recordAnswerReview(ctx, item, e, decision)
+		}
+	}
 	result, err := r.answerer.AnswerActivity(ctx, item.CourseID, item.ClassID, item.ID)
 	now := r.now()
 	next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: e.Status, Method: e.Method, Code: e.Code}
@@ -493,6 +505,23 @@ func (r *Runner) autoAnswer(ctx context.Context, item upstream.Activity, e entry
 		next.LastSent, next.Count = now, e.Count+1
 	}
 	log.Printf("activity watch: auto answer %s: status=%s", item.ID, next.Status)
+	return true
+}
+
+// recordAnswerReview persists a classroom-agent decision that requires the
+// operator instead of performing the upstream claim. Generated answers, when
+// present, are included in the alert so the operator can act immediately.
+func (r *Runner) recordAnswerReview(ctx context.Context, item upstream.Activity, e entry, decision classroomagent.Decision) bool {
+	now := r.now()
+	next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: "review", Method: "agent", Code: decision.Reason}
+	title, body := "🧠 学习通课堂答题需要确认", formatReviewBody(item, decision)
+	if err := r.sender.Send(ctx, notify.Message{Title: title, Body: body, Priority: 7}); err != nil {
+		log.Printf("activity watch: notify failed: %v", err)
+	} else {
+		next.LastSent, next.Count = now, e.Count+1
+	}
+	r.state[key(item)] = next
+	log.Printf("activity watch: classroom agent review %s: %s", item.ID, decision.Reason)
 	return true
 }
 
@@ -666,6 +695,30 @@ func formatFailureBody(a upstream.Activity, code string) string {
 		"错误："+code,
 		"系统不会自动重试该活动，请立即人工处理。",
 	)
+	return strings.Join(lines, "\n")
+}
+
+func formatReviewBody(a upstream.Activity, decision classroomagent.Decision) string {
+	lines := []string{
+		"课程：" + firstNonBlank(a.Course, a.CourseID),
+		"活动：" + firstNonBlank(a.Title, a.ID),
+	}
+	if a.Source == "group" && a.GroupName != "" {
+		lines = append(lines, "来源：课程群 "+a.GroupName)
+	}
+	detail := strings.TrimSpace(decision.Detail)
+	if detail == "" {
+		detail = decision.Reason
+	}
+	lines = append(lines, "原因："+detail)
+	for _, ans := range decision.Answers {
+		value := strings.ReplaceAll(ans.Text, "\n", " / ")
+		if len(value) > 120 {
+			value = value[:120] + "…"
+		}
+		lines = append(lines, "AI答案："+value+"（置信度 "+strconv.FormatFloat(ans.Confidence, 'f', 2, 64)+"）")
+	}
+	lines = append(lines, "系统不会自动提交，请人工确认。")
 	return strings.Join(lines, "\n")
 }
 
