@@ -123,7 +123,7 @@ func TestStudyDigestContract(t *testing.T) {
 	if e != nil || out["meta"].(map[string]any)["status"] != "partial" {
 		t.Fatal(out, e)
 	}
-	if Capabilities()["contract_version"] != "8" {
+	if Capabilities()["contract_version"] != "9" {
 		t.Fatal(Capabilities()["contract_version"])
 	}
 }

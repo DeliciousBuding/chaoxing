@@ -82,7 +82,7 @@ func SafeFault(err error) *Fault {
 	case "SIGN_EXPIRED", "SIGN_ALREADY":
 		f.Category = "upstream_state"
 		f.Message = "The sign-in activity state changed."
-	case "SIGN_CODE_REJECTED", "SIGN_CAPTCHA_REJECTED":
+	case "SIGN_CODE_REJECTED", "SIGN_CAPTCHA_REJECTED", "SIGN_QR_EXPIRED":
 		f.Category = "upstream_state"
 		f.Message = "The sign-in verification value was not accepted."
 	case "CAPTCHA_REQUIRED":
@@ -427,7 +427,7 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		req := SignRequest{
 			CourseID: str(args, "course_id"), ClassID: str(args, "class_id"),
 			ActivityID: str(args, "activity_id"), Address: str(args, "address"),
-			SignCode: str(args, "sign_code"),
+			SignCode: str(args, "sign_code"), QRPayload: str(args, "qr_payload"),
 		}
 		if v, ok := floatArg(args, "latitude"); ok {
 			req.Latitude = &v

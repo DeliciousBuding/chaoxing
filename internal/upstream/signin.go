@@ -39,6 +39,7 @@ type SignRequest struct {
 	SignCode        string
 	SignEnc2        string
 	CaptchaValidate string
+	QRPayload       string
 }
 
 type SignResult struct {
@@ -152,9 +153,14 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest) (SignResult,
 		method = "password"
 	case info.OtherID.value == 3 && req.SignCode != "":
 		method = "gesture"
+	case info.OtherID.value == 2 && req.QRPayload != "":
+		method = "qrcode"
 	default:
 		if info.OtherID.value == 3 || info.OtherID.value == 5 {
 			return SignResult{}, fault("INVALID_ARGUMENT", "sign_code is required for gesture or password sign-in")
+		}
+		if info.OtherID.value == 2 {
+			return SignResult{}, fault("INVALID_ARGUMENT", "qr_payload is required for QR sign-in")
 		}
 		return SignResult{}, fault("UNSUPPORTED", "only normal, location, gesture and password sign-in are implemented")
 	}
@@ -322,6 +328,36 @@ func (c *Client) signSelected(ctx context.Context, activity Activity, info activ
 		}
 		return signResponseState(string(b))
 	}
+	if method == "qrcode" {
+		qr, err := parseQRCode(req.QRPayload)
+		if err != nil {
+			return "", err
+		}
+		if err := c.verifyQRCode(ctx, activity.ID, qr); err != nil {
+			return "", err
+		}
+		activeID := activity.ID
+		if qr.AID != "" {
+			activeID = qr.AID
+		}
+		pairs := []string{
+			"enc", qr.Enc, "name", identity.Name, "activeId", activeID,
+			"uid", identity.UID, "clientip", "", "latitude", "-1", "longitude", "-1",
+			"fid", identity.FID, "appType", "15", "deviceCode", c.device.DeviceCode,
+			"vpProbability", "-1", "vpStrategy", "", "courseId", activity.CourseID,
+		}
+		if req.SignEnc2 != "" {
+			pairs = append(pairs, "enc2", req.SignEnc2)
+		}
+		if req.CaptchaValidate != "" {
+			pairs = append(pairs, "validate", req.CaptchaValidate)
+		}
+		b, err := c.get(ctx, stuSignAPI+"?"+orderedQuery(pairs...))
+		if err != nil {
+			return "", err
+		}
+		return signResponseState(string(b))
+	}
 
 	state, err := c.signLocation(ctx, activity, info, req, identity, false)
 	if err == nil {
@@ -459,6 +495,8 @@ func signResponseState(body string) (string, error) {
 		return "signed", nil
 	case body == "success2":
 		return "", fault("SIGN_EXPIRED", "sign-in has ended")
+	case body == "签到失败，请重新扫描。":
+		return "", fault("SIGN_QR_EXPIRED", "QR code is expired")
 	case strings.HasPrefix(body, "validate_"), strings.HasPrefix(body, "[face]"), strings.HasPrefix(body, "checkFace_"):
 		if strings.HasPrefix(body, "validate_") || strings.HasPrefix(body, "checkFace_") {
 			return body, nil

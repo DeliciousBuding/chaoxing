@@ -57,7 +57,7 @@ Arguments are optional unless marked required. CLI operation IDs use two words, 
 | `workdrafts.list` | `list_work_drafts` | required `course_id`, `class_id`, `job_id` | Lists local drafts for one work. Requires `chaoxing.work`. |
 | `workdrafts.delete` | `delete_work_draft` | required `course_id`, `class_id`, `job_id`, `question_id` | Deletes one local draft. Requires `chaoxing.work`. |
 | `workdrafts.export` | `export_work_draft` | required `course_id`, `class_id`, `job_id` | Exports current form data plus drafts as `pyFlag=1` save and final submit payloads. Requires `chaoxing.work`; does not POST. |
-| `activities.sign` | `sign_activity` | required `course_id`, `class_id`, `activity_id`; optional `latitude`, `longitude`, `address`, `sign_code` | Submits one normal, location, password or gesture sign-in, then re-reads attendance state. Password/gesture require `sign_code`. Requires the separate `chaoxing.sign` OAuth scope. |
+| `activities.sign` | `sign_activity` | required `course_id`, `class_id`, `activity_id`; optional `latitude`, `longitude`, `address`, `sign_code`, `qr_payload` | Submits one normal, location, QR, password or gesture sign-in, then re-reads attendance state. Password/gesture require `sign_code`; QR requires a raw scanned `qr_payload`. Requires the separate `chaoxing.sign` OAuth scope. |
 | `signcaptcha.get` | `get_sign_captcha` | required `course_id`, `class_id`, `activity_id` | Returns the slider background/cutout image URLs and expiry for a challenge created by `sign_activity`. Requires `chaoxing.sign`. |
 | `signcaptcha.answer` | `answer_sign_captcha` | required `course_id`, `class_id`, `activity_id`, `x_position` | Submits one slider coordinate and stores the upstream validation token for the next `sign_activity` retry. Requires `chaoxing.sign`. |
 
@@ -131,13 +131,14 @@ Class failures preserve rows from other selected classes and report per-class co
 - normal sign-in (`otherId=0` and no photo requirement);
 - location sign-in (`otherId=4` and location enabled);
 - password sign-in (`otherId=5`) with a nonempty `sign_code`;
-- gesture sign-in (`otherId=3`) with a nonempty `sign_code`.
+- gesture sign-in (`otherId=3`) with a nonempty `sign_code`;
+- QR sign-in (`otherId=2`) with a raw scanned `qr_payload`.
 
 The operation uses the reference Android client's protocol chain: persistent device identity, account identity, `preSign`, `analysis`, `analysis2`, then `stuSignajax`. Query order is preserved rather than alphabetically re-encoded. It sends the stable `deviceCode`, the configured Android-like user agent and the account's upstream identity. Expired sessions trigger the normal one-shot automatic login and retry; official verification requirements are not bypassed.
 
 Location requests may supply `latitude`, `longitude` and `address`. Coordinates must lie inside the activity's published range. The service applies the reference client's independent ±0.00005-degree random offset; if upstream returns `errorLocation`, it retries once with the tightened ±0.00001 offset. Without preset coordinates, it uses the activity's published center with the same jitter. A successful submission is verified through `getAttendInfo`; a still-unsigned state returns `SIGN_REJECTED`.
 
-Password and gesture requests first call the reference `checkSignCode` endpoint. A rejected code returns `SIGN_CODE_REJECTED` before attendance is changed. Photo, QR and face requirements return `UNSUPPORTED`. Remote MCP callers need `chaoxing.sign`; a `chaoxing.read` token receives an insufficient-scope error before upstream is contacted.
+Password and gesture requests first call the reference `checkSignCode` endpoint. A rejected code returns `SIGN_CODE_REJECTED` before attendance is changed. QR payloads are parsed locally in both reference formats (`SIGNIN:` and URL), checked through `signDetail`, and submitted with the QR `enc` in the reference query order. The service never fetches a QR URL. Photo and face requirements return `UNSUPPORTED`. Remote MCP callers need `chaoxing.sign`; a `chaoxing.read` token receives an insufficient-scope error before upstream is contacted.
 
 ### Manual slider captcha
 

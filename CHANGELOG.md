@@ -3,12 +3,13 @@
 ## Unreleased
 
 - Add password and gesture sign-in using an operator-provided sign code, including reference-compatible code verification, ordered submission, attendance verification and watcher presets.
+- Add QR sign-in with local parsing of both reference payload formats, `signDetail` expiry verification, ordered `enc` submission and no QR URL fetching.
 - Add the reference two-pass slider-captcha state machine with `get_sign_captcha` and `answer_sign_captcha`. Raw `enc2`, captcha keys and validation tokens stay in memory; the watcher never solves or blind-retries a challenge.
 - Add optional course-group sign-in-card discovery. When enabled, class feeds and Easemob group cards are merged by stable course/class/activity identity for both `list_activities` and the watcher.
 - Extend notifications with Gotify alongside Feishu webhooks and ntfy, and allow multiple channels in one watcher.
 - Add per-tenant watchers with independent schedules, classes, coordinates, sign codes, notification configuration and private watch state.
 - Add manual answer support: `list_work_jobs`, `get_work_questions`, local draft upsert/list/delete, and export of save/submit request payloads without upstream submission. Draft edits use the new `chaoxing.work` OAuth scope.
-- Advertise MCP contract version 8 with 23 tools; `chaoxing.read`, `chaoxing.sign` and `chaoxing.work` remain separately grantable and refresh can only narrow scopes.
+- Advertise MCP contract version 9 with 23 tools; `chaoxing.read`, `chaoxing.sign` and `chaoxing.work` remain separately grantable and refresh can only narrow scopes.
 - Add `list_activities`, a bounded class activity feed covering sign-in and other classroom activities, with `kind`, `state`, `user_state` and a `signable` hint.
 - Add `sign_activity`, a remotely callable normal/location sign-in operation with stable device identity, reference-compatible protocol ordering, preset coordinates, bounded jitter, automatic reauthentication and attendance verification. It requires the new `chaoxing.sign` OAuth scope.
 - Extend the optional `watch` loop with per-class course schedules, preset locations, interval jitter and one-attempt automatic sign-in. Watch state and device identity persist in the private state directory; no new services, databases or scheduled jobs are created.
