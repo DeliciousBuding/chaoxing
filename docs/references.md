@@ -4,8 +4,9 @@ Chaoxing's original project code is licensed under Apache-2.0. The following MIT
 
 - [DanMo661/Xuexitong-mcp](https://github.com/DanMo661/Xuexitong-mcp): upstream interface and MCP usage reference.
 - [menghuanshiguang/chaoxing-cli](https://github.com/menghuanshiguang/chaoxing-cli): upstream login and CLI protocol reference.
+- [aquamarine5/ChaoxingSignFaker](https://github.com/aquamarine5/ChaoxingSignFaker) (AGPL-3.0): sign-in protocol, device-code and coordinate-jitter behavior reference. No source code or assets from that project are copied or vendored.
 
-Their source code was not copied into this project. These links acknowledge protocol research, not a bundled dependency or a claim that their MIT code was relicensed. Go dependencies retain their own licenses. Any future copied or vendored material must retain the applicable license and attribution.
+Their source code was not copied into this project. These links acknowledge protocol research, not a bundled dependency or a claim that upstream code was relicensed. Go dependencies retain their own licenses. Any future copied or vendored material must retain the applicable license and attribution.
 
 Private deployment patterns are not public source dependencies. Public documentation contains only synthetic examples and project contracts, not private repository code, operational records or infrastructure details.
 

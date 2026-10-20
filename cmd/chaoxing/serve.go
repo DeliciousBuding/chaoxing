@@ -63,12 +63,9 @@ type tenantRuntime struct {
 
 func (t *tenantRuntime) upstreamClient() (*upstream.Client, error) {
 	t.once.Do(func() {
-		t.client, t.err = upstream.New(upstream.Config{
-			CredentialsPath: filepath.Join(t.cfg.StateDir, "credentials.sealed"),
-			KeyPath:         t.cfg.KeyPath,
-			SessionPath:     filepath.Join(t.cfg.StateDir, "session.sealed"),
-			Transport:       t.pool,
-		})
+		cfg := t.cfg.upstreamConfig()
+		cfg.Transport = t.pool
+		t.client, t.err = upstream.New(cfg)
 	})
 	return t.client, t.err
 }
@@ -165,12 +162,9 @@ func serve() error {
 	if e != nil {
 		return e
 	}
-	x, e := upstream.New(upstream.Config{
-		CredentialsPath: filepath.Join(c.StateDir, "credentials.sealed"),
-		KeyPath:         c.KeyPath,
-		SessionPath:     filepath.Join(c.StateDir, "session.sealed"),
-		Transport:       pool,
-	})
+	rootConfig := c.upstreamConfig()
+	rootConfig.Transport = pool
+	x, e := upstream.New(rootConfig)
 	if e != nil {
 		return e
 	}
@@ -185,18 +179,17 @@ func serve() error {
 			interval = time.Minute
 		}
 		repeat := time.Duration(c.Watch.RepeatSeconds) * time.Second
-		classes := make([]watch.Class, 0, len(c.Watch.Classes))
-		for _, cl := range c.Watch.Classes {
-			classes = append(classes, watch.Class{CourseID: cl.CourseID, ClassID: cl.ClassID})
-		}
 		watcher, err = watch.New(watch.Config{
-			Interval:    interval,
-			RepeatEvery: repeat,
-			MaxRepeats:  c.Watch.MaxRepeats,
-			Window:      c.Watch.Window,
-			Classes:     classes,
-			StatePath:   filepath.Join(c.StateDir, "watch-state.json"),
-		}, x, sender)
+			Interval:              interval,
+			IntervalJitterPercent: c.Watch.IntervalJitterPercent,
+			RepeatEvery:           repeat,
+			MaxRepeats:            c.Watch.MaxRepeats,
+			Window:                c.Watch.Window,
+			Lead:                  time.Duration(c.Watch.LeadSeconds) * time.Second,
+			AutoSign:              c.Watch.AutoSign,
+			Classes:               c.Watch.Classes,
+			StatePath:             filepath.Join(c.StateDir, "watch-state.json"),
+		}, x, sender, x)
 		if err != nil {
 			return err
 		}
@@ -217,7 +210,7 @@ func serve() error {
 	})
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Chaoxing Read-only MCP</title><h1>Chaoxing Read-only MCP</h1><p>Connect your MCP client to /mcp using OAuth. This service does not provide public course data.</p></html>`))
+		w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Chaoxing MCP</title><h1>Chaoxing MCP</h1><p>Connect your MCP client to /mcp using OAuth. This service does not provide public course data.</p></html>`))
 	})
 	local := http.NewServeMux()
 	localAuth := func(w http.ResponseWriter, r *http.Request) bool {

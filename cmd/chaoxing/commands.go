@@ -70,7 +70,7 @@ func parseBusiness(argv []string) (request, bool, error) {
 		if _, exists := r.Arguments[key]; exists {
 			return r, true, &upstream.Fault{Code: "INVALID_ARGUMENT"}
 		}
-		if f.Type == "integer" {
+		if f.Type == "integer" || f.Type == "number" {
 			r.Arguments[key] = json.Number(argv[i])
 		} else {
 			r.Arguments[key] = argv[i]

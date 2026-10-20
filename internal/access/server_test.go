@@ -77,14 +77,18 @@ type flow struct {
 }
 
 func authorizeFlow(t *testing.T, h http.Handler) flow {
+	return authorizeFlowScopes(t, h, scopeRead)
+}
+
+func authorizeFlowScopes(t *testing.T, h http.Handler, scopes string) flow {
 	t.Helper()
-	w := request(h, "POST", "/oauth/register", `{"client_name":"Example reader","redirect_uris":["https://client.example.com/callback"]}`, "application/json")
+	w := request(h, "POST", "/oauth/register", `{"client_name":"Example reader","redirect_uris":["https://client.example.com/callback"],"scope":"`+scopes+`"}`, "application/json")
 	if w.Code != 201 {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	f := flow{id: bodyMap(t, w)["client_id"].(string), verifier: strings.Repeat("v", 43)}
 	sum := sha256.Sum256([]byte(f.verifier))
-	q := url.Values{"client_id": {f.id}, "response_type": {"code"}, "redirect_uri": {"https://client.example.com/callback"}, "scope": {scopeRead}, "state": {"example-state"}, "code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "resource": {"https://mcp.example.com/mcp"}}
+	q := url.Values{"client_id": {f.id}, "response_type": {"code"}, "redirect_uri": {"https://client.example.com/callback"}, "scope": {scopes}, "state": {"example-state"}, "code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "resource": {"https://mcp.example.com/mcp"}}
 	f.path = "/oauth/authorize?" + q.Encode()
 	w = request(h, "GET", f.path, "", "")
 	if w.Code != 302 {
@@ -113,7 +117,7 @@ func authorizeFlow(t *testing.T, h http.Handler) flow {
 		t.Fatal("missing owner session")
 	}
 	w = request(h, "GET", f.path, "", "", f.owner)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "chaoxing.read") {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), scopes) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	text := w.Body.String()
@@ -224,6 +228,44 @@ func TestOAuthFlowRestartRefresh(t *testing.T) {
 	info, _ := os.Stat(cfg.StateDir + "/oauth-state.json")
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatal("wrong mode", info.Mode())
+	}
+}
+
+func TestSignScopeIsGrantedAndNarrowedOnRefresh(t *testing.T) {
+	s, h := setup(t, config(t))
+	f := authorizeFlowScopes(t, h, scopeRead+" "+scopeSign)
+	w := form(h, "/oauth/token", tokenForm(f))
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	tokens := bodyMap(t, w)
+	if tokens["scope"] != scopeRead+" "+scopeSign {
+		t.Fatal(tokens)
+	}
+	access := tokens["access_token"].(string)
+	s.mu.Lock()
+	stored := s.state.Access[digest(access)]
+	s.mu.Unlock()
+	if stored.Scope != scopeRead+" "+scopeSign {
+		t.Fatalf("%+v", stored)
+	}
+	w = form(h, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tokens["refresh_token"].(string)}, "scope": {scopeRead}})
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	narrowed := bodyMap(t, w)
+	if narrowed["scope"] != scopeRead {
+		t.Fatal(narrowed)
+	}
+}
+
+func TestReadRegistrationCannotRequestSignScope(t *testing.T) {
+	_, h := setup(t, config(t))
+	f := authorizeFlow(t, h)
+	q := url.Values{"client_id": {f.id}, "response_type": {"code"}, "redirect_uri": {"https://client.example.com/callback"}, "scope": {scopeSign}, "code_challenge_method": {"S256"}, "code_challenge": {strings.Repeat("c", 43)}}
+	w := request(h, "GET", "/oauth/authorize?"+q.Encode(), "", "", f.owner)
+	if w.Code != 400 {
+		t.Fatal(w.Code, w.Body.String())
 	}
 }
 func TestRefreshConcurrentSingleWinner(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/DeliciousBuding/chaoxing/internal/authz"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
 )
 
@@ -18,6 +19,7 @@ func rpc(h http.Handler, body string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("POST", "https://mcp.example.com/mcp", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Accept", "application/json, text/event-stream")
+	r = r.WithContext(authz.WithScopes(r.Context(), "chaoxing.read"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
@@ -50,7 +52,8 @@ func TestInitializeListCall(t *testing.T) {
 	}
 	for _, v := range list {
 		tool := v.(map[string]any)
-		if tool["annotations"].(map[string]any)["readOnlyHint"] != true || tool["securitySchemes"] == nil || tool["title"] == "" {
+		readOnly := tool["name"] != "sign_activity"
+		if tool["annotations"].(map[string]any)["readOnlyHint"] != readOnly || tool["securitySchemes"] == nil || tool["title"] == "" {
 			t.Fatal(tool)
 		}
 	}
@@ -63,6 +66,28 @@ func TestInitializeListCall(t *testing.T) {
 	w = rpc(h, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 	if w.Code != 202 || w.Body.Len() != 0 {
 		t.Fatal(w.Code)
+	}
+}
+
+func TestSignToolRequiresDedicatedScope(t *testing.T) {
+	calls := 0
+	h := New(func(context.Context, string, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"complete": true, "result": map[string]any{"activity_id": "activity-1", "course_id": "course-1", "class_id": "class-1", "method": "normal", "state": "signed", "verified": true}}, nil
+	})
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sign_activity","arguments":{"course_id":"course-1","class_id":"class-1","activity_id":"activity-1"}}}`
+	got := result(t, rpc(h, body))
+	if got["error"] == nil || calls != 0 {
+		t.Fatal(got, calls)
+	}
+	r := httptest.NewRequest("POST", "https://mcp.example.com/mcp", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/json, text/event-stream")
+	r = r.WithContext(authz.WithScopes(r.Context(), "chaoxing.sign"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if calls != 1 || result(t, w)["error"] != nil {
+		t.Fatal(w.Body.String(), calls)
 	}
 }
 func TestValidationDoesNotCallUpstream(t *testing.T) {

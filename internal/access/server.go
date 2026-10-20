@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/DeliciousBuding/chaoxing/internal/authz"
 )
 
 // Config contains only this service's public issuer, private state location,
@@ -29,6 +31,7 @@ type Config struct {
 type session struct{ expires int64 }
 type grant struct {
 	client, redirect, challenge, state, session, resource string
+	scope                                                 string
 	expires                                               int64
 }
 
@@ -201,11 +204,11 @@ func oauthError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
 }
 func (s *Server) resourceMetadata(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, 200, map[string]any{"resource": s.cfg.Issuer + "/mcp", "authorization_servers": []string{s.cfg.Issuer}, "scopes_supported": []string{scopeRead}, "bearer_methods_supported": []string{"header"}})
+	writeJSON(w, 200, map[string]any{"resource": s.cfg.Issuer + "/mcp", "authorization_servers": []string{s.cfg.Issuer}, "scopes_supported": []string{scopeRead, scopeSign}, "bearer_methods_supported": []string{"header"}})
 }
 func (s *Server) serverMetadata(w http.ResponseWriter, _ *http.Request) {
 	i := s.cfg.Issuer
-	writeJSON(w, 200, map[string]any{"issuer": i, "authorization_endpoint": i + "/oauth/authorize", "token_endpoint": i + "/oauth/token", "registration_endpoint": i + "/oauth/register", "revocation_endpoint": i + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"}, "scopes_supported": []string{scopeRead}, "client_id_metadata_document_supported": s.cfg.EnableCIMD, "authorization_response_iss_parameter_supported": true})
+	writeJSON(w, 200, map[string]any{"issuer": i, "authorization_endpoint": i + "/oauth/authorize", "token_endpoint": i + "/oauth/token", "registration_endpoint": i + "/oauth/register", "revocation_endpoint": i + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"}, "scopes_supported": []string{scopeRead, scopeSign}, "client_id_metadata_document_supported": s.cfg.EnableCIMD, "authorization_response_iss_parameter_supported": true})
 }
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
@@ -242,7 +245,12 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 		Grants    []string `json:"grant_types"`
 		Responses []string `json:"response_types"`
 	}
-	if decodeJSON(r, &req) != nil || len(req.Name) > 120 || len(req.Redirects) == 0 || len(req.Redirects) > 8 || (req.Auth != "" && req.Auth != "none") || (req.Scope != "" && req.Scope != scopeRead) {
+	if decodeJSON(r, &req) != nil || len(req.Name) > 120 || len(req.Redirects) == 0 || len(req.Redirects) > 8 || (req.Auth != "" && req.Auth != "none") {
+		oauthError(w, 400, "invalid_client_metadata")
+		return
+	}
+	scope, scopeOK := normalizeScope(req.Scope)
+	if !scopeOK {
 		oauthError(w, 400, "invalid_client_metadata")
 		return
 	}
@@ -285,13 +293,13 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 	// A connector caches its public registration before the owner logs in.
 	// Registration is not authorization: keep it usable across setup retries;
 	// the bounded pool reclaims unapproved entries first when capacity is full.
-	c := client{ID: randomToken(), Name: req.Name, Redirects: req.Redirects, Expires: time.Now().Add(clientTTL).Unix(), Created: time.Now().Unix()}
+	c := client{ID: randomToken(), Name: req.Name, Redirects: req.Redirects, Scope: scope, Expires: time.Now().Add(clientTTL).Unix(), Created: time.Now().Unix()}
 	s.state.Clients[c.ID] = c
 	if s.saveLocked() != nil {
 		oauthError(w, 503, "server_error")
 		return
 	}
-	writeJSON(w, 201, map[string]any{"client_id": c.ID, "client_name": c.Name, "redirect_uris": c.Redirects, "token_endpoint_auth_method": "none", "grant_types": []string{"authorization_code", "refresh_token"}, "response_types": []string{"code"}, "scope": scopeRead, "client_id_issued_at": time.Now().Unix()})
+	writeJSON(w, 201, map[string]any{"client_id": c.ID, "client_name": c.Name, "redirect_uris": c.Redirects, "token_endpoint_auth_method": "none", "grant_types": []string{"authorization_code", "refresh_token"}, "response_types": []string{"code"}, "scope": scope, "client_id_issued_at": time.Now().Unix()})
 }
 func (s *Server) resolveClient(ctx context.Context, id string) (client, bool) {
 	s.mu.Lock()
@@ -356,13 +364,22 @@ func (s *Server) sessionID(r *http.Request) string {
 }
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	if q.Get("response_type") != "code" || q.Get("code_challenge_method") != "S256" || !challengeOK(q.Get("code_challenge")) || (q.Get("scope") != "" && q.Get("scope") != scopeRead) || (q.Get("resource") != "" && q.Get("resource") != s.cfg.Issuer+"/mcp") || len(q.Get("state")) > 1024 {
+	scope, scopeOK := normalizeScope(q.Get("scope"))
+	if q.Get("response_type") != "code" || q.Get("code_challenge_method") != "S256" || !challengeOK(q.Get("code_challenge")) || !scopeOK || (q.Get("resource") != "" && q.Get("resource") != s.cfg.Issuer+"/mcp") || len(q.Get("state")) > 1024 {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
 	c, ok := s.resolveClient(r.Context(), q.Get("client_id"))
 	if !ok {
 		oauthError(w, 400, "invalid_client")
+		return
+	}
+	allowedScope := c.Scope
+	if allowedScope == "" {
+		allowedScope = scopeRead
+	}
+	if !scopeSubset(scope, allowedScope) {
+		oauthError(w, 400, "invalid_scope")
 		return
 	}
 	redirect := q.Get("redirect_uri")
@@ -394,19 +411,20 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nonce := randomToken()
-	s.pending[digest(nonce)] = grant{client: c.ID, redirect: redirect, challenge: q.Get("code_challenge"), state: q.Get("state"), session: sid, resource: resource, expires: time.Now().Add(10 * time.Minute).Unix()}
+	s.pending[digest(nonce)] = grant{client: c.ID, redirect: redirect, challenge: q.Get("code_challenge"), state: q.Get("state"), session: sid, resource: resource, scope: scope, expires: time.Now().Add(10 * time.Minute).Unix()}
 	s.mu.Unlock()
 	// Always ask: no approval memory or silent first-client authorization.
 	u, _ := url.Parse(redirect)
-	s.page(w, pageData{Consent: true, Name: c.Name, ClientID: c.ID, Nonce: nonce, CallbackOrigin: u.Scheme + "://" + u.Host})
+	s.page(w, pageData{Consent: true, Name: c.Name, ClientID: c.ID, Nonce: nonce, CallbackOrigin: u.Scheme + "://" + u.Host, Scopes: scope})
 }
 
 type pageData struct {
 	Consent                                     bool
 	Name, ClientID, Nonce, Next, CallbackOrigin string
+	Scopes                                      string
 }
 
-var pageTemplate = template.Must(template.New("owner").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><title>MCP authorization</title><h1>{{if .Consent}}Authorize read-only access{{else}}Owner login{{end}}</h1>{{if .Consent}}<p>Self-reported client name (not verified): {{.Name}}</p><p>Client ID: {{.ClientID}}</p><p>Callback origin (receives authorization): {{.CallbackOrigin}}</p><p>Permission: chaoxing.read. This does not permit writes.</p><form method="post" action="/oauth/consent"><input type="hidden" name="consent_token" value="{{.Nonce}}"><button name="decision" value="approve">Approve</button><button name="decision" value="deny">Deny</button></form>{{else}}<form method="post" action="/oauth/login"><input type="hidden" name="csrf" value="{{.Nonce}}"><input type="hidden" name="next" value="{{.Next}}"><label>Owner password <input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button>Log in</button></form>{{end}}</html>`))
+var pageTemplate = template.Must(template.New("owner").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><title>MCP authorization</title><h1>{{if .Consent}}Authorize access{{else}}Owner login{{end}}</h1>{{if .Consent}}<p>Self-reported client name (not verified): {{.Name}}</p><p>Client ID: {{.ClientID}}</p><p>Callback origin (receives authorization): {{.CallbackOrigin}}</p><p>Permissions: {{.Scopes}}. chaoxing.sign can submit class sign-in.</p><form method="post" action="/oauth/consent"><input type="hidden" name="consent_token" value="{{.Nonce}}"><button name="decision" value="approve">Approve</button><button name="decision" value="deny">Deny</button></form>{{else}}<form method="post" action="/oauth/login"><input type="hidden" name="csrf" value="{{.Nonce}}"><input type="hidden" name="next" value="{{.Next}}"><label>Owner password <input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button>Log in</button></form>{{end}}</html>`))
 
 func (s *Server) page(w http.ResponseWriter, d pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -583,7 +601,12 @@ func parseToken(r *http.Request) (tokenRequest, error) {
 }
 func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 	q, err := parseToken(r)
-	if err != nil || (q.Scope != "" && q.Scope != scopeRead) || (q.Resource != "" && q.Resource != s.cfg.Issuer+"/mcp") {
+	requestedScope := ""
+	scopeOK := true
+	if strings.TrimSpace(q.Scope) != "" {
+		requestedScope, scopeOK = normalizeScope(q.Scope)
+	}
+	if err != nil || !scopeOK || (q.Resource != "" && q.Resource != s.cfg.Issuer+"/mcp") {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
@@ -597,6 +620,7 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		resource = s.cfg.Issuer + "/mcp"
 	}
 	expiry := time.Now().Add(refreshTTL).Unix()
+	scope := requestedScope
 	switch q.GrantType {
 	case "authorization_code":
 		g, ok := s.codes[digest(q.Code)]
@@ -607,6 +631,12 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		delete(s.codes, digest(q.Code))
 		cid = g.client
 		resource = g.resource
+		if scope == "" {
+			scope = g.scope
+		} else if !scopeSubset(scope, g.scope) {
+			oauthError(w, 400, "invalid_scope")
+			return
+		}
 		family = randomToken()
 	case "refresh_token":
 		var verified bool
@@ -639,6 +669,16 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		delete(s.state.Refresh, family)
 		cid = t.Client
 		family = t.Family
+		allowedScope := t.Scope
+		if allowedScope == "" {
+			allowedScope = scopeRead
+		}
+		if scope == "" {
+			scope = allowedScope
+		} else if !scopeSubset(scope, allowedScope) {
+			oauthError(w, 400, "invalid_scope")
+			return
+		}
 		if t.Resource != "" {
 			resource = t.Resource
 		}
@@ -654,15 +694,15 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, refresh := randomToken(), s.signRefresh(family, counter)
-	s.state.Access[digest(a)] = token{Client: cid, Family: family, Resource: resource, Expires: time.Now().Add(accessTTL).Unix(), Created: time.Now().Unix()}
-	s.state.Refresh[family] = token{Client: cid, Family: family, Resource: resource, Expires: expiry, Created: time.Now().Unix(), Digest: digest(refresh), Counter: counter, AccessID: digest(a)}
+	s.state.Access[digest(a)] = token{Client: cid, Family: family, Resource: resource, Scope: scope, Expires: time.Now().Add(accessTTL).Unix(), Created: time.Now().Unix()}
+	s.state.Refresh[family] = token{Client: cid, Family: family, Resource: resource, Scope: scope, Expires: expiry, Created: time.Now().Unix(), Digest: digest(refresh), Counter: counter, AccessID: digest(a)}
 	if s.saveLocked() != nil {
 		oauthError(w, 503, "server_error")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
-	writeJSON(w, 200, map[string]any{"access_token": a, "refresh_token": refresh, "token_type": "Bearer", "expires_in": int(accessTTL.Seconds()), "scope": scopeRead})
+	writeJSON(w, 200, map[string]any{"access_token": a, "refresh_token": refresh, "token_type": "Bearer", "expires_in": int(accessTTL.Seconds()), "scope": scope})
 }
 func (s *Server) revokeFamilyLocked(family string) {
 	if t, ok := s.state.Refresh[family]; ok {
@@ -694,7 +734,8 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 }
 
-// Protect rejects every request without a live, locally issued read token.
+// Protect rejects every request without a live, locally issued token and
+// carries its granted scopes into the tool adapter.
 // Tokens are opaque; only SHA-256 identifiers are persisted. No static bypass.
 func (s *Server) Protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -704,10 +745,17 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 		}
 		parts := strings.Fields(r.Header.Get("Authorization"))
 		ok := false
+		scopes := ""
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && len(parts[1]) <= 128 {
 			s.mu.Lock()
 			t, found := s.state.Access[digest(parts[1])]
 			ok = found && t.Expires > time.Now().Unix() && (t.Resource == "" || t.Resource == s.cfg.Issuer+"/mcp")
+			if ok {
+				scopes = t.Scope
+				if scopes == "" {
+					scopes = scopeRead
+				}
+			}
 			s.mu.Unlock()
 		}
 		if !ok {
@@ -715,12 +763,12 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 			oauthError(w, 401, "invalid_token")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(authz.WithScopes(r.Context(), scopes)))
 	})
 }
 
 // ProtectMCP permits anonymous protocol discovery while keeping every actual
-// tool invocation behind the read-only OAuth token. The request body is restored
+// tool invocation behind the OAuth token. The request body is restored
 // before either path so the MCP transport still performs its own validation.
 func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	protected := s.Protect(next)

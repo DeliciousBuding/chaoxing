@@ -18,19 +18,21 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
+	"github.com/DeliciousBuding/chaoxing/internal/watch"
 )
 
 var version = "dev"
 
 type config struct {
-	StateDir          string       `json:"state_dir"`
-	KeyPath           string       `json:"key_path"`
-	Issuer            string       `json:"issuer"`
-	Listen            string       `json:"listen"`
-	LocalListen       string       `json:"local_listen"`
-	LocalToken        string       `json:"local_token"`
-	OwnerPasswordHash string       `json:"owner_password_hash"`
-	Watch             *watchConfig `json:"watch,omitempty"`
+	StateDir          string        `json:"state_dir"`
+	KeyPath           string        `json:"key_path"`
+	Issuer            string        `json:"issuer"`
+	Listen            string        `json:"listen"`
+	LocalListen       string        `json:"local_listen"`
+	LocalToken        string        `json:"local_token"`
+	OwnerPasswordHash string        `json:"owner_password_hash"`
+	Watch             *watchConfig  `json:"watch,omitempty"`
+	Device            *deviceConfig `json:"device,omitempty"`
 	// Proxies optionally routes upstream traffic through SOCKS5 endpoints;
 	// empty means direct egress. Tenants are additional isolated accounts
 	// served under /t/<id>/; empty keeps the single-tenant deployment.
@@ -41,27 +43,32 @@ type config struct {
 // watchConfig enables the optional activity watcher. Notifications are
 // outbound only.
 type watchConfig struct {
-	Enabled         bool         `json:"enabled"`
-	IntervalSeconds int          `json:"interval_seconds"`
-	RepeatSeconds   int          `json:"repeat_seconds"`
-	MaxRepeats      int          `json:"max_repeats"`
-	Window          string       `json:"window,omitempty"`
-	Classes         []watchClass `json:"classes"`
-	FeishuWebhook   string       `json:"feishu_webhook,omitempty"`
-	NtfyURL         string       `json:"ntfy_url,omitempty"`
-	NtfyTopic       string       `json:"ntfy_topic,omitempty"`
+	Enabled               bool          `json:"enabled"`
+	AutoSign              bool          `json:"auto_sign"`
+	IntervalSeconds       int           `json:"interval_seconds"`
+	IntervalJitterPercent int           `json:"interval_jitter_percent"`
+	RepeatSeconds         int           `json:"repeat_seconds"`
+	MaxRepeats            int           `json:"max_repeats"`
+	LeadSeconds           int           `json:"lead_seconds"`
+	Window                string        `json:"window,omitempty"`
+	Classes               []watch.Class `json:"classes"`
+	FeishuWebhook         string        `json:"feishu_webhook,omitempty"`
+	NtfyURL               string        `json:"ntfy_url,omitempty"`
+	NtfyTopic             string        `json:"ntfy_topic,omitempty"`
 }
 
-type watchClass struct {
-	CourseID string `json:"course_id"`
-	ClassID  string `json:"class_id"`
+type deviceConfig struct {
+	Code        string `json:"code,omitempty"`
+	UserAgent   string `json:"user_agent,omitempty"`
+	PackageName string `json:"package_name,omitempty"`
 }
 
 type tenantConfig struct {
-	ID                string `json:"id"`
-	StateDir          string `json:"state_dir"`
-	KeyPath           string `json:"key_path"`
-	OwnerPasswordHash string `json:"owner_password_hash"`
+	ID                string        `json:"id"`
+	StateDir          string        `json:"state_dir"`
+	KeyPath           string        `json:"key_path"`
+	OwnerPasswordHash string        `json:"owner_password_hash"`
+	Device            *deviceConfig `json:"device,omitempty"`
 }
 type request struct {
 	Tool      string         `json:"tool"`
@@ -99,7 +106,33 @@ func load() (config, error) {
 	return c, nil
 }
 func (c config) client() (*upstream.Client, error) {
-	return upstream.New(upstream.Config{CredentialsPath: filepath.Join(c.StateDir, "credentials.sealed"), KeyPath: c.KeyPath, SessionPath: filepath.Join(c.StateDir, "session.sealed")})
+	return upstream.New(c.upstreamConfig())
+}
+
+func (c config) upstreamConfig() upstream.Config {
+	cfg := upstream.Config{
+		CredentialsPath: filepath.Join(c.StateDir, "credentials.sealed"),
+		KeyPath:         c.KeyPath,
+		SessionPath:     filepath.Join(c.StateDir, "session.sealed"),
+		DeviceStatePath: filepath.Join(c.StateDir, "device-state.json"),
+	}
+	if c.Device != nil {
+		cfg.DeviceCode, cfg.UserAgent, cfg.PackageName = c.Device.Code, c.Device.UserAgent, c.Device.PackageName
+	}
+	return cfg
+}
+
+func (c tenantConfig) upstreamConfig() upstream.Config {
+	cfg := upstream.Config{
+		CredentialsPath: filepath.Join(c.StateDir, "credentials.sealed"),
+		KeyPath:         c.KeyPath,
+		SessionPath:     filepath.Join(c.StateDir, "session.sealed"),
+		DeviceStatePath: filepath.Join(c.StateDir, "device-state.json"),
+	}
+	if c.Device != nil {
+		cfg.DeviceCode, cfg.UserAgent, cfg.PackageName = c.Device.Code, c.Device.UserAgent, c.Device.PackageName
+	}
+	return cfg
 }
 func randomToken() string {
 	b := make([]byte, 32)

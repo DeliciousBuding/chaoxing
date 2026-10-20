@@ -1,6 +1,6 @@
 # Tools and coverage
 
-Chaoxing exposes 14 read-only operations through the CLI, local daemon and HTTP MCP. The operation registry in `internal/operation/registry.go` defines their names, arguments and schemas; `internal/upstream/data.go`, `internal/upstream/chapters.go` and `internal/upstream/activities.go` implement the source reads and coverage rules.
+Chaoxing exposes 15 operations through the CLI, local daemon and HTTP MCP. The operation registry in `internal/operation/registry.go` defines their names, arguments, schemas and required OAuth scopes; `internal/upstream/data.go`, `internal/upstream/chapters.go`, `internal/upstream/activities.go` and `internal/upstream/signin.go` implement the source reads, coverage rules and sign-in state machine.
 
 ## Calls, schemas and transport results
 
@@ -27,7 +27,7 @@ The IDs above are synthetic. Replace them with values returned by the service.
 
 Successful CLI reads write `{"ok":true,"data":...}` to stdout. Exit status is 0 for complete results and 3 for partial results. Exit 3 still includes usable data on stdout; inspect `data.meta` before interpreting it. Failures write `{"ok":false,"error":...}` to stderr and exit 1. A partial result does not also emit a failure envelope.
 
-The local daemon uses JSON success/error envelopes. HTTP MCP uses JSON-RPC and MCP envelopes: successful tool data appears in `structuredContent` and matching JSON text content. Upstream tool failures use `isError:true`, with the safe typed fault under `structuredContent.error` and as JSON text content. MCP transport/request errors remain JSON-RPC errors. All MCP tools require `chaoxing.read` and advertise read-only, non-destructive, idempotent, account-bounded behavior (`openWorldHint:false`).
+The local daemon uses JSON success/error envelopes. HTTP MCP uses JSON-RPC and MCP envelopes: successful tool data appears in `structuredContent` and matching JSON text content. Upstream tool failures use `isError:true`, with the safe typed fault under `structuredContent.error` and as JSON text content. MCP transport/request errors remain JSON-RPC errors. Read tools require `chaoxing.read`; `sign_activity` requires `chaoxing.sign` and is advertised as non-read-only, account-bounded behavior (`openWorldHint:false`).
 
 CLI and MCP business calls share a bounded per-account queue. Queue overflow returns a structured, retryable `RATE_LIMITED` fault; caller cancellation or deadline returns `UPSTREAM_UNAVAILABLE`. Waits consume the existing request budget. See [concurrency budgets](architecture.md#concurrency-and-resource-budgets). The CLI also classifies empty HTTP 429 responses as `RATE_LIMITED`, authorization failures as `AUTH_REQUIRED`, and other non-JSON HTTP failures as `UPSTREAM_UNAVAILABLE`. No raw response body is disclosed. Public MCP transport admission independently reports HTTP 503 with `Retry-After` when saturated.
 
@@ -50,11 +50,12 @@ Arguments are optional unless marked required. CLI operation IDs use two words, 
 | `study.digest` | `get_study_digest` | `course`, `course_id`, `class_id`, `limit`, `notice_limit`, `exam_limit` | One bounded source-backed digest combining assignment action items, normalized exam rows and trimmed notice summaries. Without a course selector assignments come from the incomplete global feed; with one they use signed class scans. Notice text is never inferred as a task. Always partial. |
 | `capabilities.list` | `get_capabilities` | none | Contract version, all tool names, operation IDs/descriptions/input/output schemas, and `unsupported_domains`. Complete only for the verified tool catalog. |
 | `chapters.list` | `list_chapters` | required `course_id`, `class_id`, `cpi`; optional `limit`, `offset` | Chapter catalog summaries for an exact enrolled triple, with output pagination and explicitly reported task counts. Always partial; does not enter learning pages or enumerate task cards. |
-| `activities.list` | `list_activities` | `course`, `course_id`, `class_id`, `limit` | Current class activity list, including sign-in activities and the account's own sign-in state. Returns `items` with `kind`, `state`, `user_state` and `signable`. |
+| `activities.list` | `list_activities` | `course`, `course_id`, `class_id`, `limit` | Current class activity list, including sign-in activities and the account's own sign-in state. Returns `items` with `kind`, `state`, `user_state`, `sign_type` and `signable`. |
+| `activities.sign` | `sign_activity` | required `course_id`, `class_id`, `activity_id`; optional `latitude`, `longitude`, `address` | Submits one normal or location sign-in for the configured account, then re-reads attendance state. Requires the separate `chaoxing.sign` OAuth scope. |
 
 ## Shared validation and metadata
 
-All reads use the registry's shared argument validator. Arguments must match the input schema; unknown properties are rejected. Strings are limited to 256 bytes by the validator, cannot contain control characters, and required strings cannot be blank. Integers must be whole numbers within their ranges: `limit` 1..100 (default 50), `offset` 0..100000 (default 0), and `week` 1..30 (default 1). Booleans such as `include_raw` (default `false`) must be JSON booleans. A nonempty `class_id` requires `course_id`. `folder_id` is not an accepted argument.
+All operations use the registry's shared argument validator. Arguments must match the input schema; unknown properties are rejected. Strings are limited to 256 bytes by the validator, cannot contain control characters, and required strings cannot be blank. Integers must be whole numbers within their ranges: `limit` 1..100 (default 50), `offset` 0..100000 (default 0), and `week` 1..30 (default 1). Numbers such as `latitude` (-90..90) and `longitude` (-180..180) accept JSON numbers, not strings. Booleans such as `include_raw` (default `false`) must be JSON booleans. A nonempty `class_id` requires `course_id`. `folder_id` is not an accepted argument.
 
 Every normalized success is an object with `meta`. Legacy fields remain alongside it; array results such as courses are wrapped under `result`. The shared `operation.Result` normalizer validates the result against the registry's output schema before delivery. Its limited-schema validator checks the object, array, string, boolean, required-field and enum vocabulary emitted by the registry; it is not a general JSON Schema engine. The schema requires metadata, permits additive legacy fields, and checks declared result fields when present.
 
@@ -113,7 +114,20 @@ Items contain chapter `number`, `title`, `state` and nullable `pending_tasks`. E
 
 Class failures preserve rows from other selected classes and report per-class codes in `coverage_details.classes`; all classes failing returns the first safe fault. `complete:true` means every selected class returned a recognized activity list. It does not establish account-wide history: the feed is the upstream current-activity window, and `showNotStartedActive=0` excludes future activities. Pagination is output-only and `limit` defaults to 50.
 
-Use the optional watcher described in [configuration](configuration.md#optional-activity-watcher) to turn `signable` rows into operator alerts.
+`sign_type` is derived from upstream `otherId`: `normal_or_photo`, `qrcode`, `gesture`, `location`, `password` or `unknown`. It identifies the interaction type before detail is fetched, but the sign operation still re-reads activity detail before submitting.
+
+### Sign-in submission
+
+`activities.sign` accepts exact IDs from `list_courses` and `list_activities`. It supports only:
+
+- normal sign-in (`otherId=0` and no photo requirement);
+- location sign-in (`otherId=4` and location enabled).
+
+The operation uses the reference Android client's protocol chain: persistent device identity, account identity, `preSign`, `analysis`, `analysis2`, then `stuSignajax`. Query order is preserved rather than alphabetically re-encoded. It sends the stable `deviceCode`, the configured Android-like user agent and the account's upstream identity. Expired sessions trigger the normal one-shot automatic login and retry; official verification requirements are not bypassed.
+
+Location requests may supply `latitude`, `longitude` and `address`. Coordinates must lie inside the activity's published range. The service applies the reference client's independent ±0.00005-degree random offset; if upstream returns `errorLocation`, it retries once with the tightened ±0.00001 offset. Without preset coordinates, it uses the activity's published center with the same jitter. A successful submission is verified through `getAttendInfo`; a still-unsigned state returns `SIGN_REJECTED`.
+
+Photo, QR, gesture, password, captcha and face requirements return `UNSUPPORTED`. The watcher sends a manual alert for those types and does not blind-retry a failed activity. Remote MCP callers need `chaoxing.sign`; a `chaoxing.read` token receives an insufficient-scope error before upstream is contacted.
 
 ## Assignment overview and review items
 
@@ -135,4 +149,4 @@ Preserve upstream date strings and their precision. Assignment details return `s
 
 Errors use the shared `upstream.SafeFault` contract: `code`, safe `message`, `category`, boolean `retryable`, and optional `hint`. Raw error strings, upstream messages and private URLs are not disclosed. Unknown errors or codes become `INTERNAL`, with `message:"Operation failed."`, `category:"internal"` and `retryable:false`.
 
-`AUTH_REQUIRED`, `AUTH_COOLDOWN` and `CREDENTIALS_UNAVAILABLE` report authentication problems; follow the safe hint and complete verification on the official site when needed. `UPSTREAM_SCHEMA` means unrecognized source structure, not an empty list. `COURSE_ACCESS` and `NOT_FOUND` are accessible-source limits. `INVALID_ARGUMENT`, `INVALID_TOOL`, `INVALID_URL`, `AMBIGUOUS_COURSE` and `UNSUPPORTED` describe request or capability limits. `UPSTREAM_UNAVAILABLE` and `UPSTREAM_HTTP` are marked retryable; `RESPONSE_TOO_LARGE` and `STATE_WRITE_FAILED` report resource/state failures. Class-level coverage codes such as `INCOMPLETE_SCAN` or `BUDGET_EXHAUSTED` describe partial scans rather than separate successful empty results.
+`AUTH_REQUIRED`, `AUTH_COOLDOWN` and `CREDENTIALS_UNAVAILABLE` report authentication problems; follow the safe hint and complete verification on the official site when needed. `UPSTREAM_SCHEMA` means unrecognized source structure, not an empty list. `COURSE_ACCESS` and `NOT_FOUND` are accessible-source limits. `INVALID_ARGUMENT`, `INVALID_TOOL`, `INVALID_URL`, `AMBIGUOUS_COURSE` and `UNSUPPORTED` describe request or capability limits. `SIGN_REJECTED`, `SIGN_LOCATION_REJECTED`, `SIGN_EXPIRED` and `SIGN_ALREADY` describe sign-in state transitions without echoing upstream bodies. `UPSTREAM_UNAVAILABLE` and `UPSTREAM_HTTP` are marked retryable; `RESPONSE_TOO_LARGE` and `STATE_WRITE_FAILED` report resource/state failures. Class-level coverage codes such as `INCOMPLETE_SCAN` or `BUDGET_EXHAUSTED` describe partial scans rather than separate successful empty results.

@@ -41,11 +41,13 @@ func TestCatalogConvergesWithOperations(t *testing.T) {
 			!reflect.DeepEqual(got["outputSchema"], jsonValue(t, d.OutputSchema())) {
 			t.Fatalf("schema drift: %s", d.Name)
 		}
-		wantAnnotations := map[string]any{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+		scope := operation.RequiredScope(d)
+		readOnly := scope == "chaoxing.read"
+		wantAnnotations := map[string]any{"readOnlyHint": readOnly, "destructiveHint": false, "idempotentHint": readOnly, "openWorldHint": false}
 		if !reflect.DeepEqual(got["annotations"], wantAnnotations) {
 			t.Fatal(got)
 		}
-		security := jsonValue(t, []map[string]any{{"type": "oauth2", "scopes": []string{"chaoxing.read"}}})
+		security := jsonValue(t, []map[string]any{{"type": "oauth2", "scopes": []string{scope}}})
 		if !reflect.DeepEqual(got["securitySchemes"], security) ||
 			!reflect.DeepEqual(got["_meta"].(map[string]any)["securitySchemes"], security) {
 			t.Fatal(got)

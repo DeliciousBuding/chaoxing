@@ -18,19 +18,23 @@ type Field struct {
 	Type        string
 	Description string
 	Required    bool
-	Min, Max    int
+	Min, Max    float64
 	Enum        []string
 }
 type Definition struct {
 	ID, Name, Title, Description string
 	Fields                       map[string]Field
+	Scope                        string
 }
 
 func text(description string, required bool) Field {
 	return Field{Type: "string", Description: description, Required: required}
 }
 func integer(description string, min, max int) Field {
-	return Field{Type: "integer", Description: description, Min: min, Max: max}
+	return Field{Type: "integer", Description: description, Min: float64(min), Max: float64(max)}
+}
+func number(description string, min, max float64) Field {
+	return Field{Type: "number", Description: description, Min: min, Max: max}
 }
 func boolean(description string) Field {
 	return Field{Type: "boolean", Description: description}
@@ -66,9 +70,23 @@ var definitions = []Definition{
 	{ID: "capabilities.list", Name: "get_capabilities", Title: "Get capabilities", Description: "Use to discover verified capabilities and unsupported domains before attempting group, inbox or task-point queries."},
 	{ID: "chapters.list", Name: "list_chapters", Title: "List chapters", Description: "Use to read course chapter summaries and explicitly reported task-point counts. Does not enter learning pages or enumerate individual task cards; missing markers remain unknown.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID.", true), "class_id": text("Exact class ID.", true), "cpi": text("Exact cpi from list_courses.", true), "limit": integer("Maximum chapter summaries.", 1, 100), "offset": integer("Output offset; not upstream page number.", 0, 100000)}},
 	{ID: "activities.list", Name: "list_activities", Title: "List class activities", Description: "Use to read the current activity list of selected classes, including sign-in activities and the account's own sign-in state.", Fields: overviewFields()},
+	{ID: "activities.sign", Name: "sign_activity", Title: "Sign in to an activity", Description: "Submit one normal or location class sign-in for the configured account. Requires the chaoxing.sign OAuth scope.", Fields: map[string]Field{
+		"course_id":   text("Exact enrolled course ID from list_courses.", true),
+		"class_id":    text("Exact class ID from list_courses.", true),
+		"activity_id": text("Stable activity ID from list_activities.", true),
+		"latitude":    number("Optional preset latitude in degrees; use with longitude.", -90, 90),
+		"longitude":   number("Optional preset longitude in degrees; use with latitude.", -180, 180),
+		"address":     text("Optional location label submitted with location sign-in.", false),
+	}, Scope: "chaoxing.sign"},
 }
 
 func All() []Definition { return append([]Definition(nil), definitions...) }
+func RequiredScope(d Definition) string {
+	if d.Scope == "" {
+		return "chaoxing.read"
+	}
+	return d.Scope
+}
 func Find(name string) (Definition, bool) {
 	for _, d := range definitions {
 		if d.Name == name || d.ID == name {
@@ -90,6 +108,9 @@ func (d Definition) InputSchema() map[string]any {
 		p := map[string]any{"type": f.Type, "description": f.Description}
 		switch f.Type {
 		case "integer":
+			p["minimum"] = f.Min
+			p["maximum"] = f.Max
+		case "number":
 			p["minimum"] = f.Min
 			p["maximum"] = f.Max
 		case "boolean":
@@ -161,6 +182,14 @@ func activitySchema() map[string]any {
 	})
 }
 
+func signResultSchema() map[string]any {
+	return objectSchema([]string{"activity_id", "course_id", "class_id", "method", "state", "verified"}, map[string]any{
+		"activity_id": stringSchema(), "course_id": stringSchema(), "class_id": stringSchema(),
+		"method": stringSchema("normal", "location", "none"), "state": stringSchema(),
+		"verified": booleanSchema(),
+	})
+}
+
 func (d Definition) OutputSchema() map[string]any {
 	properties := map[string]any{"meta": map[string]any{"type": "object", "required": []string{"status", "coverage", "freshness", "warnings"}, "properties": map[string]any{"status": map[string]any{"type": "string", "enum": []string{"complete", "partial"}}, "coverage": map[string]any{"type": "object", "required": []string{"complete", "scope"}, "properties": map[string]any{"complete": map[string]any{"type": "boolean"}, "scope": map[string]any{"type": "string"}}}, "freshness": map[string]any{"type": "object", "required": []string{"fetched_at", "cache_status", "parser_revision"}, "properties": map[string]any{"fetched_at": map[string]any{"type": "string"}, "cache_status": map[string]any{"type": "string"}, "parser_revision": map[string]any{"type": "string"}}}, "warnings": map[string]any{"type": "array"}}}}
 	if strings.HasPrefix(d.Name, "list_") || d.Name == "get_study_overview" {
@@ -185,6 +214,10 @@ func (d Definition) OutputSchema() map[string]any {
 	}
 	if d.Name == "list_activities" {
 		properties["items"] = arraySchema(activitySchema())
+	}
+	if d.Name == "sign_activity" {
+		delete(properties, "items")
+		properties["result"] = signResultSchema()
 	}
 	if d.Name == "get_study_digest" {
 		properties["items"] = arraySchema(actionItemSchema())
@@ -255,6 +288,12 @@ func validateOutput(schema map[string]any, v any) bool {
 		if _, ok := v.(bool); !ok {
 			return false
 		}
+	case "integer", "number":
+		switch v.(type) {
+		case json.Number, float64:
+		default:
+			return false
+		}
 	default:
 		return false
 	}
@@ -298,6 +337,26 @@ func Validate(d Definition, a map[string]any) error {
 			if _, ok := v.(bool); !ok {
 				return fmt.Errorf("INVALID_ARGUMENT")
 			}
+		} else if f.Type == "number" {
+			var n float64
+			switch x := v.(type) {
+			case json.Number:
+				var e error
+				n, e = x.Float64()
+				if e != nil {
+					return fmt.Errorf("INVALID_ARGUMENT")
+				}
+			case float64:
+				n = x
+			case int:
+				n = float64(x)
+			default:
+				return fmt.Errorf("INVALID_ARGUMENT")
+			}
+			if math.IsNaN(n) || math.IsInf(n, 0) || n < f.Min || n > f.Max {
+				return fmt.Errorf("INVALID_ARGUMENT")
+			}
+			a[k] = n
 		} else {
 			var n float64
 			switch x := v.(type) {
@@ -400,12 +459,13 @@ func Result(name string, v any) (map[string]any, error) {
 	}
 	return out, nil
 }
-func Capabilities() map[string]any {
+func capabilities(defs []Definition) map[string]any {
 	names := []string{}
 	ops := []any{}
-	for _, d := range definitions {
+	for _, d := range defs {
 		names = append(names, d.Name)
-		ops = append(ops, map[string]any{"id": d.ID, "name": d.Name, "title": d.Title, "description": d.Description, "input_schema": d.InputSchema(), "output_schema": d.OutputSchema()})
+		ops = append(ops, map[string]any{"id": d.ID, "name": d.Name, "title": d.Title, "description": d.Description, "scope": RequiredScope(d), "input_schema": d.InputSchema(), "output_schema": d.OutputSchema()})
 	}
-	return map[string]any{"contract_version": "5", "tools": names, "operations": ops, "unsupported_domains": []string{"group_messages", "inbox", "task_points", "folder_traversal"}, "complete": true, "coverage": "verified_tool_catalog"}
+	return map[string]any{"contract_version": "6", "tools": names, "operations": ops, "unsupported_domains": []string{"group_messages", "inbox", "task_points", "folder_traversal"}, "complete": true, "coverage": "verified_tool_catalog"}
 }
+func Capabilities() map[string]any { return capabilities(All()) }

@@ -1054,4 +1054,4 @@ func (c *Client) ForceLogin(ctx context.Context) error {
 	defer c.queries.Release()
 	return c.login(ctx)
 }
-func (c *Client) String() string { return fmt.Sprintf("Chaoxing read-only client") }
+func (c *Client) String() string { return fmt.Sprintf("Chaoxing bounded client") }

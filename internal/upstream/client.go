@@ -1,4 +1,5 @@
-// Package upstream implements authenticated, bounded, read-only Chaoxing queries.
+// Package upstream implements authenticated, bounded Chaoxing course reads and
+// the explicitly allowlisted normal/location sign-in state machine.
 package upstream
 
 import (
@@ -24,7 +25,6 @@ import (
 )
 
 const api = "https://mooc1-api.chaoxing.com"
-const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
 type Fault struct {
 	Code      string `json:"code"`
@@ -75,11 +75,18 @@ func SafeFault(err error) *Fault {
 		f.Category = "upstream"
 		f.Message = "Upstream is temporarily unavailable."
 		f.Retryable = true
+	case "SIGN_REJECTED", "SIGN_LOCATION_REJECTED":
+		f.Category = "upstream_state"
+		f.Message = "The sign-in submission was not accepted."
+		f.Hint = "Check the activity state and configured coordinates."
+	case "SIGN_EXPIRED", "SIGN_ALREADY":
+		f.Category = "upstream_state"
+		f.Message = "The sign-in activity state changed."
 	case "UNSUPPORTED":
 		f.Category = "capability"
 		f.Message = "Capability is not implemented."
 		f.Hint = "Inspect get_capabilities."
-	case "RESPONSE_TOO_LARGE", "STATE_WRITE_FAILED":
+	case "RESPONSE_TOO_LARGE", "STATE_WRITE_FAILED", "STATE_READ_FAILED", "STATE_INVALID":
 		f.Category = "resource"
 		f.Message = "Response or state resource limit reached."
 	default:
@@ -91,6 +98,9 @@ func SafeFault(err error) *Fault {
 // Config carries sealed-state paths; Transport optionally overrides outbound egress.
 type Config struct {
 	CredentialsPath, KeyPath, SessionPath string
+	DeviceStatePath                       string
+	DeviceCode                            string
+	UserAgent, PackageName                string
 	Transport                             http.RoundTripper
 }
 type SavedCookies struct {
@@ -110,9 +120,14 @@ type Client struct {
 	assignmentsAt    time.Time
 	coverage         string
 	extraAssignments map[string]Assignment
+	device           deviceState
+	identity         *signIdentity
 }
 
 func New(c Config) (*Client, error) {
+	if err := validateDeviceConfig(c.DeviceCode, c.UserAgent, c.PackageName); err != nil {
+		return nil, err
+	}
 	jar, e := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	if e != nil {
 		return nil, e
@@ -132,6 +147,9 @@ func New(c Config) (*Client, error) {
 		return nil
 	}
 	x := &Client{config: c, http: h, saved: map[string]SavedCookies{}, queries: admission.New(1, 8)}
+	if e = x.loadDeviceState(); e != nil {
+		return nil, e
+	}
 	if b, e := vault.OpenData(c.SessionPath, c.KeyPath); e == nil {
 		var saved []SavedCookies
 		if json.Unmarshal(b, &saved) == nil {
@@ -214,7 +232,7 @@ func (c *Client) raw(ctx context.Context, method, rawurl string, form url.Values
 	if e != nil {
 		return nil, nil, e
 	}
-	r.Header.Set("User-Agent", ua)
+	r.Header.Set("User-Agent", c.userAgent())
 	if form != nil {
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
@@ -257,7 +275,7 @@ func (c *Client) login(ctx context.Context) error {
 	if e != nil {
 		return fault("CREDENTIALS_UNAVAILABLE", "sealed credentials unavailable")
 	}
-	form := url.Values{"fid": {"-1"}, "uname": {EncryptLogin(cred.Phone)}, "password": {EncryptLogin(cred.Password)}, "refer": {"https%3A%2F%2Fi.chaoxing.com"}, "t": {"true"}, "forbidotherlogin": {"0"}, "validate": {""}, "doubleFactorLogin": {"0"}, "independentId": {"0"}}
+	form := url.Values{"fid": {"-1"}, "uname": {EncryptLogin(cred.Phone)}, "password": {EncryptLogin(cred.Password)}, "refer": {"https://i.chaoxing.com"}, "t": {"true"}, "forbidotherlogin": {"0"}, "validate": {""}, "doubleFactorLogin": {"0"}, "independentId": {"0"}, "independentNameId": {"0"}}
 	b, _, e := c.raw(ctx, "POST", "https://passport2.chaoxing.com/fanyalogin", form)
 	if e != nil {
 		c.loginFailedAt = time.Now()
@@ -275,6 +293,7 @@ func (c *Client) login(ctx context.Context) error {
 	c.courses = nil
 	c.assignments = nil
 	c.extraAssignments = nil
+	c.identity = nil
 	return nil
 }
 func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
@@ -371,12 +390,29 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		return c.materials(ctx, args)
 	case "list_activities":
 		return c.activities(ctx, args)
+	case "sign_activity":
+		req := SignRequest{
+			CourseID: str(args, "course_id"), ClassID: str(args, "class_id"),
+			ActivityID: str(args, "activity_id"), Address: str(args, "address"),
+		}
+		if v, ok := floatArg(args, "latitude"); ok {
+			req.Latitude = &v
+		}
+		if v, ok := floatArg(args, "longitude"); ok {
+			req.Longitude = &v
+		}
+		result, e := c.SignActivity(ctx, req)
+		if e != nil {
+			return nil, e
+		}
+		return map[string]any{"result": result, "complete": true, "coverage": "single_activity_signin", "fetched_at": result.FetchedAt}, nil
 	default:
 		return nil, fault("INVALID_TOOL", "unknown tool")
 	}
 }
-func str(a map[string]any, k string) string   { v, _ := a[k].(string); return v }
-func boolArg(a map[string]any, k string) bool { v, _ := a[k].(bool); return v }
+func str(a map[string]any, k string) string               { v, _ := a[k].(string); return v }
+func boolArg(a map[string]any, k string) bool             { v, _ := a[k].(bool); return v }
+func floatArg(a map[string]any, k string) (float64, bool) { v, ok := a[k].(float64); return v, ok }
 func number(a map[string]any, k string, def int) int {
 	v, ok := a[k].(float64)
 	if ok {

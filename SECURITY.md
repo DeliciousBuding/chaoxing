@@ -12,7 +12,7 @@ Authorization codes expire in 60 seconds, access tokens in 15 minutes and refres
 
 Publish only loopback port 8792 through an HTTPS tunnel. Port 8793 is a private CLI listener protected by a local bearer token; never expose it through a tunnel, public bind or port forward. Protect configuration, OAuth state and backups as private data.
 
-The upstream core is read-only with respect to coursework. Authentication and local persistence still write session state. Automatic AES login and a single expired-session reauthentication do not bypass official verification requirements.
+The upstream core reads coursework and can submit only the explicitly allowlisted normal/location sign-in operation. Authentication, device identity, watch state and local persistence still write service state; sign-in additionally writes upstream attendance state. Automatic AES login and a single expired-session reauthentication do not bypass official verification requirements. Captcha, face, photo, QR, gesture and password sign-in remain unsupported.
 
 Additional tenants have separate OAuth state, keys, credentials, cookie jars and caches. Startup rejects overlapping state paths and key aliases, including existing symlink ancestors and hard-linked key files. The same trusted process and egress transports still serve every tenant; endpoint health and outbound capacity are shared. This is not a sandbox against the operator, host root, process compromise or shared-egress observation. See [account and resource boundaries](docs/architecture.md).
 

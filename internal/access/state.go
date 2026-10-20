@@ -19,6 +19,7 @@ import (
 
 const (
 	scopeRead     = "chaoxing.read"
+	scopeSign     = "chaoxing.sign"
 	maxClients    = 128
 	maxTokens     = 4096
 	maxPending    = 128
@@ -32,6 +33,7 @@ type client struct {
 	ID        string   `json:"client_id"`
 	Name      string   `json:"client_name"`
 	Redirects []string `json:"redirect_uris"`
+	Scope     string   `json:"scope,omitempty"`
 	Expires   int64    `json:"expires"`
 	Created   int64    `json:"created"`
 	Approved  bool     `json:"approved"`
@@ -40,6 +42,7 @@ type token struct {
 	Client   string `json:"client"`
 	Family   string `json:"family"`
 	Resource string `json:"resource,omitempty"`
+	Scope    string `json:"scope,omitempty"`
 	Expires  int64  `json:"expires"`
 	Created  int64  `json:"created"`
 	Digest   string `json:"digest,omitempty"`
@@ -70,6 +73,38 @@ func randomBytes(n int) []byte {
 func digest(s string) string {
 	b := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(b[:])
+}
+
+func normalizeScope(raw string) (string, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return scopeRead, true
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	for _, scope := range strings.Fields(raw) {
+		if scope != scopeRead && scope != scopeSign || seen[scope] {
+			return "", false
+		}
+		seen[scope] = true
+		out = append(out, scope)
+	}
+	return strings.Join(out, " "), true
+}
+
+func scopeSubset(requested, allowed string) bool {
+	if requested == "" {
+		return true
+	}
+	allowedSet := map[string]bool{}
+	for _, scope := range strings.Fields(allowed) {
+		allowedSet[scope] = true
+	}
+	for _, scope := range strings.Fields(requested) {
+		if !allowedSet[scope] {
+			return false
+		}
+	}
+	return true
 }
 func (s *Server) pruneLocked() {
 	now := time.Now().Unix()

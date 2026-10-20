@@ -24,11 +24,14 @@ type Activity struct {
 	State         string     `json:"state"`
 	UserState     string     `json:"user_state"`
 	RawType       int        `json:"raw_type"`
+	RawOtherID    int        `json:"raw_other_id"`
 	RawStatus     int        `json:"raw_status"`
 	RawUserStatus int        `json:"raw_user_status"`
+	SignType      string     `json:"sign_type"`
 	Signable      bool       `json:"signable"`
 	StartsAt      *time.Time `json:"starts_at,omitempty"`
 	EndsAt        *time.Time `json:"ends_at,omitempty"`
+	Ext           string     `json:"-"`
 }
 
 // flexInt accepts upstream numbers that are sometimes encoded as strings.
@@ -57,6 +60,7 @@ type rawActivity struct {
 	NameFour   string      `json:"nameFour"`
 	Type       flexInt     `json:"type"`
 	ActiveType flexInt     `json:"activeType"`
+	OtherID    flexInt     `json:"otherId"`
 	Status     flexInt     `json:"status"`
 	UserStatus flexInt     `json:"userStatus"`
 	StartTime  flexInt     `json:"startTime"`
@@ -137,7 +141,8 @@ func (c *Client) fetchActivities(ctx context.Context, co Course) ([]Activity, er
 	var payload struct {
 		Result int `json:"result"`
 		Data   struct {
-			ActiveList []rawActivity `json:"activeList"`
+			ActiveList []rawActivity   `json:"activeList"`
+			Ext        json.RawMessage `json:"ext"`
 		} `json:"data"`
 	}
 	if err = json.Unmarshal(b, &payload); err != nil {
@@ -152,7 +157,7 @@ func (c *Client) fetchActivities(ctx context.Context, co Course) ([]Activity, er
 		if id == "" || id == "0" {
 			return nil, fault("UPSTREAM_SCHEMA", "activity row without a stable id")
 		}
-		rows = append(rows, normalizeActivity(raw, co))
+		rows = append(rows, normalizeActivity(raw, co, string(payload.Data.Ext)))
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].StartsAt == nil || rows[j].StartsAt == nil {
@@ -163,7 +168,7 @@ func (c *Client) fetchActivities(ctx context.Context, co Course) ([]Activity, er
 	return rows, nil
 }
 
-func normalizeActivity(raw rawActivity, co Course) Activity {
+func normalizeActivity(raw rawActivity, co Course, ext string) Activity {
 	kind := "activity"
 	if raw.Type.value == 2 || raw.Type.value == 74 {
 		kind = "signin"
@@ -204,13 +209,33 @@ func normalizeActivity(raw rawActivity, co Course) Activity {
 		State:         state,
 		UserState:     userState,
 		RawType:       int(raw.Type.value),
+		RawOtherID:    int(raw.OtherID.value),
 		RawStatus:     int(raw.Status.value),
 		RawUserStatus: int(raw.UserStatus.value),
+		Ext:           strings.TrimSpace(ext),
 	}
+	a.SignType = signType(raw.OtherID.value)
 	a.Signable = kind == "signin" && state == "active" && userState == "unsigned"
 	a.StartsAt = msTime(raw.StartTime.value)
 	a.EndsAt = msTime(raw.EndTime.value)
 	return a
+}
+
+func signType(otherID int64) string {
+	switch otherID {
+	case 0:
+		return "normal_or_photo"
+	case 2:
+		return "qrcode"
+	case 3:
+		return "gesture"
+	case 4:
+		return "location"
+	case 5:
+		return "password"
+	default:
+		return "unknown"
+	}
 }
 
 func firstNonBlank(values ...string) string {

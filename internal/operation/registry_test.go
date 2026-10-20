@@ -48,6 +48,23 @@ func TestNoticeRawInputIsExplicitlyBoolean(t *testing.T) {
 	}
 }
 
+func TestSignArgumentsAcceptBoundedNumbers(t *testing.T) {
+	d, _ := Find("sign_activity")
+	valid := map[string]any{"course_id": "course-1", "class_id": "class-1", "activity_id": "activity-1", "latitude": json.Number("31.123456"), "longitude": json.Number("121.123456")}
+	if err := Validate(d, valid); err != nil || valid["latitude"] != 31.123456 {
+		t.Fatal(valid, err)
+	}
+	for _, invalid := range []map[string]any{
+		{"course_id": "course-1", "class_id": "class-1", "activity_id": "activity-1", "latitude": json.Number("91")},
+		{"course_id": "course-1", "class_id": "class-1", "activity_id": "activity-1", "longitude": json.Number("-181")},
+		{"course_id": "course-1", "class_id": "class-1", "activity_id": "activity-1", "latitude": json.Number("NaN")},
+	} {
+		if Validate(d, invalid) == nil {
+			t.Fatal(invalid)
+		}
+	}
+}
+
 func TestRegistryCatalogAndNoUnsupportedArguments(t *testing.T) {
 	ids := map[string]bool{}
 	for _, d := range All() {
@@ -83,7 +100,7 @@ func TestStudyDigestContract(t *testing.T) {
 	if e != nil || out["meta"].(map[string]any)["status"] != "partial" {
 		t.Fatal(out, e)
 	}
-	if Capabilities()["contract_version"] != "5" {
+	if Capabilities()["contract_version"] != "6" {
 		t.Fatal(Capabilities()["contract_version"])
 	}
 }

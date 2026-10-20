@@ -8,7 +8,7 @@ MCP client -> HTTPS mcp.example.com -> Cloudflare Tunnel
 Local CLI client -> chaoxing call
                                       -> 127.0.0.1:8793 -> local bearer -> same tools
                                                                          |
-                                                        read-only upstream client
+                                                        bounded upstream client
                                                                          |
                                                               Chaoxing over HTTPS
 ```
@@ -43,7 +43,7 @@ The DB is created/chmodded to 0600 before sidecars, database symlinks are reject
 
 Public DCR registrations last 90 days so connector setup retries can reuse their cached client IDs. Registration alone grants no permission: every authorization requires owner login and consent. The pool is capped at 128 and reclaims the oldest unapproved registration first at capacity; approved registrations are not evicted by anonymous registrations. Login/consent challenges still expire after 10 minutes and authorization codes after 60 seconds.
 
-The public owner authorization layer grants the `chaoxing.read` OAuth scope. Its password uses a salted PBKDF2-SHA256 hash with 600,000 iterations. This owner credential is separate from the upstream credential, which must be recoverable for automatic login. Use different passwords.
+The public owner authorization layer supports two OAuth scopes: `chaoxing.read` for course reads and `chaoxing.sign` for sign-in submission. Its password uses a salted PBKDF2-SHA256 hash with 600,000 iterations. This owner credential is separate from the upstream credential, which must be recoverable for automatic login. Use different passwords. Registration records the requested scope, authorization requires explicit owner consent, refresh can narrow but never widen it, and the MCP adapter checks the required scope before contacting upstream.
 
 Authorization codes expire after 60 seconds and use S256 PKCE. Random opaque access tokens last 15 minutes; refresh families have a 30-day lifetime. Refresh rotation preserves the original expiry. Issuer-bound MAC proofs authenticate family/counter/nonce values so old replay can revoke a family without retaining every historical token. State stores only active digests and one bounded record per family. The authorization server is database-free and does not issue JWTs or publish JWKS. DCR is the default registration flow; optional CIMD requires explicit opt-in and external metadata reachability.
 
@@ -59,7 +59,7 @@ AES-GCM protects upstream credentials and persisted cookies with separate authen
 
 `meta.status` describes source coverage, not whether homework is finished. Coverage is independent of output pagination. Unknown submission states are never classified as submitted. Aggregation is bounded and retains source failures; notification prose is untrusted data, not instructions or automatically inferred assignments.
 
-Tools only read coursework. Login, token issuance and local persistence change authentication state, not coursework. Tool allowlisting is enforced at the interfaces; clients do not supply arbitrary upstream URLs or remote commands.
+Tools read coursework or submit the explicitly allowlisted normal/location sign-in operation. Login, token issuance and local persistence change authentication state; sign-in changes attendance state and therefore requires `chaoxing.sign`. Tool allowlisting is enforced at the interfaces; clients do not supply arbitrary upstream URLs or remote commands.
 
 Without a course filter, assignment enumeration uses the incomplete global feed. A course-name query enumerates matching enrolled classes, obtains work-list signatures, pages each class's work list and checks unique rows against upstream totals. `complete: true` is scoped to those matched classes and requires every scan to agree with its total. Output pagination and status filtering then slice the fetched source. Consumers must retain `complete`, `coverage` and timestamp fields. [Tool contracts](tools.md) describes bounds and remaining limits.
 
@@ -67,6 +67,12 @@ The MCP callback has a shared 30-second context. Sequential scans across multipl
 
 ## Optional activity watcher
 
-`internal/watch` is an opt-in background loop inside `serve`. It calls the same `list_activities` path, which uses the shared account queue and bounded outbound budget, then sends alerts through operator-configured senders in `internal/notify`. The watcher only observes `signable` rows.
+`internal/watch` is an opt-in background loop inside `serve`. It calls the same activity-read boundary, which uses the shared account queue and bounded outbound budget, then sends alerts through operator-configured senders in `internal/notify`. Per-class schedules and the global window bound polling; interval jitter avoids a fixed request cadence. With `auto_sign`, the watcher calls the upstream sign-in state machine once for each new normal/location activity and records the result in its private state file. It does not retry a failed activity; after a failed attempt, subsequent ticks only retry alert delivery. Manual-verification types remain alert-only.
 
-Alert state is a bounded JSON file in the private state directory. It stores activity identifiers and send timestamps, not message bodies or credentials. Class failures are logged by safe fault code and do not stop the loop. The watcher is disabled unless `watch.enabled` is present and valid, so the default deployment keeps its previous request/response behavior.
+Watch state is a bounded JSON file in the private state directory. It stores activity identifiers, timestamps, result status and safe fault codes, not message bodies or credentials. State replacement is atomic, and a malformed state file fails startup instead of resetting one-attempt bookkeeping. Class failures are logged by safe fault code and do not stop the loop. The watcher is disabled unless `watch.enabled` is present and valid, so the default deployment keeps its previous request/response behavior. It uses the default account; tenant accounts are not automatically watched.
+
+## Sign-in and device identity
+
+Sign-in is split by responsibility. `internal/upstream` owns the protocol chain, persistent Android-like device identity, account identity, automatic reauthentication and attendance verification. `internal/watch` owns course-time decisions and one-attempt-per-activity state. `internal/operation` owns the public contract, while `internal/authz` carries OAuth scopes from `internal/access` to `internal/mcphttp`. No adapter learns HTTP details and no watcher constructs URLs.
+
+The device state file persists a stable randomized `deviceCode`, Android-like identifiers, user agent and package name. The account-identity request encrypts a bounded device-info payload with the reference client's RSA public key. Location sign-in preserves query order and uses the reference client's small coordinate jitter plus one tightened retry after `errorLocation`. Captcha, face, photo, QR, gesture and password flows are intentionally unsupported and return a safe `UNSUPPORTED` fault.

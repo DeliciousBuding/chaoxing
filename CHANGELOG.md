@@ -3,8 +3,9 @@
 ## Unreleased
 
 - Add `list_activities`, a bounded class activity feed covering sign-in and other classroom activities, with `kind`, `state`, `user_state` and a `signable` hint.
-- Add an optional `watch` loop that polls configured classes inside a time window and sends Feishu or ntfy alerts (ntfy priority 5) for new signable activities, repeating until the activity is no longer unsigned or the repeat cap is reached. State persists in the private state directory; no new services, databases or scheduled jobs are created.
-- Advertise MCP contract version 5 with 14 tools.
+- Add `sign_activity`, a remotely callable normal/location sign-in operation with stable device identity, reference-compatible protocol ordering, preset coordinates, bounded jitter, automatic reauthentication and attendance verification. It requires the new `chaoxing.sign` OAuth scope.
+- Extend the optional `watch` loop with per-class course schedules, preset locations, interval jitter and one-attempt automatic sign-in. Watch state and device identity persist in the private state directory; no new services, databases or scheduled jobs are created.
+- Advertise MCP contract version 6 with 15 tools; `chaoxing.read` remains read-only and cannot invoke sign-in.
 
 ## 0.3.2 — 2026-10-18
 

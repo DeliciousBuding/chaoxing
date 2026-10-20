@@ -5,7 +5,7 @@
 
 [简体中文](README.zh-CN.md)
 
-Chaoxing is a self-hosted, read-only client for courses, assignments, exams, notices, schedules and course materials. One Go binary provides an OAuth-protected HTTP MCP endpoint and local JSON commands.
+Chaoxing is a self-hosted client for courses, assignments, exams, notices, schedules, course materials and scoped class sign-in. One Go binary provides an OAuth-protected HTTP MCP endpoint and local JSON commands.
 
 The global assignment feed remains incomplete. A course-name query scans matching classes through the signed work list and can report `complete: true` when pagination agrees with upstream totals. That verifies the matched classes, not the whole account. An empty global pending list does not prove that every assignment is submitted. See [coverage and tool contracts](docs/tools.md).
 
@@ -34,13 +34,13 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 | --- | --- |
 | `serve` | Own upstream session and caches; serve public MCP and private loopback calls |
 | `call` | Send one JSON request to the running daemon's private listener |
-| `query` | Make a direct read-only query with the configured upstream client |
+| `query` | Make a direct bounded query with the configured upstream client |
 | `configure` | Initialize sealed credentials and a separate owner password hash |
 | `version` | Print the build version |
 
 Use `chaoxing capabilities` for the verified tool catalog and unsupported domains, and `chaoxing schema assignments.list` for the input/output contract. In addition to the original eight tools, bounded study overview, source-backed action items, a bounded study digest and capability discovery are available. Authentication writes session state; read endpoints may use HTTP POST without mutating coursework.
 
-An optional activity watcher can poll selected classes and send operator alerts for new sign-in activities.
+An optional activity watcher can poll selected classes during their course times, send operator alerts, and automatically submit normal or location sign-ins. Per-class preset coordinates, persistent device identity, interval jitter and one-attempt state are built in; manual-verification sign-ins stay alert-only.
 
 ```sh
 chaoxing assignments list --course-id <id-from-list-courses> --status pending --json
@@ -52,7 +52,7 @@ chaoxing schema assignments.list
 
 Business commands use the running daemon. JSON is the default: successful data goes to stdout, complete failures to stderr, and partial source coverage returns usable stdout with exit code 3. Check `data.meta.coverage` before claiming a source is empty or exhaustive. See [tool contracts](docs/tools.md).
 
-Owner OAuth uses a 60-second authorization code, 15-minute random opaque access tokens and 30-day refresh families. Refresh proofs authenticate the family, counter and nonce, keeping rotation state bounded while recognizing replay. Raw access/refresh tokens are never persisted; the authorization server stays file-backed with no JWT or JWKS. An embedded SQLite store is used only for optional egress-proxy health. DCR is enabled by default; CIMD is an explicit opt-in. Optional SOCKS5 proxy pooling and isolated multi-tenant serving under `/t/<id>/` are documented in [configuration](docs/configuration.md); both default off.
+Owner OAuth uses a 60-second authorization code, 15-minute random opaque access tokens and 30-day refresh families. Refresh proofs authenticate the family, counter and nonce, keeping rotation state bounded while recognizing replay. `chaoxing.read` grants course reads; `chaoxing.sign` is required for remote sign-in. Raw access/refresh tokens are never persisted; the authorization server stays file-backed with no JWT or JWKS. An embedded SQLite store is used only for optional egress-proxy health. DCR is enabled by default; CIMD is an explicit opt-in. Optional SOCKS5 proxy pooling and isolated multi-tenant serving under `/t/<id>/` are documented in [configuration](docs/configuration.md); both default off.
 
 Upstream login follows Chaoxing's AES login protocol over HTTPS. On a detected expired session, the GET helper automatically reauthenticates once and retries the read once. Verification requirements remain user actions on the official site. Upstream credentials and persisted cookies use AES-GCM at rest, with a separately stored, root-only key. Encryption cannot protect against root or a process that can read the key. The owner OAuth password is stored as a salted password hash, distinct from the recoverable upstream password.
 

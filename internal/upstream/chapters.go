@@ -157,7 +157,7 @@ func (c *Client) chapterGETAttempt(ctx context.Context, endpoint string) ([]byte
 	if err != nil {
 		return nil, fault("INVALID_URL", "invalid chapter endpoint")
 	}
-	req.Header.Set("User-Agent", ua)
+	req.Header.Set("User-Agent", c.userAgent())
 	resp, err := h.Do(req)
 	if err != nil {
 		if errors.Is(err, errChapterRedirect) {

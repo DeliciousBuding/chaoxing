@@ -41,7 +41,7 @@ ingress:
   - service: http_status:404
 ```
 
-Keep tunnel credentials outside this repository. Never add an ingress rule or port forward for 8793, and never expose both listeners. Configure the MCP client with `https://mcp.example.com/mcp`, then complete owner login and consent for `chaoxing.read`.
+Keep tunnel credentials outside this repository. Never add an ingress rule or port forward for 8793, and never expose both listeners. Configure the MCP client with `https://mcp.example.com/mcp`, then complete owner login and consent. Read tools require `chaoxing.read`; remote sign-in additionally requires `chaoxing.sign`.
 
 Dynamic client registration (DCR) is enabled by default. CIMD is opt-in with `CHAOXING_ENABLE_CIMD=true`; enable it only after verifying that the host can fetch HTTPS metadata from `chatgpt.com`. Discovery advertises the selected capability truthfully. DCR does not require fetching that external metadata.
 
@@ -49,20 +49,50 @@ OAuth state v2 uses a separate `oauth-refresh.key` to authenticate refresh proof
 
 Before use, verify that listeners are loopback-only, 8793 has no public route, and an unauthenticated MCP request cannot call tools.
 
-## Optional activity watcher
+## Persistent device identity
 
-The watcher turns the class activity feed into operator alerts. Add a private `watch` object to the config:
+The first startup creates `<state_dir>/device-state.json` (0600) with a stable randomized device code, Android-like device identifiers, the configured user agent and package name. The file is not a credential, but keep it private and stable: changing it makes the account appear to move to a new device. A private top-level `device` object can pin these values:
+
+```json
+{
+  "device": {
+    "code": "base64-device-code",
+    "user_agent": "Dalvik/2.1.0 ...",
+    "package_name": "com.chaoxing.mobile"
+  }
+}
+```
+
+Omit any field to use its persisted or default value. `code` must be standard Base64 (max 512 bytes); `user_agent` must be printable ASCII (max 1024 bytes); `package_name` must be a valid Android package name. The default UA and package match the reference Android client. Device info sent to the account-identity endpoint is RSA-encrypted; the sign endpoint receives the persisted `deviceCode`. A malformed existing device-state file fails startup instead of silently generating a new device identity.
+
+## Optional activity watcher and auto sign-in
+
+The watcher turns the class activity feed into alerts and can automatically submit normal or location sign-ins. Add a private `watch` object:
 
 ```json
 {
   "watch": {
     "enabled": true,
+    "auto_sign": true,
     "interval_seconds": 60,
+    "interval_jitter_percent": 10,
     "repeat_seconds": 120,
     "max_repeats": 5,
+    "lead_seconds": 120,
     "window": "07:30-22:30",
     "classes": [
-      {"course_id": "synthetic-course", "class_id": "synthetic-class"}
+      {
+        "course_id": "synthetic-course",
+        "class_id": "synthetic-class",
+        "schedule": [
+          {"days": ["Mon", "Wed"], "start": "08:00", "end": "09:40"}
+        ],
+        "location": {
+          "latitude": 31.234567,
+          "longitude": 121.456789,
+          "address": "Synthetic classroom"
+        }
+      }
     ],
     "feishu_webhook": "https://example.com/feishu-webhook",
     "ntfy_url": "https://ntfy.example.com",
@@ -73,11 +103,15 @@ The watcher turns the class activity feed into operator alerts. Add a private `w
 
 Bounds and behavior:
 
-- `interval_seconds` is at least 30 (default 60 when omitted), and each poll uses the account-bounded query queue.
-- `repeat_seconds` defaults to 120 and must be at least 30; `max_repeats` defaults to 5 and is capped at 20. A reminder repeats only while the activity is still `signable`.
-- `window` is `HH:MM-HH:MM` in China Standard Time; omit it to poll all day. Windows that cross midnight (`22:00-02:00`) are supported.
-- `classes` requires exact `course_id`/`class_id` pairs from `list_courses`; at most eight classes are watched.
+- `auto_sign` defaults to false. When true, normal and location activities are attempted once; photo, QR, gesture, password, captcha and face activities remain alert-only.
+- `interval_seconds` is at least 30 (default 60), with `interval_jitter_percent` randomized around it (default 10, maximum 25). Each poll uses the account-bounded query queue.
+- `repeat_seconds` defaults to 120 and must be at least 30; `max_repeats` defaults to 5 and is capped at 20. Manual reminders repeat only while the activity is still `signable`.
+- `lead_seconds` defaults to 120 and is capped at 600. A class schedule is polled from `start - lead_seconds` through `end`; set it to `-1` to poll only from the exact start.
+- `window` is a global `HH:MM-HH:MM` bound in China Standard Time. Per-class `schedule` further limits polling to listed days/times; a class without `schedule` follows the global window. Midnight-crossing ranges are supported.
+- `classes` requires exact `course_id`/`class_id` pairs from `list_courses`; at most eight classes are watched. Days accept `0`..`7` or `Sun`..`Sat` (both 0 and 7 mean Sunday).
+- A class `location` is the preset latitude/longitude/address for location sign-in. Coordinates are validated against the activity's published range. Before submission, the service applies the reference client's ±0.00005-degree random offset; after `errorLocation`, it retries once with the tightened ±0.00001 offset.
 - Configure `feishu_webhook`, `ntfy_url` + `ntfy_topic`, or both. With neither, serve refuses to start rather than silently dropping alerts. ntfy messages use priority 5; Feishu uses a text card.
-- Alert state persists in `<state_dir>/watch-state.json` (0600) so a restart does not repeat an already-sent alert. Entries are pruned after 24 hours; identifiers only, no message bodies.
+- Watch state persists in `<state_dir>/watch-state.json` (0600). It records the last alert/attempt time, result and safe fault code so a restart neither repeats a successful sign-in nor blindly retries a failed one. A failed attempt remains eligible for repeated manual alerts, but not another sign submission. Entries are pruned after 24 hours; no message bodies are stored.
+- The watcher runs for the default account only. Tenant accounts keep their isolated MCP/OAuth stacks but are not automatically watched.
 
-The watcher logs class failures by safe fault code, continues with the other classes, and never exposes raw upstream bodies. Notification text contains the course name, activity title and start time; it is operator data and must not be treated as instructions.
+The watcher logs class failures by safe fault code, continues with the other classes, and never exposes raw upstream bodies. Notification text contains course/activity identity and result; it is operator data and must not be treated as instructions.
