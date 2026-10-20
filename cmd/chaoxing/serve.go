@@ -370,11 +370,23 @@ func watchSender(c watchConfig) (notify.Sender, error) {
 	if strings.TrimSpace(c.FeishuWebhook) != "" {
 		senders = append(senders, notify.Feishu{Webhook: c.FeishuWebhook})
 	}
-	if strings.TrimSpace(c.NtfyURL) != "" && strings.TrimSpace(c.NtfyTopic) != "" {
+	ntfyURL, ntfyTopic := strings.TrimSpace(c.NtfyURL), strings.TrimSpace(c.NtfyTopic)
+	switch {
+	case ntfyURL != "" && ntfyTopic != "":
 		senders = append(senders, notify.Ntfy{BaseURL: c.NtfyURL, Topic: c.NtfyTopic})
+	case ntfyURL != "":
+		return nil, errors.New("watch ntfy_url is configured but ntfy_topic is missing")
+	case ntfyTopic != "":
+		return nil, errors.New("watch ntfy_topic is configured but ntfy_url is missing")
 	}
-	if strings.TrimSpace(c.GotifyURL) != "" && strings.TrimSpace(c.GotifyToken) != "" {
+	gotifyURL, gotifyToken := strings.TrimSpace(c.GotifyURL), strings.TrimSpace(c.GotifyToken)
+	switch {
+	case gotifyURL != "" && gotifyToken != "":
 		senders = append(senders, notify.Gotify{BaseURL: c.GotifyURL, Token: c.GotifyToken})
+	case gotifyURL != "":
+		return nil, errors.New("watch gotify_url is configured but gotify_token is missing")
+	case gotifyToken != "":
+		return nil, errors.New("watch gotify_token is configured but gotify_url is missing")
 	}
 	if len(senders) == 0 {
 		return nil, errors.New("watch is enabled but no feishu_webhook, ntfy_url/ntfy_topic, or gotify_url/gotify_token is configured")

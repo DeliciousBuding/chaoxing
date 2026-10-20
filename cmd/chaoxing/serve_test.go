@@ -8,6 +8,7 @@ import (
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
+	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
 )
@@ -39,6 +40,42 @@ func TestValidateTenants(t *testing.T) {
 	}
 	if err := validateTenants(dup); err == nil {
 		t.Fatal("duplicate tenant accepted")
+	}
+}
+
+func TestWatchSenderRejectsPartialNotificationConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  watchConfig
+		want string
+	}{
+		{"ntfy without topic", watchConfig{NtfyURL: "https://ntfy.example.com"}, "ntfy_topic is missing"},
+		{"ntfy topic without url", watchConfig{NtfyTopic: "synthetic-topic"}, "ntfy_url is missing"},
+		{"gotify without token", watchConfig{GotifyURL: "https://gotify.example.com"}, "gotify_token is missing"},
+		{"gotify token without url", watchConfig{GotifyToken: "synthetic-token"}, "gotify_url is missing"},
+		{"no channel", watchConfig{}, "no feishu_webhook"},
+	} {
+		_, err := watchSender(tc.cfg)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestWatchSenderBuildsIndependentChannels(t *testing.T) {
+	sender, err := watchSender(watchConfig{
+		FeishuWebhook: "https://example.com/feishu-webhook",
+		NtfyURL:       "https://ntfy.example.com",
+		NtfyTopic:     "synthetic-topic",
+		GotifyURL:     "https://gotify.example.com",
+		GotifyToken:   "synthetic-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	multi, ok := sender.(notify.Multi)
+	if !ok || len(multi) != 3 {
+		t.Fatalf("sender has type %T with length %d", sender, len(multi))
 	}
 }
 

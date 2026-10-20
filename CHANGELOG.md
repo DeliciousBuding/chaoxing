@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reject partially configured ntfy or Gotify notification channels at startup so a mistyped alert destination cannot silently disable one channel.
 - Advertise MCP contract version 10 and explicitly report photo and face sign-in as unsupported capability domains.
 - Document the agent control matrix, layered authorization/security invariants and independent notification fan-out behavior in the project README and architecture guide.
 - Add password and gesture sign-in using an operator-provided sign code, including reference-compatible code verification, ordered submission, attendance verification and watcher presets.
