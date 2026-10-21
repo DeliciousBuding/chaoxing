@@ -110,7 +110,9 @@ func Start(cfg Config) (*Supervisor, error) {
 		state.LastRunningAt = previous.UpdatedAt
 	} else if existed {
 		state.LastCrashAt = previous.LastCrashAt
+		state.LastRunningAt = previous.LastRunningAt
 	}
+
 	if err := writeState(cfg.Path, state); err != nil {
 		log.Printf("supervisor state persistence degraded: %v", err)
 		degraded = true
@@ -203,14 +205,23 @@ func (s *Supervisor) Metrics() Metrics {
 // consecutive-crash chain while retaining the last crash timestamp.
 func (s *Supervisor) MarkClean() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	now := s.now().UTC()
 	s.state.Status = statusClean
 	s.state.UpdatedAt = now
 	s.state.LastRunningAt = now
 	s.state.ConsecutiveCrashes = 0
-	state := s.state
-	s.mu.Unlock()
-	return writeState(s.path, state)
+	return s.persistLocked()
+}
+
+// persistLocked writes the current marker while holding mu so a concurrent
+// alert receipt cannot resurrect a clean shutdown marker.
+func (s *Supervisor) persistLocked() error {
+	if err := writeState(s.path, s.state); err != nil {
+		s.degraded = true
+		return err
+	}
+	return nil
 }
 
 func (s *Supervisor) sendCrashAlert(state stateFile) {

@@ -99,7 +99,7 @@ func TestAbruptRestartCountsAndAlerts(t *testing.T) {
 		t.Fatal(err)
 	}
 	m = s.Metrics()
-	if m.ConsecutiveCrashes != 0 || m.LastCrashAt != crashAt {
+	if m.ConsecutiveCrashes != 0 || m.LastCrashAt != crashAt || m.LastRunningAt != crashAt {
 		t.Fatal(m)
 	}
 	if len(sender.messages) != 1 {
