@@ -12,6 +12,37 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { labelFor } from "../lib/labels";
 import { teachingWeek } from "../lib/teaching-week";
 
+const lessonDays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+function lessonRows(raw: any): { rows: any[]; recognized: boolean } {
+  const candidates = [raw?.data?.data?.lessonArray, raw?.data?.lessonArray, raw?.lessonArray];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return { rows: candidate, recognized: true };
+  }
+  return { rows: [], recognized: false };
+}
+
+function lessonPeriod(row: any) {
+  const start = Number(row?.beginNumber);
+  const length = Number(row?.length);
+  if (!Number.isFinite(start) || start <= 0) return "—";
+  if (!Number.isFinite(length) || length <= 1) return `第 ${start} 节`;
+  return `第 ${start}–${start + length - 1} 节`;
+}
+
+function lessonDay(row: any) {
+  const day = Number(row?.dayOfWeek);
+  return Number.isFinite(day) && day >= 1 && day <= 7 ? lessonDays[day - 1] : "—";
+}
+
+function sortedLessons(rows: any[]) {
+  return [...rows].sort((a, b) => {
+    const dayDiff = (Number(a?.dayOfWeek) || 0) - (Number(b?.dayOfWeek) || 0);
+    if (dayDiff !== 0) return dayDiff;
+    return (Number(a?.beginNumber) || 0) - (Number(b?.beginNumber) || 0);
+  });
+}
+
 export function StudyResources() {
   const [courses, setCourses] = React.useState<any[]>([]);
   const [courseKey, setCourseKey] = React.useState("");
@@ -83,13 +114,12 @@ export function StudyResources() {
   }
 
   const chapterRows: any[] = chapters?.items ?? [];
+  const scheduleInfo = lessonRows(schedule);
+  const lessons = sortedLessons(scheduleInfo.rows);
 
   return (
     <div className="space-y-5">
-      <PageHeader
-        title="课表与资料"
-        actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={!selectedCourse || busy}><CalendarDays className="h-3.5 w-3.5" /> 读取当前范围</Button>}
-      />
+      <PageHeader title="课表与资料" />
       <ErrorBanner error={error} />
       <Card>
         <CardHeader>
@@ -188,7 +218,59 @@ export function StudyResources() {
           <CardHeader>
             <CardTitle>教学周课表</CardTitle>
           </CardHeader>
-          <CardContent>{schedule ? <JsonBlock value={schedule} className="max-h-96" /> : <EmptyState bare title="尚未读取课表" />}</CardContent>
+          <CardContent>
+            {!schedule ? (
+              <EmptyState bare title="尚未读取课表" />
+            ) : !scheduleInfo.recognized ? (
+              <details className="rounded-control border border-border bg-muted/20">
+                <summary className="cursor-pointer px-3 py-2.5 text-xs font-medium text-muted-foreground">上游原始数据</summary>
+                <div className="px-3 pb-3">
+                  <JsonBlock value={schedule} className="max-h-80" />
+                </div>
+              </details>
+            ) : lessons.length === 0 ? (
+              <EmptyState bare title="本周没有课程" />
+            ) : (
+              <>
+                <div className="space-y-2 lg:hidden">
+                  {lessons.map((row, index) => (
+                    <article key={index} className="rounded-control border border-border bg-muted/15 p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="text-[13px] font-medium">{row.name || row.courseName || "未命名课程"}</span>
+                        <Badge variant="secondary">{lessonDay(row)}</Badge>
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">
+                        {lessonPeriod(row)}
+                        <span aria-hidden="true"> · </span>
+                        {row.location || "教室未标注"}
+                        {row.teacherName ? ` · ${row.teacherName}` : ""}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+                <div className="hidden lg:block">
+                  <Table label="教学周课表">
+                    <TableHeader>
+                      <TableRow><TableHead className="w-[52px]">星期</TableHead><TableHead className="w-[78px]">节次</TableHead><TableHead>课程</TableHead><TableHead>地点</TableHead></TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {lessons.map((row, index) => (
+                        <TableRow key={index}>
+                          <TableCell className="whitespace-nowrap">{lessonDay(row)}</TableCell>
+                          <TableCell className="whitespace-nowrap font-mono text-xs">{lessonPeriod(row)}</TableCell>
+                          <TableCell>
+                            <div className="font-medium">{row.name || row.courseName || "未命名课程"}</div>
+                            {row.teacherName && <div className="text-[11px] text-muted-foreground">{row.teacherName}</div>}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap">{row.location || "—"}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
+            )}
+          </CardContent>
         </Card>
       </div>
     </div>
