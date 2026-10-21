@@ -88,26 +88,36 @@ export function StudyResources() {
     }
     setBusy(true);
     setError("");
+    const failures: string[] = [];
     try {
-      const [chapterResult, materialResult, scheduleResult] = await Promise.all([
-        api.call("list_chapters", {
+      try {
+        const chapterResult = await api.call("list_chapters", {
           course_id: selectedCourse.course_id,
           class_id: selectedCourse.class_id,
           cpi: selectedCourse.cpi,
           limit: 100
-        }),
-        api.call("list_materials", {
+        });
+        setChapters(chapterResult.data);
+      } catch (err) {
+        failures.push(`章节：${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        const materialResult = await api.call("list_materials", {
           course_id: selectedCourse.course_id,
           class_id: selectedCourse.class_id,
           cpi: selectedCourse.cpi
-        }),
-        api.call("get_schedule", { week: weekNumber })
-      ]);
-      setChapters(chapterResult.data);
-      setMaterials(materialResult.data);
-      setSchedule(scheduleResult.data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+        });
+        setMaterials(materialResult.data);
+      } catch (err) {
+        failures.push(`资料：${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        const scheduleResult = await api.call("get_schedule", { week: weekNumber });
+        setSchedule(scheduleResult.data);
+      } catch (err) {
+        failures.push(`课表：${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (failures.length > 0) setError(failures.join("；"));
     } finally {
       setBusy(false);
     }
@@ -143,7 +153,7 @@ export function StudyResources() {
           </div>
           <div className="flex items-end">
             <Button disabled={!selectedCourse || busy} onClick={() => void load()}>
-              <CalendarDays className="h-4 w-4" /> 读取
+              <CalendarDays className="h-4 w-4" /> {busy ? "读取中…" : "读取"}
             </Button>
           </div>
         </CardContent>

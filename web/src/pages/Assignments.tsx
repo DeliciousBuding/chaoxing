@@ -19,15 +19,21 @@ export function Assignments() {
   async function load() {
     setBusy(true);
     setError("");
+    const failures: string[] = [];
     try {
-      const [actions, all] = await Promise.all([
+      const [actions, all] = await Promise.allSettled([
         api.call("list_action_items"),
         api.call("list_assignments", { status: "all", limit: 100 })
       ]);
-      setActionItems(actions.data);
-      setAssignments(all.data);
+      if (actions.status === "fulfilled") setActionItems(actions.value.data);
+      else failures.push(`待办：${actions.reason instanceof Error ? actions.reason.message : String(actions.reason)}`);
+      if (all.status === "fulfilled") setAssignments(all.value.data);
+      else failures.push(`作业：${all.reason instanceof Error ? all.reason.message : String(all.reason)}`);
+      if (failures.length > 0) setError(failures.join("；"));
       setLoaded(true);
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
     finally { setBusy(false); }
   }
 
@@ -82,8 +88,8 @@ export function Assignments() {
       <PageHeader
         title="待办与作业"
         meta={
-          <Badge variant={actionItems ? (actions.length > 0 ? "warning" : "secondary") : "secondary"}>
-            {actionItems ? (actions.length > 0 ? "有待处理" : "暂无待办") : "读取中"}
+          <Badge variant={!loaded ? "secondary" : actions.length > 0 ? "warning" : "secondary"}>
+            {!loaded ? "读取中" : actions.length > 0 ? "有待处理" : "暂无待办"}
           </Badge>
         }
         actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新待办</Button>}
@@ -96,7 +102,7 @@ export function Assignments() {
         </CardHeader>
         <CardContent className="space-y-4">
           {actionItems && <MetaSummary data={actionItems} />}
-          {busy && !actionItems ? <Loading /> : !loaded ? null : actions.length === 0 ? <EmptyState bare title="当前没有明确待办" /> : (
+          {busy && !actionItems ? <Loading /> : !loaded ? null : !actionItems ? <EmptyState bare title="待办读取失败" /> : actions.length === 0 ? <EmptyState bare title="当前没有明确待办" /> : (
             <div className="divide-y divide-border rounded-control border border-border">
               {actions.map((item, index) => (
                 <div key={index} className="flex items-center justify-between gap-3 px-3 py-2.5">
@@ -125,7 +131,7 @@ export function Assignments() {
         <CardHeader><CardTitle>全部作业</CardTitle></CardHeader>
         <CardContent>
           {assignments && <MetaSummary data={assignments} />}
-          {busy && !assignments ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState bare title="没有作业数据" /> : (
+          {busy && !assignments ? <Loading /> : !loaded ? null : !assignments ? <EmptyState bare title="作业读取失败" /> : rows.length === 0 ? <EmptyState bare title="没有作业数据" /> : (
             <>
             <div className="space-y-3 lg:hidden">
               {rows.map((row, index) => (
