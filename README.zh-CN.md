@@ -47,7 +47,7 @@ Agent 拿到的是完整课程控制面，不是通用 shell、任意 URL fetche
 - 同一账号的上游操作串行执行；进程级出站预算和公开 MCP admission 都有明确饱和行为。
 - 每个账号拥有独立凭据、cookie、缓存、OAuth 状态、watcher 状态和通知目的地；只有可信传输健康状态共享。
 - 内嵌 Web UI 不包含任何分析或 tracker，API 仅同源并强制配置 Host；可信代理才允许解析 `X-Forwarded-For`，会话绑定 IPv4 `/24` / IPv6 `/64` 客户端网络。
-- 可选百度地图页是唯一的显式第三方脚本，且只在配置后进入位置页时加载。
+- 可选百度地图在独立沙箱 `/map` iframe 中加载（`allow-scripts`、无 `allow-same-origin`），只能通过 `postMessage` 接收 AK 和选中坐标，不能读取管理会话、CSRF token 或私有存储。
 
 全局作业 feed 仍不完整。按课程名查询会通过带签名的作业列表扫描匹配班级，分页结果与上游总数一致时可以返回 `complete: true`。这一标记只确认匹配班级的覆盖，不代表全账户完整。全局待交列表为空，不能证明所有作业都已提交。详见[工具与覆盖范围](docs/tools.md)。
 
@@ -64,7 +64,7 @@ Tag 发布工作流构建 Linux arm64、Linux amd64 和 Windows amd64 二进制�
 
 使用私有 JSON stdin 初始化配置，然后运行 `chaoxing serve`。[配置与 Tunnel](docs/configuration.md)说明输入字段、文件权限及监听边界。凭据不放在命令参数或公开文件中。
 
-管理台可选启用百度地图选点：坐标按 BD-09 存在私有 SQLite，地图脚本只在进入位置页时加载，地址搜索由后端代理。生产二进制已内嵌 Web UI。如果修改了 `web/src`，先重建前端资源再构建 Go：
+管理台可选启用百度地图选点：坐标按 BD-09 存在私有 SQLite，地图脚本在隔离沙箱 iframe 中加载，地址搜索由后端代理。生产二进制已内嵌 Web UI。如果修改了 `web/src`，先重建前端资源再构建 Go：
 
 ```sh
 npm --prefix web run build

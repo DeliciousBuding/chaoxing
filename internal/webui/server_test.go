@@ -206,7 +206,10 @@ func TestWebUIServesEmbeddedBundleWithCSP(t *testing.T) {
 		t.Fatal("script-src must not allow unsafe-inline")
 	}
 	if !strings.Contains(csp, "style-src 'self' 'unsafe-inline'") {
-		t.Fatal("Baidu map style-src policy missing")
+		t.Fatal("style-src policy missing")
+	}
+	if strings.Contains(csp, "api.map.baidu.com") || !strings.Contains(csp, "frame-src 'self'") {
+		t.Fatal("main document must isolate the third-party map frame")
 	}
 	if w.Header().Get("Cross-Origin-Opener-Policy") != "same-origin" {
 		t.Fatal("COOP header missing")
@@ -218,6 +221,24 @@ func TestWebUIServesEmbeddedBundleWithCSP(t *testing.T) {
 	w = do(t, mux, "GET", "/assets/"+match[1], "")
 	if w.Code != 200 || !strings.Contains(w.Header().Get("Content-Type"), "javascript") {
 		t.Fatal(w.Code, w.Header().Get("Content-Type"), w.Body.String())
+	}
+	w = do(t, mux, "GET", "/map", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "chaoxing-map") || !strings.Contains(w.Header().Get("Content-Security-Policy"), "api.map.baidu.com") || w.Header().Get("X-Frame-Options") != "SAMEORIGIN" {
+		t.Fatal("map frame isolation headers missing", w.Code, w.Header(), w.Body.String())
+	}
+}
+
+func TestHeavyRequestsDoNotStarveLightControlPlane(t *testing.T) {
+	s, _ := newTestServer(t)
+	s.heavy <- struct{}{}
+	s.heavy <- struct{}{}
+	light := s.bounded(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	heavy := s.heavyBounded(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	if w := do(t, light, "GET", "/", ""); w.Code != 200 {
+		t.Fatalf("light request blocked: %d", w.Code)
+	}
+	if w := do(t, heavy, "GET", "/", ""); w.Code != 503 {
+		t.Fatalf("heavy capacity was not bounded: %d", w.Code)
 	}
 }
 

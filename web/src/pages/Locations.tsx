@@ -17,33 +17,6 @@ type CourseRow = {
   teacher?: string;
 };
 
-function loadBaiduMap(ak: string): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const globalWindow = window as any;
-    if (globalWindow.BMapGL) {
-      resolve(globalWindow.BMapGL);
-      return;
-    }
-    const script = document.createElement("script");
-    script.src = `https://api.map.baidu.com/api?v=1.0&type=webgl&ak=${encodeURIComponent(ak)}`;
-    script.async = true;
-    script.onload = () => {
-      const started = Date.now();
-      const timer = window.setInterval(() => {
-        if (globalWindow.BMapGL) {
-          window.clearInterval(timer);
-          resolve(globalWindow.BMapGL);
-        } else if (Date.now() - started > 10000) {
-          window.clearInterval(timer);
-          reject(new Error("百度地图脚本加载超时"));
-        }
-      }, 50);
-    };
-    script.onerror = () => reject(new Error("百度地图脚本加载失败"));
-    document.head.appendChild(script);
-  });
-}
-
 export function Locations() {
   const [config, setConfig] = React.useState<MapConfig>({ enabled: false });
   const [presets, setPresets] = React.useState<LocationPreset[]>([]);
@@ -63,10 +36,29 @@ export function Locations() {
   const [search, setSearch] = React.useState("");
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const containerRef = React.useRef<HTMLDivElement | null>(null);
-  const mapRef = React.useRef<any>(null);
-  const markerRef = React.useRef<any>(null);
-  const circleRef = React.useRef<any>(null);
+  const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
+  const frameReadyRef = React.useRef(false);
+  const mapInitializedRef = React.useRef(false);
+
+  const postMap = React.useCallback((message: Record<string, unknown>) => {
+    iframeRef.current?.contentWindow?.postMessage({ source: "chaoxing-parent", ...message }, "*");
+  }, []);
+
+  const sendMapInit = React.useCallback(() => {
+    if (!config.enabled || !config.ak || mapInitializedRef.current) return;
+    const initial = Number.isFinite(form.latitude) && Number.isFinite(form.longitude) && (form.latitude !== 0 || form.longitude !== 0)
+      ? { latitude: form.latitude, longitude: form.longitude }
+      : {};
+    postMap({
+      type: "init",
+      ak: config.ak,
+      center_latitude: config.center_latitude,
+      center_longitude: config.center_longitude,
+      zoom: config.zoom,
+      ...initial
+    });
+    mapInitializedRef.current = true;
+  }, [config.ak, config.center_latitude, config.center_longitude, config.enabled, config.zoom, form.latitude, form.longitude, postMap]);
 
   async function reload() {
     setBusy(true);
@@ -95,56 +87,40 @@ export function Locations() {
   React.useEffect(() => { void reload(); }, []);
 
   React.useEffect(() => {
-    if (!config.enabled || !config.ak || !containerRef.current || mapRef.current) return;
-    let cancelled = false;
-    loadBaiduMap(config.ak).then((BMapGL) => {
-      if (cancelled || !containerRef.current) return;
-      const latitude = config.center_latitude || 39.9042;
-      const longitude = config.center_longitude || 116.4074;
-      const map = new BMapGL.Map(containerRef.current);
-      map.centerAndZoom(new BMapGL.Point(longitude, latitude), config.zoom || 17);
-      map.enableScrollWheelZoom(true);
-      map.addEventListener("click", (event: any) => {
-        const point = event.latlng ?? event.point;
-        if (!point || typeof point.lat !== "number" || typeof point.lng !== "number") return;
-        setForm((current) => ({ ...current, latitude: point.lat, longitude: point.lng, coordinate_system: "bd09" }));
-      });
-      mapRef.current = map;
-    }).catch((err) => {
-      if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-    });
-    return () => { cancelled = true; };
-  }, [config.enabled, config.ak, config.center_latitude, config.center_longitude, config.zoom]);
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      const message = event.data;
+      if (!message || message.source !== "chaoxing-map") return;
+      if (message.type === "frame-ready") {
+        frameReadyRef.current = true;
+        sendMapInit();
+        return;
+      }
+      if (message.type === "point") {
+        const latitude = Number(message.latitude);
+        const longitude = Number(message.longitude);
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+        setForm((current) => ({ ...current, latitude, longitude, coordinate_system: "bd09" }));
+        return;
+      }
+      if (message.type === "error") {
+        setError(typeof message.message === "string" ? message.message : "百度地图加载失败");
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [sendMapInit]);
 
   React.useEffect(() => {
-    if (!mapRef.current || !Number.isFinite(form.latitude) || !Number.isFinite(form.longitude)) return;
-    const BMapGL = (window as any).BMapGL;
-    if (!BMapGL) return;
-    const point = new BMapGL.Point(form.longitude, form.latitude);
-    if (!markerRef.current) {
-      markerRef.current = new BMapGL.Marker(point);
-      markerRef.current.enableDragging();
-      markerRef.current.addEventListener("dragend", (event: any) => {
-        const dragged = event.latlng ?? event.point;
-        if (!dragged) return;
-        setForm((current) => ({ ...current, latitude: dragged.lat, longitude: dragged.lng, coordinate_system: "bd09" }));
-      });
-      mapRef.current.addOverlay(markerRef.current);
-    } else {
-      markerRef.current.setPosition(point);
-    }
-    if (!circleRef.current) {
-      circleRef.current = new BMapGL.Circle(point, 5, {
-        strokeColor: "#38bdf8",
-        fillColor: "#38bdf8",
-        fillOpacity: 0.18,
-        strokeWeight: 1
-      });
-      mapRef.current.addOverlay(circleRef.current);
-    } else {
-      circleRef.current.setCenter(point);
-    }
-  }, [form.latitude, form.longitude]);
+    if (!frameReadyRef.current) return;
+    sendMapInit();
+  }, [sendMapInit]);
+
+  React.useEffect(() => {
+    if (!frameReadyRef.current || !Number.isFinite(form.latitude) || !Number.isFinite(form.longitude)) return;
+    if (form.latitude === 0 && form.longitude === 0) return;
+    postMap({ type: "point", latitude: form.latitude, longitude: form.longitude });
+  }, [form.latitude, form.longitude, postMap]);
 
   async function reverseGeocode() {
     if (!Number.isFinite(form.latitude) || !Number.isFinite(form.longitude)) {
@@ -268,7 +244,7 @@ export function Locations() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-muted-foreground">
-          位置预设只保存在生产 SQLite；百度地图仅在你打开本页时加载。
+          位置预设只保存在生产 SQLite；百度地图在隔离沙箱 iframe 中加载，不能读取登录 Cookie 或 CSRF token。
         </div>
         <Button size="sm" onClick={() => void reload()} disabled={busy}>刷新</Button>
       </div>
@@ -287,7 +263,15 @@ export function Locations() {
                     <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="输入地址搜索" />
                     <Button size="sm" onClick={() => void geocode()} disabled={busy}>搜索</Button>
                   </div>
-                  <div ref={containerRef} className="h-[360px] w-full overflow-hidden rounded-xl border bg-muted" />
+                  <iframe
+                    ref={iframeRef}
+                    title="地图选点"
+                    src="/map"
+                    sandbox="allow-scripts"
+                    referrerPolicy="origin"
+                    onLoad={() => { frameReadyRef.current = true; mapInitializedRef.current = false; sendMapInit(); }}
+                    className="h-[360px] w-full overflow-hidden rounded-xl border bg-muted"
+                  />
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-2">
                       <Label>纬度</Label>

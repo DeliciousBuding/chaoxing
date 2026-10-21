@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0-rc.17 — 2026-10-21
+
+- Isolate the optional Baidu GL map in a sandboxed `/map` iframe with an opaque origin. The authenticated application CSP no longer trusts any third-party origin; the map receives only its AK and selected point over `postMessage`.
+- Split WebUI admission into a light control-plane semaphore (8) and a heavy capture/upstream semaphore (2), so a slow capture query or MCP tool call cannot starve login, session and status requests on the router.
+
 ## 0.5.0-rc.16 — 2026-10-21
 
 - Make every watcher schedule a week-aware, independently keyed occurrence. Polling now defaults to 20 minutes before through 20 minutes after class in Asia/Shanghai, supports explicit stable keys for regular/guidance collisions, and projects the exact same windows through `watch windows`.

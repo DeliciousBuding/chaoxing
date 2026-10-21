@@ -51,7 +51,7 @@ The security design is deliberately layered:
 - Raw upstream bodies, credentials, cookies, OAuth tokens and captcha challenge secrets are never returned by tool contracts.
 - Account operations are serialized per account; process-wide outbound capacity and public MCP admission have explicit saturation behavior.
 - Each account has private credentials, cookies, caches, OAuth state, watcher state and notification destinations; only trusted transport health is shared.
-- The embedded Web UI has no analytics or tracker. Its APIs are same-origin; the optional Baidu map page is the only opt-in third-party script and loads only when configured.
+- The embedded Web UI has no analytics or tracker. Its APIs are same-origin; the optional Baidu map runs in a sandboxed `/map` iframe with an opaque origin, so it cannot read the management session, CSRF token or private storage.
 
 The global assignment feed remains incomplete. A course-name query scans matching classes through the signed work list and can report `complete: true` when pagination agrees with upstream totals. That verifies the matched classes, not the whole account. An empty global pending list does not prove that every assignment is submitted. See [coverage and tool contracts](docs/tools.md).
 

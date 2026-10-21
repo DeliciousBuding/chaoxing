@@ -14,7 +14,7 @@ The generated config records `state_dir`, `key_path`, `issuer`, `listen`, `local
 
 On Linux, use a root-owned private state directory (0700), config and state files (0600), and a separate root-only key (0600). The code creates private files but does not establish your OS account ownership or fix permissions of an existing key. Verify them before starting. On Windows, apply equivalent restrictive ACLs; Unix mode bits alone do not provide that boundary.
 
-Run `chaoxing serve` under the trusted service identity. Keep one daemon per state directory. The local identity running `chaoxing call` must have permission to read the private configuration; do not grant untrusted clients access to the vault key.
+Run `chaoxing serve` under the trusted service identity. Keep one daemon per state directory: startup takes an exclusive `flock` on `<state_dir>/.chaoxing.lock` and refuses a second process. The local identity running `chaoxing call` must have permission to read the private configuration; do not grant untrusted clients access to the vault key.
 
 ## Egress proxy pool and request pacing
 
@@ -212,13 +212,13 @@ Bounds and behavior:
 - Outside the watch window, or when no watched schedule is active, the loop sleeps up to five minutes instead of using `interval_seconds`. It wakes at the next window/class boundary and still honors the configured before/after padding.
 - Each tick is panic-supervised. A panic is recovered, counted, logged and sent as a priority-9 notification; the next successful cycle resets the consecutive counter.
 - Process exits are supervised across procd restarts. Unexpected respawns increment `process.consecutive_crashes`, asynchronously send priority-9 alerts (priority-10 from the third consecutive crash) with three bounded retries, and a SIGTERM shutdown resets the consecutive chain.
-- `/healthz` returns aggregate process and watcher counters (`pid`, `started_at`, `last_tick_at`, `last_panic_at`, `consecutive_panics`, `consecutive_crashes`, `ticks`, `active_class_polls`) without account IDs. The authenticated Web UI status shows the same metrics per root/tenant account.
+- `/healthz` is a minimal liveness endpoint (`ok`, `version`). `/readyz` returns 503 when a watcher is stale, a process is degraded, or consecutive panics reach three. Detailed process and per-account watcher counters remain on the authenticated Web UI status and the loopback management listener.
 - Embedded WebUI assets use content-hash ETags, immutable cache policy and gzip when the client accepts it.
 - Private coordinate presets are managed with `chaoxing location add|bind|resolve` on the deployment host. Values are stored per account in the private SQLite store and are never exposed through MCP or committed to git.
 - `chaoxing watch windows --days 7` prints the exact active intervals, per-schedule key, week restriction and room the watcher will use, which is the quickest way to compare configuration with the official timetable.
 - The watcher class list is editable with `chaoxing watch classes list|add|remove`; only `watch.classes` is rewritten, a timestamped backup is kept and a daemon restart is required.
 - `chaoxing courses discover` reads the mooc2 course-list page and marks which courses the legacy feed also returns, which explains a timetable course that is missing from `list_courses`.
-- `/healthz` also reports `stale`: a live watcher that has not completed a cycle for twenty minutes (three times the idle sleep cap) is flagged so a wedged loop is distinguishable from an idle deployment.
+- `/readyz` reports `stale`: a live watcher that has not completed a cycle for twenty minutes (three times the idle sleep cap) is flagged so a wedged loop is distinguishable from an idle deployment.
 
 - Course-group history is read only while at least one watched class is active; idle deployments do not scan it every minute.
 
@@ -246,7 +246,7 @@ Set a private top-level `location` object to enable location presets in the mana
 - `baidu_ak`, `baidu_ak_file` or `baidu_ak_env` supply the browser map key. Use one source only. The key stays private and is never committed. A browser map inherently receives its AK through `/api/map/config`; restrict the key to the deployment referer in the Baidu console. Geocoding/reverse geocoding are proxied by the daemon so those requests do not expose the key in URLs.
 - `center_latitude`, `center_longitude` and `zoom` control the initial map view. The zoom default is 17.
 - `timeout_seconds` bounds Baidu geocoding requests; the default is 5 seconds.
-- The management page loads the Baidu GL script only when the map is enabled and the key is present.
+- The management page loads the Baidu GL script only when the map is enabled and the key is present. The script runs inside a sandboxed `/map` iframe (`allow-scripts`, no `allow-same-origin`) and receives only the AK, center and selected point over `postMessage`; the main application CSP contains no Baidu origin.
 - Location presets and course bindings live in `<state_dir>/chaoxing.db`. They are never written to the repository or notification bodies.
 
 Example binding:

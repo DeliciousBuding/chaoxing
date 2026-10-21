@@ -129,6 +129,7 @@ type Server struct {
 	attempts       []loginAttempt
 	now            func() time.Time
 	sem            chan struct{}
+	heavy          chan struct{}
 	loginSem       chan struct{}
 	indexHTML      []byte
 	assets         map[string]cachedAsset
@@ -179,7 +180,7 @@ func New(cfg Config) (*Server, error) {
 	return &Server{
 		cfg: cfg, issuerHost: issuer.Host, trustedProxies: trusted,
 		sessions: map[string]webSession{}, now: time.Now,
-		sem: make(chan struct{}, 8), loginSem: make(chan struct{}, 1),
+		sem: make(chan struct{}, 8), heavy: make(chan struct{}, 2), loginSem: make(chan struct{}, 1),
 		indexHTML: index, assets: assets,
 	}, nil
 }
@@ -247,6 +248,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /app", s.index)
 	mux.HandleFunc("GET /app/{path...}", s.index)
+	mux.HandleFunc("GET /map", s.mapFrame)
 	mux.Handle("GET /assets/", http.HandlerFunc(s.serveAsset))
 
 	mux.Handle("GET /api/auth/session", s.bounded(s.sessionInfo))
@@ -255,9 +257,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/account", s.bounded(s.authenticated(s.accountInfo)))
 	mux.Handle("POST /api/account/select", s.bounded(s.authenticated(s.selectAccount)))
 	mux.Handle("GET /api/status", s.bounded(s.authenticated(s.status)))
-	mux.Handle("GET /api/captures", s.bounded(s.authenticated(s.captures)))
+	mux.Handle("GET /api/captures", s.heavyBounded(s.authenticated(s.captures)))
 	mux.Handle("GET /api/tools", s.bounded(s.authenticated(s.tools)))
-	mux.Handle("POST /api/tools/call", s.bounded(s.authenticated(s.call)))
+	mux.Handle("POST /api/tools/call", s.heavyBounded(s.authenticated(s.call)))
 	s.registerLocationRoutes(mux)
 	s.registerScheduleRoutes(mux)
 }
@@ -352,13 +354,24 @@ func assetContentType(name string) string {
 }
 
 func (s *Server) bounded(next http.HandlerFunc) http.Handler {
+	return s.limited(s.sem, next)
+}
+
+// heavyBounded isolates capture queries and upstream tool calls from cheap
+// session/status requests. The weak router must still answer a login or a
+// dashboard refresh while one large capture or a slow upstream call is live.
+func (s *Server) heavyBounded(next http.HandlerFunc) http.Handler {
+	return s.limited(s.heavy, next)
+}
+
+func (s *Server) limited(limit chan struct{}, next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.hostOK(w, r) {
 			return
 		}
 		select {
-		case s.sem <- struct{}{}:
-			defer func() { <-s.sem }()
+		case limit <- struct{}{}:
+			defer func() { <-limit }()
 		default:
 			writeError(w, 503, "TEMPORARILY_UNAVAILABLE", "management UI is busy")
 			return
@@ -746,7 +759,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://api.map.baidu.com https://mapopen.baidu.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://map.baidu.com https://*.bdimg.com https://*.bdstatic.com; font-src 'self'; connect-src 'self' https://api.map.baidu.com https://mapopen.baidu.com; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
