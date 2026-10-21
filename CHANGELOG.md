@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add process-level crash supervision across procd restarts. A private 0600 marker distinguishes SIGTERM-initiated restarts from unexpected exits, persists consecutive crash count and last crash time, sends priority 9/10 Gotify/ntfy/Feishu alerts on every abnormal respawn, exposes safe process metrics through `/healthz` and the authenticated dashboard, and resets the consecutive chain only after a clean shutdown.
+- Add process-level crash supervision across procd restarts. A private 0600 marker distinguishes SIGTERM-initiated restarts from unexpected exits, persists consecutive crash count and last crash time, sends asynchronous 30-second-bounded priority 9/10 Gotify/ntfy/Feishu alerts on every abnormal respawn, exposes safe process metrics through `/healthz` and the authenticated dashboard, and resets the consecutive chain only after a clean shutdown.
 - Harden watcher supervision and idle polling: every polling tick is panic-recovered and counted, panic alerts carry consecutive counts, successful ticks reset the counter, polling sleeps up to five minutes outside active class windows, and course-group feeds are scanned only while a watched class is active.
 - Add strong ETags, `Vary: Accept-Encoding` and precompressed gzip responses for immutable embedded WebUI assets. Identity, HEAD and range requests still work through `http.ServeContent`; conditional requests now return empty 304 responses.
 - Harden the public WebUI trust boundary: API Host validation, trusted-proxy-only `X-Forwarded-For` parsing, client-network session binding, per-network login limits and a 32-session cap.

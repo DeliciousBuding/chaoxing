@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,11 +14,14 @@ import (
 )
 
 type recordingSender struct {
+	mu       sync.Mutex
 	messages []notify.Message
 	err      error
 }
 
 func (r *recordingSender) Send(_ context.Context, m notify.Message) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.err != nil {
 		return r.err
 	}
@@ -27,6 +31,15 @@ func (r *recordingSender) Send(_ context.Context, m notify.Message) error {
 
 func fixedClock(start time.Time) func() time.Time {
 	return func() time.Time { return start }
+}
+
+func waitForAlert(t *testing.T, s *Supervisor) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.WaitForAlert(ctx); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestFirstStartIsClean(t *testing.T) {
@@ -64,6 +77,7 @@ func TestAbruptRestartCountsAndAlerts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitForAlert(t, s)
 	m := s.Metrics()
 	if m.ConsecutiveCrashes != 1 || m.PID != 102 || m.LastCrashAt != crashAt || m.LastRunningAt != base {
 		t.Fatal(m)
@@ -98,17 +112,60 @@ func TestThirdConsecutiveCrashUsesMaximumPriority(t *testing.T) {
 	path := filepath.Join(d, "supervisor-state.json")
 	base := time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC)
 	sender := &recordingSender{}
+	var current *Supervisor
 	for i := 0; i < 4; i++ {
-		if _, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base.Add(time.Duration(i) * time.Minute)), ProcessID: 110 + i}); err != nil {
+		s, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base.Add(time.Duration(i) * time.Minute)), ProcessID: 110 + i})
+		if err != nil {
 			t.Fatal(err)
 		}
+		current = s
 	}
+	waitForAlert(t, current)
 	if len(sender.messages) != 3 {
 		t.Fatal(sender.messages)
 	}
 	last := sender.messages[2]
 	if last.Priority != 10 || !strings.Contains(last.Body, "连续异常退出：3") {
 		t.Fatal(last)
+	}
+}
+
+func TestSlowNotifierDoesNotBlockStartup(t *testing.T) {
+	d := t.TempDir()
+	path := filepath.Join(d, "supervisor-state.json")
+	base := time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC)
+	sender := &slowSender{}
+	if _, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base), ProcessID: 140}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base.Add(time.Minute)), ProcessID: 141})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.WaitForAlert(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sender.sends != 1 {
+		t.Fatal(sender.sends)
+	}
+}
+
+type slowSender struct {
+	mu    sync.Mutex
+	sends int
+}
+
+func (s *slowSender) Send(ctx context.Context, _ notify.Message) error {
+	select {
+	case <-time.After(50 * time.Millisecond):
+		s.mu.Lock()
+		s.sends++
+		s.mu.Unlock()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -120,9 +177,11 @@ func TestNotificationFailureDoesNotBlockStartup(t *testing.T) {
 	if _, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base), ProcessID: 120}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base.Add(time.Minute)), ProcessID: 121}); err != nil {
+	s, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base.Add(time.Minute)), ProcessID: 121})
+	if err != nil {
 		t.Fatal(err)
 	}
+	waitForAlert(t, s)
 }
 
 func TestInvalidStateIsRejected(t *testing.T) {

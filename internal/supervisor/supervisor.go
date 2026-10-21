@@ -64,6 +64,7 @@ type Supervisor struct {
 	now           func() time.Time
 	notifyTimeout time.Duration
 	state         stateFile
+	alertDone     chan struct{}
 }
 
 func Start(cfg Config) (*Supervisor, error) {
@@ -80,7 +81,7 @@ func Start(cfg Config) (*Supervisor, error) {
 	}
 	timeout := cfg.NotifyTimeout
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = 30 * time.Second
 	}
 
 	previous, existed, err := readState(cfg.Path)
@@ -105,9 +106,32 @@ func Start(cfg Config) (*Supervisor, error) {
 		path: cfg.Path, sender: cfg.Sender, now: now, notifyTimeout: timeout, state: state,
 	}
 	if state.ConsecutiveCrashes > 0 {
-		s.sendCrashAlert(state)
+		// Crash alerts are asynchronous: a slow push provider must not delay
+		// listener startup or procd's respawn threshold.
+		s.alertDone = make(chan struct{})
+		go func() {
+			defer close(s.alertDone)
+			s.sendCrashAlert(state)
+		}()
 	}
 	return s, nil
+}
+
+// WaitForAlert waits for the asynchronous crash notification. It is primarily
+// a test seam; production callers do not need to block on push delivery.
+func (s *Supervisor) WaitForAlert(ctx context.Context) error {
+	s.mu.Lock()
+	done := s.alertDone
+	s.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func readState(path string) (stateFile, bool, error) {
