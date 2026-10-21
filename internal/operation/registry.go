@@ -178,6 +178,13 @@ func arraySchema(items map[string]any) map[string]any {
 func courseSchema() map[string]any {
 	return objectSchema([]string{"course_id", "class_id", "cpi", "name", "teacher", "class", "retired"}, map[string]any{"course_id": stringSchema(), "class_id": stringSchema(), "cpi": stringSchema(), "name": stringSchema(), "teacher": stringSchema(), "class": stringSchema(), "retired": booleanSchema()})
 }
+func materialSchema() map[string]any {
+	return objectSchema([]string{"name", "is_folder", "downloadable"}, map[string]any{
+		"id": stringSchema(), "name": stringSchema(), "type": stringSchema(),
+		"size": stringSchema(), "created_at": stringSchema(), "is_folder": booleanSchema(),
+		"folder_kind": stringSchema(), "downloadable": booleanSchema(),
+	})
+}
 func assignmentSchema() map[string]any {
 	return objectSchema([]string{"id", "course_id", "class_id", "title", "course", "status", "submission_state", "availability_state", "raw_status"}, map[string]any{"id": stringSchema(), "course_id": stringSchema(), "class_id": stringSchema(), "title": stringSchema(), "course": stringSchema(), "status": stringSchema(), "remaining": stringSchema(), "submission_state": stringSchema("pending", "submitted", "unknown"), "availability_state": stringSchema("open", "closed", "not_open", "unknown"), "raw_status": stringSchema()})
 }
@@ -370,6 +377,8 @@ func (d Definition) OutputSchema() map[string]any {
 	}
 	if d.Name == "list_materials" {
 		delete(properties, "items")
+		properties["items"] = arraySchema(materialSchema())
+		properties["count"] = map[string]any{"type": "number"}
 		properties["text"] = map[string]any{"type": "string"}
 	}
 	return map[string]any{"type": "object", "required": []string{"meta"}, "properties": properties, "additionalProperties": true}

@@ -45,6 +45,18 @@ type Assignment struct {
 	RawStatus         string `json:"raw_status"`
 }
 
+type MaterialItem struct {
+	ID           string `json:"id,omitempty"`
+	Name         string `json:"name"`
+	Type         string `json:"type,omitempty"`
+	ObjectID     string `json:"-"`
+	Size         string `json:"size,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	IsFolder     bool   `json:"is_folder"`
+	FolderKind   string `json:"folder_kind,omitempty"`
+	Downloadable bool   `json:"downloadable"`
+}
+
 // Only explicit evidence establishes submission; closed is not submitted.
 func academicStates(raw string) (string, string) {
 	submission, availability := "unknown", "unknown"
@@ -1096,6 +1108,73 @@ func (c *Client) schedule(ctx context.Context, a map[string]any) (any, error) {
 	}
 	return map[string]any{"data": v, "week": week, "fetched_at": time.Now().UTC()}, nil
 }
+
+var materialSizePattern = regexp.MustCompile(`(?i)\b\d+(?:\.\d+)?\s*(?:B|KB|MB|GB|TB)\b`)
+var materialDatePattern = regexp.MustCompile(`\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b`)
+
+func parseMaterialRows(doc *html.Node) []MaterialItem {
+	rows := []MaterialItem{}
+	walk(doc, func(n *html.Node) {
+		if n.Type != html.ElementNode || n.Data != "ul" || !hasClass(n, "dataBody_td") {
+			return
+		}
+		id := strings.TrimSpace(attr(n, "id"))
+		objectID := strings.TrimSpace(attr(n, "objectid"))
+		if objectID == "" {
+			objectID = strings.TrimSpace(attr(n, "objectId"))
+		}
+		fileType := strings.ToLower(strings.TrimSpace(attr(n, "type")))
+		rowText := text(n)
+		onClick := attr(n, "onclick")
+		isFolder := fileType == "afolder" || fileType == "folder" || fileType == "tch-courseware" || strings.Contains(onClick, "toCourseware")
+		name := strings.TrimSpace(attr(n, "dataname"))
+		if name == "" {
+			walk(n, func(v *html.Node) {
+				if name != "" || v.Type != html.ElementNode {
+					return
+				}
+				if v.Data == "dt" || hasClass(v, "dataBody_name_stu") || hasClass(v, "dataBody_name") {
+					name = strings.Join(strings.Fields(text(v)), " ")
+				}
+			})
+		}
+		if name == "" && !isFolder && id == "" && objectID == "" {
+			return
+		}
+		folderKind := ""
+		if isFolder {
+			if fileType == "tch-courseware" || strings.Contains(onClick, "toCourseware") || strings.Contains(rowText, "教师课件") {
+				folderKind = "tch-courseware"
+			} else {
+				folderKind = "afolder"
+			}
+			if name == "" {
+				name = "教师课件"
+				if folderKind == "afolder" {
+					name = "未命名文件夹"
+				}
+			}
+		}
+		if name == "" {
+			name = "未命名资料"
+		}
+		size := materialSizePattern.FindString(rowText)
+		createdAt := materialDatePattern.FindString(rowText)
+		rows = append(rows, MaterialItem{
+			ID:           id,
+			Name:         name,
+			Type:         fileType,
+			ObjectID:     objectID,
+			Size:         size,
+			CreatedAt:    createdAt,
+			IsFolder:     isFolder,
+			FolderKind:   folderKind,
+			Downloadable: !isFolder && id != "" && attr(n, "isdown") != "0",
+		})
+	})
+	return rows
+}
+
 func (c *Client) materials(ctx context.Context, a map[string]any) (any, error) {
 	cid, cl, cpi := str(a, "course_id"), str(a, "class_id"), str(a, "cpi")
 	courses, e := c.fetchCourses(ctx)
@@ -1123,7 +1202,12 @@ func (c *Client) materials(ctx context.Context, a map[string]any) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	return map[string]any{"text": text(doc), "complete": false, "fetched_at": time.Now().UTC()}, nil
+	rows := parseMaterialRows(doc)
+	items := make([]any, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, row)
+	}
+	return map[string]any{"items": items, "count": len(items), "text": text(doc), "complete": false, "fetched_at": time.Now().UTC()}, nil
 }
 func (c *Client) ForceLogin(ctx context.Context) error {
 	if err := c.lock(ctx); err != nil {

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { CalendarDays, LibraryBig } from "lucide-react";
+import { CalendarDays, FileText, Folder, LibraryBig } from "lucide-react";
 import { api } from "../lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -124,6 +124,7 @@ export function StudyResources() {
   }
 
   const chapterRows: any[] = chapters?.items ?? [];
+  const materialRows: any[] = Array.isArray(materials?.items) ? materials.items : [];
   const scheduleInfo = lessonRows(schedule);
   const lessons = sortedLessons(scheduleInfo.rows);
 
@@ -214,11 +215,62 @@ export function StudyResources() {
           <CardHeader>
             <CardTitle><LibraryBig className="mr-2 inline h-4 w-4" />课程资料</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
+            {materials && <MetaSummary data={materials} />}
             {materials ? (
-              <pre className="max-h-96 overflow-auto rounded-control border border-border bg-muted/30 p-4 text-xs leading-relaxed">
-                {materials.text || "暂无资料文本"}
-              </pre>
+              materialRows.length === 0 ? (
+                <EmptyState bare title="未发现资料条目" />
+              ) : (
+                <>
+                  <div className="space-y-2 md:hidden">
+                    {materialRows.map((row, index) => (
+                      <article key={row.id || `${row.name}-${index}`} className="rounded-control border border-border bg-card p-3">
+                        <div className="flex items-start gap-2.5">
+                          {row.is_folder ? (
+                            <Folder className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                          ) : (
+                            <FileText className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[13px] font-medium">{row.name}</div>
+                            <div className="mt-0.5 text-[11px] text-muted-foreground">
+                              {row.is_folder ? (row.folder_kind === "tch-courseware" ? "教师课件" : "文件夹") : (row.type || "文件")}
+                              {row.size ? ` · ${row.size}` : ""}
+                              {row.created_at ? ` · ${row.created_at}` : ""}
+                            </div>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                  <div className="hidden md:block">
+                    <Table label="课程资料">
+                      <TableHeader>
+                        <TableRow><TableHead>名称</TableHead><TableHead>类型</TableHead><TableHead>大小</TableHead><TableHead>创建日期</TableHead></TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {materialRows.map((row, index) => (
+                          <TableRow key={row.id || `${row.name}-${index}`}>
+                            <TableCell>
+                              <div className="flex min-w-0 items-center gap-2">
+                                {row.is_folder ? (
+                                  <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                ) : (
+                                  <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                )}
+                                <span className="truncate font-medium">{row.name}</span>
+                              </div>
+                            </TableCell>
+                            <TableCell>{row.is_folder ? (row.folder_kind === "tch-courseware" ? "教师课件" : "文件夹") : (row.type || "—")}</TableCell>
+                            <TableCell>{row.size || "—"}</TableCell>
+                            <TableCell>{row.created_at || "—"}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </>
+              )
             ) : (
               <EmptyState bare title="尚未读取资料" />
             )}
