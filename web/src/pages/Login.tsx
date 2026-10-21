@@ -1,19 +1,12 @@
 import * as React from "react";
-import { Activity, GraduationCap, LockKeyhole, MapPin, ShieldCheck } from "lucide-react";
+import { GraduationCap, LockKeyhole } from "lucide-react";
 import { api, ApiError, type SessionInfo } from "../lib/api";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Badge } from "../components/ui/badge";
 import { ErrorBanner } from "../components/common";
 import { useMediaQuery } from "../lib/hooks";
-
-const capabilities = [
-  { icon: Activity, title: "课堂活动", description: "签到、测验、作业与通知统一进入一条可观测链路。" },
-  { icon: MapPin, title: "位置策略", description: "按课表绑定坐标，保留出口 IP 与签到结果作为私有证据。" },
-  { icon: ShieldCheck, title: "最小权限", description: "四档角色 + 账号授权；密钥、令牌与坐标不进入浏览器。" }
-];
 
 export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) {
   const desktop = useMediaQuery("(min-width: 1024px)");
@@ -57,31 +50,15 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
           </div>
 
           <div className="mt-20 max-w-xl">
-            <Badge variant="secondary">自托管 · 单实例 · 多租户</Badge>
-            <h2 className="mt-5 text-[32px] font-medium leading-[1.18] tracking-[-0.035em] xl:text-[40px]">
-              把课堂操作收进
-              <br />
-              一个安静的控制面
+            <h2 className="text-[32px] font-medium leading-[1.18] tracking-[-0.035em] xl:text-[40px]">
+              学习通控制台
             </h2>
-            <p className="mt-4 max-w-lg text-sm leading-6 text-muted-foreground">
-              课程、签到、答题、作业、捕获与审计共享同一套身份和边界。没有第三方分析脚本，也没有把凭据交给浏览器。
-            </p>
-          </div>
-
-          <div className="mt-12 grid max-w-2xl gap-px overflow-hidden rounded-card border border-border bg-border sm:grid-cols-3">
-            {capabilities.map(({ icon: Icon, title, description }) => (
-              <div key={title} className="bg-card p-4">
-                <Icon className="h-4 w-4 text-muted-foreground" />
-                <div className="mt-3 text-[13px] font-medium">{title}</div>
-                <div className="mt-1 text-[11px] leading-5 text-muted-foreground">{description}</div>
-              </div>
-            ))}
+            <p className="mt-3 text-sm text-muted-foreground">课程、签到、作业与审计</p>
           </div>
         </div>
 
         <div className="flex max-w-2xl items-center justify-between gap-4 border-t border-border pt-4 text-[11px] text-muted-foreground">
-          <span>登录、成员与工具调用均写入控制面审计。</span>
-          <span className="font-mono">HTTPS · SameSite=Strict</span>
+          <span>Private classroom operations</span>
         </div>
       </section>
 
@@ -138,16 +115,9 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
                 <Button className="w-full" type="submit" disabled={busy || !username.trim() || !password}>
                   {busy ? "验证中…" : "登录控制台"}
                 </Button>
-                <div className="flex items-start gap-2 border-t border-border pt-4 text-[11px] leading-5 text-muted-foreground">
-                  <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span>登录按客户端网络限速；写请求校验 Origin 与 CSRF；会话绑定登录网络并支持一键失效。</span>
-                </div>
               </form>
             </CardContent>
           </Card>
-          <div className="mt-5 text-center text-[10px] text-muted-foreground">
-            仅限授权成员 · 所有操作可追溯
-          </div>
         </div>
       </section>
     </div>

@@ -5,8 +5,7 @@ import {
   GraduationCap,
   LogOut,
   Palette,
-  RefreshCw,
-  ShieldCheck
+  RefreshCw
 } from "lucide-react";
 import { canAccessPage, pageGroups, pages, visiblePages, type PageId } from "../lib/layout";
 import { useUIStore, themeLabels, themes, type Theme } from "../lib/store";
@@ -117,15 +116,9 @@ function Sidebar({ session }: { session: SessionInfo }) {
           </span>
           <div className="min-w-0 flex-1">
             <div className="truncate text-[11px] font-medium text-foreground">{displayName}</div>
-            <div className="truncate text-[10px] text-muted-foreground">{roleLabel} · 私有管理面</div>
+            <div className="truncate text-[10px] text-muted-foreground">{roleLabel}</div>
           </div>
-        </div>
-        <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5">
-            <ShieldCheck className="h-3 w-3" />
-            数据不出租户
-          </span>
-          <span className="truncate font-mono">{session.version || "dev"}</span>
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{session.version || "dev"}</span>
         </div>
       </footer>
     </aside>
