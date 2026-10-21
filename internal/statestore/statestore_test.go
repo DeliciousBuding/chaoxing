@@ -95,7 +95,7 @@ func TestV1HealthSchemaMigratesToV3(t *testing.T) {
 	}
 	defer s.Close()
 	var version int
-	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 3 {
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 4 {
 		t.Fatal(version, err)
 	}
 	health, err := s.ProxyHealth()

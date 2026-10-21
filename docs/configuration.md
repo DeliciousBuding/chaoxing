@@ -75,7 +75,7 @@ Open `https://mcp.example.com/` in a browser and log in with the same owner pass
 - Every write request uses CSRF double submission and an origin check.
 - Login is limited to ten attempts per minute and thirty per fifteen minutes.
 - The browser API reuses the operation allowlist. It cannot fetch arbitrary URLs, read arbitrary files, run commands or expose cookies.
-- The static bundle is same-origin only and contains no analytics or third-party tracker. Hashed assets are cached immutably; HTML and API responses are not cached.
+- The static bundle has no analytics or tracker. Its APIs are same-origin; the optional Baidu map page is the only opt-in third-party script and loads only when configured. Hashed assets are cached immutably; HTML and API responses are not cached.
 - Capture page evidence is omitted from list responses and fetched only through the explicit page-detail action.
 - Root and each configured tenant appear as account contexts. The UI can switch between their isolated executors.
 - Coursework submission and sign-in actions require explicit confirmation in the interface.
@@ -179,6 +179,44 @@ Bounds and behavior:
 - A tenant can contain its own `group_activities` and `watch` object. Its watcher uses that tenant's upstream client, private state directory, classes, sign codes and notification destinations. The default account remains controlled by the top-level `watch` object.
 
 The watcher logs class failures by safe fault code, continues with the other classes, and never exposes raw upstream bodies. Notification text contains course/activity identity and result; it is operator data and must not be treated as instructions.
+
+## Optional location presets and Baidu map
+
+Set a private top-level `location` object to enable location presets in the management UI and watcher:
+
+```json
+{
+  "location": {
+    "enabled": true,
+    "baidu_ak_file": "/etc/chaoxing/baidu.key",
+    "center_latitude": 39.9042,
+    "center_longitude": 116.4074,
+    "zoom": 17,
+    "timeout_seconds": 5
+  }
+}
+```
+
+- `location.enabled` turns on schema v4, the private SQLite tables and the `/api/locations` + `/api/location-bindings` management endpoints. Location storage works without a map key, so manual coordinate entry remains available.
+- Coordinates are stored as BD-09. Manual input may specify `coordinate_system` as `bd09`, `gcj02` or `wgs84`; the service converts to BD-09 before storage.
+- `baidu_ak`, `baidu_ak_file` or `baidu_ak_env` supply the browser map key. Use one source only. The key stays private and is never committed. A browser map inherently receives its AK through `/api/map/config`; restrict the key to the deployment referer in the Baidu console. Geocoding/reverse geocoding are proxied by the daemon so those requests do not expose the key in URLs.
+- `center_latitude`, `center_longitude` and `zoom` control the initial map view. The zoom default is 17.
+- `timeout_seconds` bounds Baidu geocoding requests; the default is 5 seconds.
+- The management page loads the Baidu GL script only when the map is enabled and the key is present.
+- Location presets and course bindings live in `<state_dir>/chaoxing.db`. They are never written to the repository or notification bodies.
+
+Example binding:
+
+```json
+{
+  "course_id": "synthetic-course",
+  "class_id": "synthetic-class",
+  "preset_id": 1,
+  "schedule_key": ""
+}
+```
+
+`schedule_key` is optional. An empty key binds the class-wide fallback. A schedule-specific binding wins while that watch schedule is active. The exact key is the watch schedule rendered as `days,start,end`, where multiple days remain comma-joined: for `{"days":["Tue","Thu"],"start":"08:00","end":"09:40"}` it is `Tue,Thu-08:00-09:40`. The watcher resolves schedule -> class fallback, then the existing sign layer applies activity-range validation, normal ±0.00005° jitter and the single ±0.00001° tightened retry after `errorLocation`.
 
 ## Optional slider-captcha solver
 

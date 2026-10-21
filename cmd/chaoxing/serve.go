@@ -21,6 +21,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
 	"github.com/DeliciousBuding/chaoxing/internal/classroomagent"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
+	"github.com/DeliciousBuding/chaoxing/internal/location"
 	"github.com/DeliciousBuding/chaoxing/internal/mcphttp"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
@@ -217,7 +218,7 @@ func validateTenants(c config) error {
 
 // publicMux mounts the root account and all configured tenants. It returns the
 // mux and the ordered tenant ids for the management status endpoint.
-func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool, captures capture.Store, rootExecute func(context.Context, string, map[string]any) (any, error)) (*http.ServeMux, []string, []*tenantRuntime, error) {
+func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool, captures capture.Store, locations location.Service, rootExecute func(context.Context, string, map[string]any) (any, error)) (*http.ServeMux, []string, []*tenantRuntime, error) {
 	mux := http.NewServeMux()
 	a.Register(mux)
 	mux.Handle("/mcp", a.ProtectMCP(mcphttp.NewWithVersion(rootExecute, version)))
@@ -251,7 +252,7 @@ func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool
 			if e != nil {
 				return nil, nil, nil, e
 			}
-			tr.watch, e = newWatcher(*tc.Watch, tc.StateDir, cl, captures, tc.ID, tc.Answer)
+			tr.watch, e = newWatcher(*tc.Watch, tc.StateDir, cl, captures, location.NewResolver(locations, tc.ID), tc.ID, tc.Answer)
 			if e != nil {
 				return nil, nil, nil, e
 			}
@@ -261,7 +262,7 @@ func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool
 	return mux, tenantIDs, runtimes, nil
 }
 
-func newWatcher(c watchConfig, stateDir string, client *upstream.Client, captures capture.Store, accountKey string, answers *answerConfig) (*watch.Runner, error) {
+func newWatcher(c watchConfig, stateDir string, client *upstream.Client, captures capture.Store, locationResolver *location.Resolver, accountKey string, answers *answerConfig) (*watch.Runner, error) {
 	sender, err := watchSender(c)
 	if err != nil {
 		return nil, err
@@ -284,6 +285,9 @@ func newWatcher(c watchConfig, stateDir string, client *upstream.Client, capture
 		AutoSign:              c.AutoSign,
 		Classes:               c.Classes,
 		StatePath:             filepath.Join(stateDir, "watch-state.json"),
+	}
+	if locationResolver != nil {
+		cfg.LocationResolver = locationResolver
 	}
 	if cfg.ClassPollDelayMin == 0 && cfg.ClassPollDelayMax == 0 {
 		cfg.ClassPollDelayMin, cfg.ClassPollDelayMax = 750*time.Millisecond, 3*time.Second
@@ -331,7 +335,7 @@ func watchCaptureEnabled(w *watchConfig) bool {
 }
 
 func stateStoreNeeded(c config) bool {
-	if len(c.Proxies) > 0 || watchCaptureEnabled(c.Watch) {
+	if len(c.Proxies) > 0 || watchCaptureEnabled(c.Watch) || (c.Location != nil && c.Location.Enabled) {
 		return true
 	}
 	for _, tenant := range c.Tenants {
@@ -387,9 +391,27 @@ func serve() error {
 	if e != nil {
 		return e
 	}
+	var locations location.Service
+	var mapConfig *location.MapConfig
+	var geocoder location.Geocoder
+	if c.Location != nil && c.Location.Enabled {
+		if store == nil {
+			return errors.New("location service requires the private state store")
+		}
+		locations = store
+		ak, akErr := c.Location.resolveBaiduAK()
+		if akErr != nil {
+			return akErr
+		}
+		mapConfig = c.Location.mapConfig(ak)
+		if ak != "" {
+			timeout := time.Duration(c.Location.TimeoutSecond) * time.Second
+			geocoder = location.NewBaiduGeocoder(ak, timeout)
+		}
+	}
 	var watcher *watch.Runner
 	if c.Watch != nil && c.Watch.Enabled {
-		watcher, e = newWatcher(*c.Watch, c.StateDir, x, captures, "root", c.Answer)
+		watcher, e = newWatcher(*c.Watch, c.StateDir, x, captures, location.NewResolver(locations, "root"), "root", c.Answer)
 		if e != nil {
 			return e
 		}
@@ -398,7 +420,7 @@ func serve() error {
 	if e != nil {
 		return e
 	}
-	mux, tenantIDs, tenants, e := publicMux(c, x, a, pool, captures, rootExecute)
+	mux, tenantIDs, tenants, e := publicMux(c, x, a, pool, captures, locations, rootExecute)
 	if e != nil {
 		return e
 	}
@@ -438,6 +460,9 @@ func serve() error {
 			return map[string]any{"egress": pool.Status(), "tenants": tenantIDs}
 		},
 		Captures: captureList,
+		Location: locations,
+		Map:      mapConfig,
+		Geocoder: geocoder,
 	})
 	if err != nil {
 		return err

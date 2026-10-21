@@ -1,7 +1,7 @@
 // Package statestore provides the embedded SQLite persistence layer used for
-// non-authoritative runtime state (egress proxy health). OAuth state and
-// upstream sessions remain in their dedicated sealed stores and are not
-// migrated here.
+// non-authoritative runtime state: egress health, sanitized activity capture
+// and private location presets. OAuth state and upstream sessions remain in
+// their dedicated sealed stores and are not migrated here.
 package statestore
 
 import (
@@ -116,6 +116,31 @@ CREATE TABLE IF NOT EXISTS proxy_assignments (
   updated_at  INTEGER NOT NULL
 );`
 
+const schemaV4 = `
+CREATE TABLE IF NOT EXISTS location_presets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  address TEXT NOT NULL DEFAULT '',
+  latitude REAL NOT NULL,
+  longitude REAL NOT NULL,
+  coordinate_system TEXT NOT NULL DEFAULT 'bd09',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS location_presets_account_idx ON location_presets(account_key, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS location_bindings (
+  account_key TEXT NOT NULL,
+  course_id TEXT NOT NULL,
+  class_id TEXT NOT NULL,
+  schedule_key TEXT NOT NULL DEFAULT '',
+  preset_id INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (account_key, course_id, class_id, schedule_key),
+  FOREIGN KEY (preset_id) REFERENCES location_presets(id) ON DELETE CASCADE
+);`
+
 func (s *Store) migrate() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -128,8 +153,8 @@ func (s *Store) migrate() error {
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 3 {
-		return fmt.Errorf("state schema version %d newer than supported 3", version)
+	if version > 4 {
+		return fmt.Errorf("state schema version %d newer than supported 4", version)
 	}
 	if version == 0 {
 		if _, err := tx.ExecContext(ctx, schemaV1); err != nil {
@@ -143,6 +168,11 @@ func (s *Store) migrate() error {
 	}
 	if version < 3 {
 		if _, err := tx.ExecContext(ctx, schemaV3); err != nil {
+			return err
+		}
+	}
+	if version < 4 {
+		if _, err := tx.ExecContext(ctx, schemaV4); err != nil {
 			return err
 		}
 	}
@@ -160,8 +190,11 @@ func (s *Store) migrate() error {
 	if err := validateProxyAssignmentTable(ctx, tx); err != nil {
 		return err
 	}
-	if version < 3 {
-		if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 3"); err != nil {
+	if err := validateLocationTables(ctx, tx); err != nil {
+		return err
+	}
+	if version < 4 {
+		if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 4"); err != nil {
 			return err
 		}
 	}
@@ -180,6 +213,23 @@ func validateActivityCaptureTable(ctx context.Context, tx *sql.Tx) error {
 
 func validateProxyAssignmentTable(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, "SELECT account_key, proxy_key, updated_at FROM proxy_assignments LIMIT 0")
+	if err != nil {
+		return err
+	}
+	return rows.Close()
+}
+
+func validateLocationTables(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, account_key, label, address, latitude, longitude, coordinate_system, created_at, updated_at
+		FROM location_presets LIMIT 0`)
+	if err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	rows, err = tx.QueryContext(ctx, `SELECT account_key, course_id, class_id, schedule_key, preset_id, updated_at
+		FROM location_bindings LIMIT 0`)
 	if err != nil {
 		return err
 	}

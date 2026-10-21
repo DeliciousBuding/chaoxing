@@ -197,8 +197,14 @@ func TestWebUIServesEmbeddedBundleWithCSP(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	csp := w.Header().Get("Content-Security-Policy")
-	if csp == "" || w.Header().Get("X-Frame-Options") != "DENY" || strings.Contains(csp, "unsafe-inline") {
+	if csp == "" || w.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatal("security headers missing")
+	}
+	if scriptSrc := regexp.MustCompile(`script-src ([^;]+)`).FindStringSubmatch(csp); scriptSrc == nil || strings.Contains(scriptSrc[1], "unsafe-inline") {
+		t.Fatal("script-src must not allow unsafe-inline")
+	}
+	if !strings.Contains(csp, "style-src 'self' 'unsafe-inline'") {
+		t.Fatal("Baidu map style-src policy missing")
 	}
 	if w.Header().Get("Cross-Origin-Opener-Policy") != "same-origin" {
 		t.Fatal("COOP header missing")

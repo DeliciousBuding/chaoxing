@@ -13,6 +13,33 @@ export interface AccountInfo {
   accounts: Array<{ id: string; name: string }>;
 }
 
+export interface LocationPreset {
+  id?: number;
+  label: string;
+  address?: string;
+  latitude: number;
+  longitude: number;
+  coordinate_system?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface LocationBinding {
+  course_id: string;
+  class_id: string;
+  schedule_key?: string;
+  preset_id: number;
+  updated_at?: string;
+}
+
+export interface MapConfig {
+  enabled: boolean;
+  ak?: string;
+  center_latitude?: number;
+  center_longitude?: number;
+  zoom?: number;
+}
+
 export interface ToolDefinition {
   id: string;
   name: string;
@@ -87,6 +114,30 @@ export const api = {
     if (options.activityKey) query.set("activity_key", options.activityKey);
     return request<{ items: JsonObject[] }>(`/api/captures?${query.toString()}`);
   },
+  locations: () => request<{ items: LocationPreset[] }>("/api/locations"),
+  saveLocation: (preset: LocationPreset) => request<LocationPreset>(preset.id ? `/api/locations/${preset.id}` : "/api/locations", {
+    method: preset.id ? "PUT" : "POST",
+    body: JSON.stringify(preset)
+  }),
+  deleteLocation: (id: number) => request<{ deleted: boolean }>(`/api/locations/${id}`, { method: "DELETE" }),
+  locationBindings: () => request<{ items: LocationBinding[] }>("/api/location-bindings"),
+  saveLocationBinding: (binding: LocationBinding) => request<{ saved: boolean }>("/api/location-bindings", {
+    method: "POST",
+    body: JSON.stringify(binding)
+  }),
+  deleteLocationBinding: (binding: LocationBinding) => request<{ deleted: boolean }>("/api/location-bindings", {
+    method: "DELETE",
+    body: JSON.stringify(binding)
+  }),
+  mapConfig: () => request<MapConfig>("/api/map/config"),
+  geocode: (address: string) => request<LocationPreset>("/api/map/geocode", {
+    method: "POST",
+    body: JSON.stringify({ address })
+  }),
+  reverseGeocode: (latitude: number, longitude: number) => request<{ address: string }>("/api/map/reverse-geocode", {
+    method: "POST",
+    body: JSON.stringify({ latitude, longitude })
+  }),
   tools: () => request<{ items: ToolDefinition[] }>("/api/tools"),
   call: (tool: string, args: JsonObject = {}) => request<{ ok: boolean; data: JsonObject }>("/api/tools/call", {
     method: "POST",

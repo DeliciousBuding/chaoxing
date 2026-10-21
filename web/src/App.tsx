@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Shield,
   Sparkles,
+  MapPin,
   Wrench
 } from "lucide-react";
 import { api, type AccountInfo, type SessionInfo, type ToolDefinition } from "./lib/api";
@@ -18,6 +19,7 @@ import { Button } from "./components/ui/button";
 import { Select } from "./components/ui/select";
 import { ErrorBanner } from "./components/common";
 import { Login } from "./pages/Login";
+import { Locations } from "./pages/Locations";
 import { Dashboard } from "./pages/Dashboard";
 import { Courses } from "./pages/Courses";
 import { Assignments } from "./pages/Assignments";
@@ -41,6 +43,7 @@ const pages = [
   { id: "exams", title: "考试", icon: ClipboardList },
   { id: "captures", title: "捕获", icon: Sparkles },
   { id: "tools", title: "工具面板", icon: Wrench },
+  { id: "locations", title: "位置", icon: MapPin },
   { id: "settings", title: "安全与配置", icon: Shield }
 ] as const;
 
@@ -189,6 +192,7 @@ export default function App() {
             {page === "notices" && <Notices />}
             {page === "exams" && <Exams />}
             {page === "captures" && <Captures />}
+            {page === "locations" && <Locations />}
             {page === "tools" && <Tools tools={tools} />}
             {page === "settings" && <Settings account={account} session={session} />}
           </div>

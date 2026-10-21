@@ -17,6 +17,7 @@ import (
 
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
 	"github.com/DeliciousBuding/chaoxing/internal/classroomagent"
+	"github.com/DeliciousBuding/chaoxing/internal/location"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/persist"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
@@ -36,11 +37,7 @@ type Schedule struct {
 	End   string   `json:"end"`
 }
 
-type Location struct {
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
-	Address   string  `json:"address,omitempty"`
-}
+type Location = location.Location
 
 // SignCode holds an operator-provided password or gesture code. It stays in
 // private configuration and is never copied into watch state or notifications.
@@ -69,6 +66,7 @@ type Config struct {
 	CaptureRetention      time.Duration
 	CaptureActivityPages  bool
 	CaptureStore          capture.Store
+	LocationResolver      *location.Resolver
 	ActivityPageSource    ActivityPageSource
 }
 
@@ -530,7 +528,23 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 		return false
 	}
 	req := upstream.SignRequest{CourseID: item.CourseID, ClassID: item.ClassID, ActivityID: item.ID}
-	if class.Location != nil {
+	if r.cfg.LocationResolver != nil {
+		loc, resolveErr := r.cfg.LocationResolver.Resolve(ctx, item.CourseID, item.ClassID, activeScheduleKey(r.now(), class))
+		if resolveErr != nil {
+			now := r.now()
+			next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: "failed", Code: "LOCATION_RESOLVE_FAILED"}
+			r.state[key(item)] = next
+			if sendErr := r.sender.Send(ctx, notify.Message{Title: "🚨 学习通位置解析失败", Body: formatFailureBody(item, "LOCATION_RESOLVE_FAILED"), Priority: 8}); sendErr != nil {
+				log.Printf("activity watch: notify failed: %v", sendErr)
+			}
+			return true
+		}
+		if loc != nil {
+			lat, lng := loc.Latitude, loc.Longitude
+			req.Latitude, req.Longitude, req.Address = &lat, &lng, loc.Address
+		}
+	}
+	if class.Location != nil && req.Latitude == nil {
 		lat, lng := class.Location.Latitude, class.Location.Longitude
 		req.Latitude, req.Longitude, req.Address = &lat, &lng, class.Location.Address
 	}
@@ -571,6 +585,24 @@ func autoSignType(item upstream.Activity, class Class) bool {
 	default:
 		return false
 	}
+}
+
+func activeScheduleKey(t time.Time, class Class) string {
+	local := t.In(shanghai)
+	for _, schedule := range class.Schedule {
+		if !scheduleDayActive(local, schedule.Days) {
+			continue
+		}
+		start, startErr := minuteOfDay(schedule.Start)
+		end, endErr := minuteOfDay(schedule.End)
+		if startErr != nil || endErr != nil {
+			continue
+		}
+		if start == end || (local.Hour()*60+local.Minute() >= int(start) && local.Hour()*60+local.Minute() <= int(end)) {
+			return strings.Join(schedule.Days, ",") + "-" + schedule.Start + "-" + schedule.End
+		}
+	}
+	return ""
 }
 
 func classActive(t time.Time, class Class, lead time.Duration) bool {

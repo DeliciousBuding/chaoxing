@@ -24,6 +24,7 @@ import (
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
+	"github.com/DeliciousBuding/chaoxing/internal/location"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
@@ -68,6 +69,9 @@ type Config struct {
 	Execute           Execute
 	Status            Status
 	Captures          CaptureList
+	Location          location.Service
+	Map               *location.MapConfig
+	Geocoder          location.Geocoder
 }
 
 type webSession struct {
@@ -156,6 +160,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/captures", s.bounded(s.authenticated(s.captures)))
 	mux.Handle("GET /api/tools", s.bounded(s.authenticated(s.tools)))
 	mux.Handle("POST /api/tools/call", s.bounded(s.authenticated(s.call)))
+	s.registerLocationRoutes(mux)
 }
 
 func (s *Server) bounded(next http.HandlerFunc) http.Handler {
@@ -525,7 +530,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://api.map.baidu.com https://mapopen.baidu.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://map.baidu.com https://*.bdimg.com https://*.bdstatic.com; font-src 'self'; connect-src 'self' https://api.map.baidu.com https://mapopen.baidu.com; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")

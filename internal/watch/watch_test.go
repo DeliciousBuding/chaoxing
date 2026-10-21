@@ -11,6 +11,7 @@ import (
 
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
 	"github.com/DeliciousBuding/chaoxing/internal/classroomagent"
+	"github.com/DeliciousBuding/chaoxing/internal/location"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
@@ -555,5 +556,82 @@ func TestWatchClassroomAgentClaimsWhenAllowed(t *testing.T) {
 	}
 	if len(snd.sent) != 1 || snd.sent[0].Title != "✅ 学习通自动抢答成功" {
 		t.Fatalf("%+v", snd.sent)
+	}
+}
+
+type fakeLocationService struct {
+	account  string
+	bindings map[string]location.Location
+}
+
+func (f *fakeLocationService) Resolve(_ context.Context, account, courseID, classID, scheduleKey string) (*location.Location, error) {
+	if account != f.account {
+		return nil, nil
+	}
+	key := courseID + "\x00" + classID + "\x00" + scheduleKey
+	if item, ok := f.bindings[key]; ok {
+		return &item, nil
+	}
+	item, ok := f.bindings[courseID+"\x00"+classID+"\x00"]
+	if !ok {
+		return nil, nil
+	}
+	return &item, nil
+}
+
+func (f *fakeLocationService) ListPresets(context.Context, string) ([]location.Preset, error) {
+	return nil, nil
+}
+func (f *fakeLocationService) SavePreset(context.Context, string, location.Preset) (location.Preset, error) {
+	return location.Preset{}, nil
+}
+func (f *fakeLocationService) DeletePreset(context.Context, string, int64) error { return nil }
+func (f *fakeLocationService) ListBindings(context.Context, string) ([]location.Binding, error) {
+	return nil, nil
+}
+func (f *fakeLocationService) SaveBinding(context.Context, string, location.Binding) error {
+	return nil
+}
+func (f *fakeLocationService) DeleteBinding(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func TestWatchResolverOverridesPresetLocation(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
+	snd := &fakeSender{}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	class := Class{
+		CourseID: "c", ClassID: "k", Schedule: []Schedule{{Days: []string{"Tue"}, Start: "08:00", End: "09:40"}},
+		Location: &Location{Latitude: 31.1, Longitude: 121.2, Address: "legacy config"},
+	}
+	service := &fakeLocationService{account: "root", bindings: map[string]location.Location{
+		"c\x00k\x00Tue-08:00-09:40": {Latitude: 39.90420, Longitude: 116.40740, Address: "Synthetic building"},
+	}}
+	r, err := New(Config{
+		Interval: time.Minute, AutoSign: true, Classes: []Class{class}, StatePath: t.TempDir() + "/state.json",
+		LocationResolver: location.NewResolver(service, "root"),
+	}, src, snd, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai) }
+	r.Tick(context.Background())
+	if len(signer.requests) != 1 {
+		t.Fatalf("requests=%d", len(signer.requests))
+	}
+	req := signer.requests[0]
+	if req.Latitude == nil || *req.Latitude != 39.90420 || req.Longitude == nil || *req.Longitude != 116.40740 || req.Address != "Synthetic building" {
+		t.Fatalf("%+v", req)
+	}
+}
+
+func TestActiveScheduleKey(t *testing.T) {
+	class := Class{Schedule: []Schedule{{Days: []string{"Tue", "Thu"}, Start: "08:00", End: "09:40"}}}
+	got := activeScheduleKey(time.Date(2026, 10, 20, 8, 30, 0, 0, shanghai), class)
+	if got != "Tue,Thu-08:00-09:40" {
+		t.Fatal(got)
+	}
+	if activeScheduleKey(time.Date(2026, 10, 20, 10, 0, 0, 0, shanghai), class) != "" {
+		t.Fatal("returned a key outside the schedule")
 	}
 }

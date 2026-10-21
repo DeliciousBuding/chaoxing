@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/answer"
 	"github.com/DeliciousBuding/chaoxing/internal/captchasolver"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
+	"github.com/DeliciousBuding/chaoxing/internal/location"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
@@ -38,6 +40,7 @@ type config struct {
 	Watch             *watchConfig         `json:"watch,omitempty"`
 	CaptchaSolver     *captchaSolverConfig `json:"captcha_solver,omitempty"`
 	Answer            *answerConfig        `json:"answer,omitempty"`
+	Location          *locationConfig      `json:"location,omitempty"`
 	Device            *deviceConfig        `json:"device,omitempty"`
 	RequestPacing     *requestPacingConfig `json:"request_pacing,omitempty"`
 	GroupActivities   bool                 `json:"group_activities,omitempty"`
@@ -135,6 +138,90 @@ type captchaSolverConfig struct {
 	UserKeyFile    string `json:"user_key_file,omitempty"`
 	UserKeyEnv     string `json:"user_key_env,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+type locationConfig struct {
+	Enabled       bool    `json:"enabled"`
+	BaiduAK       string  `json:"baidu_ak,omitempty"`
+	BaiduAKFile   string  `json:"baidu_ak_file,omitempty"`
+	BaiduAKEnv    string  `json:"baidu_ak_env,omitempty"`
+	CenterLat     float64 `json:"center_latitude,omitempty"`
+	CenterLng     float64 `json:"center_longitude,omitempty"`
+	Zoom          int     `json:"zoom,omitempty"`
+	TimeoutSecond int     `json:"timeout_seconds,omitempty"`
+}
+
+func (c *locationConfig) resolveBaiduAK() (string, error) {
+	if c == nil {
+		return "", nil
+	}
+	values := []string{c.BaiduAK, c.BaiduAKFile, c.BaiduAKEnv}
+	count := 0
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			count++
+		}
+	}
+	if count > 1 {
+		return "", errors.New("location baidu_ak requires at most one source")
+	}
+	switch {
+	case strings.TrimSpace(c.BaiduAK) != "":
+		return strings.TrimSpace(c.BaiduAK), nil
+	case strings.TrimSpace(c.BaiduAKFile) != "":
+		b, err := os.ReadFile(c.BaiduAKFile)
+		if err != nil {
+			return "", errors.New("location baidu_ak_file is unavailable")
+		}
+		ak := strings.TrimSpace(string(b))
+		if ak == "" || len(ak) > 128 {
+			return "", errors.New("location baidu_ak_file is invalid")
+		}
+		return ak, nil
+	case strings.TrimSpace(c.BaiduAKEnv) != "":
+		ak := strings.TrimSpace(os.Getenv(c.BaiduAKEnv))
+		if ak == "" {
+			return "", errors.New("location baidu_ak_env is empty")
+		}
+		return ak, nil
+	default:
+		return "", nil
+	}
+}
+
+func (c *locationConfig) validate() error {
+	if c == nil || !c.Enabled {
+		return nil
+	}
+	if c.CenterLat != 0 && (math.IsNaN(c.CenterLat) || c.CenterLat < -90 || c.CenterLat > 90) {
+		return errors.New("location center_latitude is outside range")
+	}
+	if c.CenterLng != 0 && (math.IsNaN(c.CenterLng) || c.CenterLng < -180 || c.CenterLng > 180) {
+		return errors.New("location center_longitude is outside range")
+	}
+	if c.Zoom < 0 || c.Zoom > 21 {
+		return errors.New("location zoom must be between 0 and 21")
+	}
+	if c.TimeoutSecond < 0 || c.TimeoutSecond > 30 {
+		return errors.New("location timeout_seconds must be between 0 and 30")
+	}
+	if strings.TrimSpace(c.BaiduAK) != "" && len(strings.TrimSpace(c.BaiduAK)) > 128 {
+		return errors.New("location baidu_ak is invalid")
+	}
+	return nil
+}
+
+func (c *locationConfig) mapConfig(ak string) *location.MapConfig {
+	if c == nil || !c.Enabled {
+		return &location.MapConfig{Enabled: false}
+	}
+	zoom := c.Zoom
+	if zoom <= 0 {
+		zoom = 17
+	}
+	return &location.MapConfig{
+		Enabled: ak != "", AK: ak, CenterLat: c.CenterLat, CenterLng: c.CenterLng, Zoom: zoom,
+	}
 }
 
 type answerConfig struct {
@@ -338,6 +425,9 @@ func load() (config, error) {
 	e = json.Unmarshal(b, &c)
 	if e != nil {
 		return c, errors.New("configuration invalid")
+	}
+	if e = c.Location.validate(); e != nil {
+		return c, e
 	}
 	return c, nil
 }
