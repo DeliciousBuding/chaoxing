@@ -193,7 +193,7 @@ export default function App() {
   }
 
   let content: React.ReactNode;
-  if (effectivePage === "dashboard") content = <Dashboard tools={tools} />;
+  if (effectivePage === "dashboard") content = <Dashboard />;
   else if (effectivePage === "courses") content = <Courses />;
   else if (effectivePage === "todo") content = <Assignments />;
   else if (effectivePage === "study") content = <StudyResources />;

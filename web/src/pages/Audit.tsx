@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, RefreshCw, ScrollText } from "lucide-react";
 import { api, type AuditEvent, type Role } from "../lib/api";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
@@ -79,8 +79,7 @@ export function Audit() {
     <div className="space-y-5">
       <PageHeader
         title="控制面审计"
-        description="登录、成员、权限、账号切换和工具调用轨迹；不保存密码、token、题目正文或页面原文。"
-        meta={<><span>180 天保留</span><span>·</span><span>类别与操作者过滤</span><span>·</span><span>拒绝路径留痕</span></>}
+        meta={<span>保留 180 天</span>}
         actions={
         <form className="flex flex-wrap items-end gap-2" onSubmit={applyFilters}>
           <div className="space-y-1">
@@ -102,11 +101,10 @@ export function Audit() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2"><ScrollText className="h-4 w-4 text-primary" /> 最近事件</CardTitle>
-          <CardDescription>共 {total} 条；单页最多 {limit} 条。签到坐标与出口 IP 请查看对应账号的签到审计。</CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? <Loading label="正在读取审计日志" /> : items.length === 0 ? (
-            <EmptyState title="没有匹配的审计事件" description="调整类别或操作者过滤条件后重试。" />
+            <EmptyState title="没有匹配的审计事件" />
           ) : (
             <Table label="控制面审计" className="min-w-[760px]">
                 <TableHeader>
@@ -153,7 +151,7 @@ export function Audit() {
             </Table>
           )}
           <div className="mt-4 flex items-center justify-between gap-2">
-            <div className="text-xs text-muted-foreground">偏移 {offset} / {total}</div>
+            <div className="text-xs text-muted-foreground">第 {Math.floor(offset / limit) + 1} 页</div>
             <div className="flex gap-2">
               <Button size="sm" variant="outline" disabled={loading || offset === 0} onClick={() => void load(Math.max(0, offset - limit), applied)}>
                 <ChevronLeft className="h-4 w-4" /> 上一页

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { api } from "../lib/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { EmptyState, ErrorBanner, JsonBlock, Loading, PageHeader } from "../components/common";
@@ -40,15 +40,14 @@ export function Captures() {
     <div className="space-y-5">
       <PageHeader
         title="生产捕获"
-        description="只保存脱敏结构，用于逆向随堂练习提交协议；不保留 hidden value、cookie 或原始 HTML。"
-        meta={<><Badge variant="secondary">{rows.length} 条</Badge><span>默认保留 7 天</span></>}
+        meta={<span>保留 7 天</span>}
         actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新捕获</Button>}
       />
       <ErrorBanner error={error} />
       <Card>
-        <CardHeader><CardTitle>活动捕获</CardTitle><CardDescription>默认保留 7 天；page evidence 不包含 hidden value、cookie 或原始 HTML。</CardDescription></CardHeader>
+        <CardHeader><CardTitle>活动捕获</CardTitle></CardHeader>
         <CardContent>
-          {busy && rows.length === 0 ? <Loading /> : rows.length === 0 ? <EmptyState title="暂无捕获" description="开启 watch.capture 后等待课堂事件。" /> : (
+          {busy && rows.length === 0 ? <Loading /> : rows.length === 0 ? <EmptyState title="暂无捕获" /> : (
             <>
             <div className="space-y-3 lg:hidden">
               {rows.map((row, index) => (
@@ -94,7 +93,7 @@ export function Captures() {
       </Card>
       {selected && (
         <Card>
-          <CardHeader><CardTitle>捕获详情</CardTitle><CardDescription>activity_json 是脱敏投影，可直接用于协议分析。</CardDescription></CardHeader>
+          <CardHeader><CardTitle>捕获详情</CardTitle></CardHeader>
           <CardContent><JsonBlock value={selected} /></CardContent>
         </Card>
       )}

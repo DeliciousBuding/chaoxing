@@ -2,7 +2,7 @@ import * as React from "react";
 import { api, type LocationBinding, type LocationPreset, type MapConfig, type WatchSchedule } from "../lib/api";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
@@ -346,8 +346,6 @@ export function Locations() {
     <div className="space-y-5">
       <PageHeader
         title="位置预设"
-        description="位置预设只保存在生产 SQLite；百度地图在隔离沙箱 iframe 中加载，不能读取登录 Cookie 或 CSRF token。"
-        meta={<><Badge variant="secondary">{presets.length} 个位置</Badge><Badge variant="secondary">{bindings.length} 个课程/时段绑定</Badge><span>坐标不出浏览器凭据范围</span></>}
         actions={<Button size="sm" variant="outline" onClick={() => void reload()} disabled={busy}>刷新</Button>}
       />
       <ErrorBanner error={error} />
@@ -356,7 +354,6 @@ export function Locations() {
           <Card className="min-w-0">
             <CardHeader>
               <CardTitle>地图选点</CardTitle>
-              <CardDescription>地图点击与拖拽使用 BD-09；手输支持 BD-09 / GCJ-02 / WGS-84，保存时统一归一化为 BD-09。</CardDescription>
               <Badge variant={editingId ? "warning" : "secondary"}>
                 {editingId ? `编辑中：${form.label || "未命名位置"}` : "新建位置"}
               </Badge>
@@ -416,7 +413,7 @@ export function Locations() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <EmptyState title="地图未启用" description="在私有配置里启用 location 并填入百度 AK 后可使用地图选点。" />
+                  <EmptyState title="地图未启用" />
                   <div className="grid grid-cols-2 gap-3">
                     <CoordinateField
                       id="location-latitude"
@@ -458,7 +455,6 @@ export function Locations() {
           <Card className="min-w-0">
             <CardHeader>
               <CardTitle>绑定课程</CardTitle>
-              <CardDescription>选中的位置会用于该课程的定位签到；可选时段绑定优先于课程级绑定。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="space-y-2">
@@ -493,9 +489,6 @@ export function Locations() {
                 ) : (
                   <Input id="location-bind-schedule" value={scheduleKey} onChange={(event) => setScheduleKey(event.target.value)} placeholder="例如 arch-tue-guidance" />
                 )}
-                <div className="text-xs text-muted-foreground">
-                  每个时段可以绑定不同位置。例如体系结构周二普通课用复临舍，第 7/13 周指导课独立绑定中楼 303。
-                </div>
                 {selectedSchedule && (
                   <div className="rounded-control border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
                     稳定 key：<span className="font-mono text-foreground">{selectedSchedule.key}</span>
@@ -516,7 +509,6 @@ export function Locations() {
                 <CardTitle>位置预设</CardTitle>
                 <Button size="sm" variant="outline" onClick={startNewPreset} disabled={busy}>新建位置</Button>
               </div>
-              <CardDescription>保存在生产数据库，不进入仓库。</CardDescription>
             </CardHeader>
             <CardContent>
               {busy && presets.length === 0 ? <Loading /> : presets.length === 0 ? <EmptyState title="暂无位置" /> : (
@@ -549,7 +541,6 @@ export function Locations() {
           <Card className="min-w-0">
             <CardHeader>
               <CardTitle>课程绑定</CardTitle>
-              <CardDescription>自动签到时按课程解析位置。</CardDescription>
             </CardHeader>
             <CardContent>
               {busy && bindingRows.length === 0 ? <Loading /> : bindingRows.length === 0 ? <EmptyState title="暂无绑定" /> : (

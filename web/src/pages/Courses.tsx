@@ -3,9 +3,8 @@ import { Search } from "lucide-react";
 import { api, type Course } from "../lib/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Badge } from "../components/ui/badge";
 import { CourseCard } from "../components/course-card";
-import { EmptyState, ErrorBanner, MetaSummary, PageHeader } from "../components/common";
+import { EmptyState, ErrorBanner, PageHeader } from "../components/common";
 import { cn } from "../lib/utils";
 
 type Filter = "all" | "active" | "retired";
@@ -17,7 +16,6 @@ const filters: Array<{ id: Filter; label: string }> = [
 ];
 
 export function Courses() {
-  const [data, setData] = React.useState<any>(null);
   const [courses, setCourses] = React.useState<Course[]>([]);
   const [query, setQuery] = React.useState("");
   const [filter, setFilter] = React.useState<Filter>("all");
@@ -29,7 +27,6 @@ export function Courses() {
     setError("");
     try {
       const result = await api.call("list_courses");
-      setData(result.data);
       setCourses((result.data.result as Course[] | undefined) ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -63,14 +60,6 @@ export function Courses() {
     <div className="space-y-5">
       <PageHeader
         title="课程"
-        description="先看课程身份和封面，需要调用工具时再展开精确 ID。退课课程保留在原位置，不静默隐藏。"
-        meta={
-          <>
-            <span>{courses.length} 门课程上下文</span>
-            <span aria-hidden="true">·</span>
-            <span>账号范围由右上角切换</span>
-          </>
-        }
         actions={
           <Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>
             刷新
@@ -109,43 +98,26 @@ export function Courses() {
           ))}
         </div>
       </div>
-      {data?.meta && (
-        <div className="px-0.5">
-          <MetaSummary data={data} compact />
-        </div>
-      )}
-
       {busy && courses.length === 0 ? (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {[0, 1, 2, 3, 4, 5].map((item) => (
-            <div key={item} className="h-48 animate-pulse rounded-card border border-border bg-muted/35" />
+            <div key={item} className="h-[86px] animate-pulse rounded-card border border-border bg-muted/35 sm:h-48" />
           ))}
         </div>
       ) : visibleCourses.length === 0 ? (
         <EmptyState
           title={courses.length === 0 ? "没有课程数据" : "没有匹配的课程"}
-          description={courses.length === 0 ? "检查上游会话或账号上下文。" : "换一个关键词，或切回“全部”筛选。"}
         />
       ) : (
-        <>
-          <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
-            <span>显示 {visibleCourses.length} 门</span>
-            {filter !== "all" && (
-              <Badge variant="secondary">
-                {filters.find((item) => item.id === filter)?.label}
-              </Badge>
-            )}
-          </div>
-          <div className="grid min-w-0 grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-            {visibleCourses.map((course) => (
-              <CourseCard
-                key={`${course.course_id}:${course.class_id}`}
-                course={course}
-                showDetails
-              />
-            ))}
-          </div>
-        </>
+        <div className="grid min-w-0 grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {visibleCourses.map((course) => (
+            <CourseCard
+              key={`${course.course_id}:${course.class_id}`}
+              course={course}
+              showDetails
+            />
+          ))}
+        </div>
       )}
     </div>
   );

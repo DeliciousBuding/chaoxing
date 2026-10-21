@@ -1250,9 +1250,14 @@ func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
 		"avatar_available": view.AvatarAvailable,
 	}
 	if view.AvatarAvailable {
-		payload["avatar_url"] = "/api/media/avatar"
+		// The account query makes browser-private caches tenant-scoped. The
+		// server still derives the upstream account from the session; the
+		// value is validated below and never trusted as an identity selector.
+		payload["avatar_url"] = "/api/media/avatar?account=" + url.QueryEscape(account)
 	}
-	w.Header().Set("Cache-Control", "private, max-age=300")
+	// Profile contains a tenant-specific display name and a tenant-scoped
+	// media URL. Never let a browser reuse it across account switches.
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, payload)
 }
 
@@ -1260,6 +1265,10 @@ func (s *Server) avatar(w http.ResponseWriter, r *http.Request) {
 	account, ok := s.sessionAccount(r)
 	if !ok {
 		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	if requested := strings.TrimSpace(r.URL.Query().Get("account")); requested != "" && requested != account {
+		http.NotFound(w, r)
 		return
 	}
 	if s.cfg.Avatar == nil {
@@ -1276,6 +1285,10 @@ func (s *Server) courseCover(w http.ResponseWriter, r *http.Request) {
 	account, ok := s.sessionAccount(r)
 	if !ok {
 		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	if requested := strings.TrimSpace(r.URL.Query().Get("account")); requested != "" && requested != account {
+		http.NotFound(w, r)
 		return
 	}
 	courseID := strings.TrimSpace(r.URL.Query().Get("course_id"))
@@ -1383,6 +1396,15 @@ func (s *Server) call(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "UNAUTHENTICATED", "login required")
 		return
 	}
+	auth, _ := r.Context().Value(sessionContextKey{}).(authorizedSession)
+	account := session.account
+	if auth.session.account != "" {
+		if session.account != auth.session.account {
+			writeError(w, 409, "ACCOUNT_CHANGED", "account changed while the request was in flight")
+			return
+		}
+		account = auth.session.account
+	}
 	role := s.sessionRole(session)
 	for _, scope := range operation.RequiredScopes(definition) {
 		if !roleAllowsScope(role, scope) {
@@ -1392,18 +1414,18 @@ func (s *Server) call(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	accounts, allowed := s.accountsForSession(session)
-	if !allowed || !containsAccount(accounts, session.account) {
-		s.recordAudit(r, session, "security", "tool.denied", definition.Name, session.account, false, map[string]any{"reason": "account_scope_denied"})
+	if !allowed || !containsAccount(accounts, account) {
+		s.recordAudit(r, session, "security", "tool.denied", definition.Name, account, false, map[string]any{"reason": "account_scope_denied"})
 		writeError(w, 403, "ACCOUNT_SCOPE_DENIED", "the selected account is not assigned to this user")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	started := time.Now()
-	value, err := s.cfg.Execute(ctx, session.account, req.Tool, req.Arguments)
+	value, err := s.cfg.Execute(ctx, account, req.Tool, req.Arguments)
 	if err != nil {
 		fault := upstream.SafeFault(err)
-		s.recordAudit(r, session, "tool", "tool.call", definition.Name, session.account, false, map[string]any{
+		s.recordAudit(r, session, "tool", "tool.call", definition.Name, account, false, map[string]any{
 			"tool": definition.Name, "error": fault.Code, "duration_ms": time.Since(started).Milliseconds(),
 		})
 		status := 502
@@ -1416,7 +1438,7 @@ func (s *Server) call(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, fault.Code, fault.Message)
 		return
 	}
-	s.recordAudit(r, session, "tool", "tool.call", definition.Name, session.account, true, map[string]any{
+	s.recordAudit(r, session, "tool", "tool.call", definition.Name, account, true, map[string]any{
 		"tool": definition.Name, "duration_ms": time.Since(started).Milliseconds(),
 	})
 	writeJSON(w, 200, map[string]any{"ok": true, "data": value})

@@ -212,8 +212,11 @@ export const api = {
   }),
   status: () => request<JsonObject>("/api/status"),
   profile: () => request<Profile>("/api/profile"),
-  courseCoverUrl: (courseID: string, classID: string) =>
-    `/api/media/course-cover?${new URLSearchParams({ course_id: courseID, class_id: classID }).toString()}`,
+  courseCoverUrl: (courseID: string, classID: string, account?: string) => {
+    const query = new URLSearchParams({ course_id: courseID, class_id: classID });
+    if (account) query.set("account", account);
+    return `/api/media/course-cover?${query.toString()}`;
+  },
   captures: (limit = 100, options: { includePage?: boolean; account?: string; activityKey?: string } = {}) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (options.includePage) query.set("include_page", "true");

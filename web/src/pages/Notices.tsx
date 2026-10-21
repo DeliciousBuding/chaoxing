@@ -1,6 +1,6 @@
 import * as React from "react";
 import { api } from "../lib/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { EmptyState, ErrorBanner, Loading, MetaSummary, PageHeader } from "../components/common";
@@ -26,14 +26,12 @@ export function Notices() {
     <div className="space-y-5">
       <PageHeader
         title="课程通知"
-        description="通知正文按不可信数据处理，不会自动转成待办，也不会触发写入。"
-        meta={<><Badge variant="secondary">{rows.length} 条</Badge><span>只读投影</span></>}
         actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新</Button>}
       />
       <ErrorBanner error={error} />
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
-          <div><CardTitle>通知流</CardTitle><CardDescription>按上游返回顺序展示，未读取的原始 HTML 不会进入浏览器。</CardDescription></div>
+          <CardTitle>通知流</CardTitle>
           {data && <MetaSummary data={data} />}
         </CardHeader>
         <CardContent>

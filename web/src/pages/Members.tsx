@@ -7,10 +7,10 @@ import {
   type Role,
   type SessionInfo
 } from "../lib/api";
-import { assignableRoles, roleDescriptions, roleLabels } from "../lib/roles";
+import { assignableRoles, roleLabels } from "../lib/roles";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
@@ -199,13 +199,7 @@ export function Members({ session }: { session: SessionInfo }) {
     <div className="space-y-5">
       <PageHeader
         title="平台成员"
-        description="角色决定能力，账号授权决定可见范围；上游凭据仍由各 tenant 独立保管。"
-        meta={
-          <>
-            <span>四档角色</span><span>·</span><span>显式账号授权</span><span>·</span><span>认证版本即时失效</span>
-            {!actorRole && <Badge variant="warning">权限未加载，编辑已锁定</Badge>}
-          </>
-        }
+        meta={!actorRole ? <Badge variant="warning">权限未加载</Badge> : undefined}
         actions={
           <>
           <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading || busy}>
@@ -229,11 +223,10 @@ export function Members({ session }: { session: SessionInfo }) {
         <Card className="min-w-0">
           <CardHeader>
             <CardTitle>成员列表</CardTitle>
-            <CardDescription>禁用成员会立即递增认证版本，使其现有会话失效。不会删除历史审计。</CardDescription>
           </CardHeader>
           <CardContent>
             {loading ? <Loading label="正在读取成员" /> : users.length === 0 ? (
-              <EmptyState title="还没有平台成员" description="创建第一个操作员或只读成员，并为其分配账号。" />
+              <EmptyState title="还没有平台成员" />
             ) : (
               <>
               <div className="space-y-2 lg:hidden">
@@ -350,7 +343,6 @@ export function Members({ session }: { session: SessionInfo }) {
           <Card ref={formCardRef} className="h-fit min-w-0 scroll-mt-24 sm:scroll-mt-16">
             <CardHeader>
               <CardTitle ref={formTitleRef} tabIndex={-1} className="focus:outline-none">{creating ? "新建成员" : `编辑 ${selected?.username}`}</CardTitle>
-              <CardDescription>{roleDescriptions[form.role]}</CardDescription>
             </CardHeader>
             <CardContent>
               <form className="space-y-4" onSubmit={submit}>

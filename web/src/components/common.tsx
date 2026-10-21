@@ -159,15 +159,25 @@ export function PageSkeleton() {
 export function MetaSummary({ data, compact = false }: { data: any; compact?: boolean }) {
   const meta = data?.meta;
   if (!meta) return null;
+  if (meta.status === "complete") return null;
   return (
-    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-      <Badge variant={meta.status === "complete" ? "success" : "warning"}>
-        {meta.status === "complete" ? <CheckCircle2 className="mr-1 h-3 w-3" /> : null}
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+      <span className={cn("inline-flex items-center gap-1", meta.status === "complete" ? "text-success" : "text-warning")}>
+        {meta.status === "complete" && <CheckCircle2 className="h-3 w-3" />}
         {meta.status === "complete" ? "完整覆盖" : "部分覆盖"}
-      </Badge>
-      {!compact && <span>范围：{meta.coverage?.scope ?? "unknown"}</span>}
-      {meta.freshness?.fetched_at && <span>抓取：{formatBeijing(meta.freshness.fetched_at)}（北京时间）</span>}
-      {!compact && meta.trace_id && <span>Trace：{meta.trace_id}</span>}
+      </span>
+      {meta.freshness?.fetched_at && (
+        <>
+          <span aria-hidden="true">·</span>
+          <span>{formatBeijing(meta.freshness.fetched_at)}</span>
+        </>
+      )}
+      {!compact && meta.coverage?.scope && (
+        <>
+          <span aria-hidden="true">·</span>
+          <span>范围 {meta.coverage.scope}</span>
+        </>
+      )}
     </div>
   );
 }

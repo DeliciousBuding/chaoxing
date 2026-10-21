@@ -192,6 +192,49 @@ func TestWebUILoginSessionAndToolCall(t *testing.T) {
 	}
 }
 
+func TestToolCallRejectsAccountChangedAfterAuthentication(t *testing.T) {
+	hash, err := access.HashPassword("correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	executed := 0
+	s, err := New(Config{
+		Version: "test", Issuer: "https://mcp.example.com", OwnerPasswordHash: hash,
+		Accounts: []Account{{ID: "tenant", Name: "tenant"}},
+		Execute: func(context.Context, string, string, map[string]any) (any, error) {
+			executed++
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	live := webSession{
+		account: "root", username: "owner", role: "owner",
+		accounts: []Account{{ID: "root", Name: "root"}, {ID: "tenant", Name: "tenant"}},
+	}
+	snapshot := live
+	s.mu.Lock()
+	s.sessions["session-account-race"] = live
+	live.account = "tenant"
+	s.sessions["session-account-race"] = live
+	s.mu.Unlock()
+
+	req := httptest.NewRequest("POST", "https://mcp.example.com/api/tools/call", strings.NewReader(`{"tool":"list_courses","arguments":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), sessionContextKey{}, authorizedSession{id: "session-account-race", session: snapshot}))
+	rec := httptest.NewRecorder()
+	s.call(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected account-changed conflict, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if executed != 0 {
+		t.Fatalf("tool executed after account changed")
+	}
+}
+
 func TestWebUIServesEmbeddedBundleWithCSP(t *testing.T) {
 	_, mux := newTestServer(t)
 	w := do(t, mux, "GET", "/", "")

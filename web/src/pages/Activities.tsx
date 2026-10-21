@@ -1,6 +1,6 @@
 import * as React from "react";
 import { api } from "../lib/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Input } from "../components/ui/input";
@@ -166,14 +166,12 @@ export function Activities({ tools }: { tools: any[] }) {
     <div className="space-y-5">
       <PageHeader
         title="课堂活动"
-        description="签到、测验、练习与作业入口统一进入同一条可观测链路；任何写操作都需要显式确认。"
-        meta={<><Badge variant="secondary">{rows.length} 个活动</Badge><span>不抢答</span><span>·</span><span>自动答题默认关闭</span></>}
         actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新活动</Button>}
       />
       <ErrorBanner error={error} />
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
-          <div><CardTitle>活动流</CardTitle><CardDescription>定位、二维码、拍照、人脸等特殊签到需要额外参数。</CardDescription></div>
+          <CardTitle>活动流</CardTitle>
           {data && <MetaSummary data={data} />}
         </CardHeader>
         <CardContent className="space-y-4">
@@ -272,7 +270,7 @@ export function Activities({ tools }: { tools: any[] }) {
       </Card>
       {detail && (
         <Card>
-          <CardHeader><CardTitle>活动详情 / 页面证据</CardTitle><CardDescription>仅展示脱敏结构，不包含 hidden value、cookie 或原始 HTML。</CardDescription></CardHeader>
+          <CardHeader><CardTitle>活动详情</CardTitle></CardHeader>
           <CardContent className="space-y-3"><MetaSummary data={detail} /><JsonBlock value={detail} /></CardContent>
         </Card>
       )}

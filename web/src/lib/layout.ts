@@ -24,10 +24,10 @@ export const pages = [
   { id: "activities", title: "课堂活动", icon: Activity, group: "study" },
   { id: "work", title: "作业答题", icon: Brain, group: "study", requirement: "work" as const },
   { id: "notices", title: "通知", icon: GraduationCap, group: "study" },
-  { id: "exams", title: "考试", icon: ClipboardList, group: "study" },
-  { id: "captures", title: "生产捕获", icon: Sparkles, group: "ops", requirement: "sensitive" as const },
+  { id: "exams", title: "考试", icon: ClipboardList, group: "study", hidden: true },
+  { id: "captures", title: "生产捕获", icon: Sparkles, group: "ops", requirement: "sensitive" as const, hidden: true },
   { id: "locations", title: "位置预设", icon: MapPin, group: "ops", requirement: "accounts" as const },
-  { id: "tools", title: "工具面板", icon: Wrench, group: "ops" },
+  { id: "tools", title: "工具面板", icon: Wrench, group: "ops", hidden: true },
   { id: "members", title: "成员与权限", icon: Users, group: "admin", requirement: "manage_users" as const },
   { id: "audit", title: "审计日志", icon: ScrollText, group: "admin", requirement: "view_audit" as const },
   { id: "settings", title: "安全与配置", icon: Shield, group: "system" }
@@ -50,6 +50,10 @@ export const pageGroups: Array<{ id: PageGroup; title: string }> = [
 
 export function pageMeta(id: PageId) {
   return pages.find((page) => page.id === id) ?? pages[0];
+}
+
+export function visiblePages() {
+  return pages.filter((page) => !("hidden" in page && page.hidden));
 }
 
 export function pageIcon(id: PageId): LucideIcon {

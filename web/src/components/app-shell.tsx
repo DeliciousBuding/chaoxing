@@ -8,7 +8,7 @@ import {
   RefreshCw,
   ShieldCheck
 } from "lucide-react";
-import { canAccessPage, pageGroups, pages, type PageId } from "../lib/layout";
+import { canAccessPage, pageGroups, pages, visiblePages, type PageId } from "../lib/layout";
 import { useUIStore, themeLabels, themes, type Theme } from "../lib/store";
 import { useMediaQuery, useReducedMotion } from "../lib/hooks";
 import type { AccountInfo, SessionInfo } from "../lib/api";
@@ -88,7 +88,7 @@ function Sidebar({ session }: { session: SessionInfo }) {
       <Divider />
       <nav aria-label="主导航" className="min-h-0 flex-1 space-y-3 overflow-y-auto px-2 py-3">
         {pageGroups.map((group) => {
-          const items = pages.filter(
+          const items = visiblePages().filter(
             (item) => item.group === group.id && canAccessPage(item.id as PageId, session.capabilities)
           );
           if (items.length === 0) return null;
@@ -221,12 +221,13 @@ function Header({
           <div className="hidden 2xl:block">
             <ThemeSelect />
           </div>
-          <div className="hidden sm:block">
+          <div className="min-w-0">
             <AccountSelect
               session={session}
               account={account}
               switchingAccount={switchingAccount}
               onSwitchAccount={onSwitchAccount}
+              className="w-[168px] sm:w-[156px]"
             />
           </div>
           <Button variant="ghost" size="icon" onClick={onRefresh} aria-label="刷新当前页面" title="刷新">
@@ -236,15 +237,6 @@ function Header({
             <LogOut className="h-3.5 w-3.5" />
           </Button>
         </div>
-      </div>
-      <div className="px-3 pb-2 sm:hidden">
-        <AccountSelect
-          session={session}
-          account={account}
-          switchingAccount={switchingAccount}
-          onSwitchAccount={onSwitchAccount}
-          className="w-full"
-        />
       </div>
     </header>
   );

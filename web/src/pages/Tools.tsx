@@ -77,8 +77,6 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
     <div className="space-y-5">
       <PageHeader
         title="工具面板"
-        description="所有工具均来自后端 allowlist；不提供任意 URL、文件路径或命令执行。"
-        meta={<><Badge variant="secondary">{tools.length} 个工具</Badge><Badge variant="secondary">{filtered.length} 个匹配</Badge></>}
         actions={selected ? <Badge>{selected.scope}</Badge> : undefined}
       />
       <ErrorBanner error={error} />
@@ -86,7 +84,6 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
       <Card className="h-fit">
         <CardHeader>
           <CardTitle>工具目录</CardTitle>
-          <CardDescription>按标题、名称和描述过滤。</CardDescription>
           <div className="relative pt-2">
             <Search className="absolute left-3 top-5 h-4 w-4 text-muted-foreground" />
             <Input aria-label="搜索工具" className="pl-9" placeholder="搜索工具" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -166,7 +163,7 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
         )}
         {result && (
           <Card>
-            <CardHeader><CardTitle>执行结果</CardTitle><CardDescription>结构化返回，包含覆盖范围与 trace_id。</CardDescription></CardHeader>
+            <CardHeader><CardTitle>执行结果</CardTitle></CardHeader>
             <CardContent className="space-y-3"><MetaSummary data={result} /><JsonBlock value={result} /></CardContent>
           </Card>
         )}

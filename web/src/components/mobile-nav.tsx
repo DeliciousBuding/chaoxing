@@ -7,7 +7,7 @@ import {
   MoreHorizontal,
   X
 } from "lucide-react";
-import { canAccessPage, pageGroups, pages, type PageId } from "../lib/layout";
+import { canAccessPage, pageGroups, pages, visiblePages, type PageId } from "../lib/layout";
 import { useReducedMotion } from "../lib/hooks";
 import { useUIStore } from "../lib/store";
 import { cn } from "../lib/utils";
@@ -34,7 +34,7 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
   const sheetRef = React.useRef<HTMLDivElement | null>(null);
 
   const accessiblePages = React.useMemo(
-    () => pages.filter((item) => canAccessPage(item.id as PageId, capabilities)),
+    () => visiblePages().filter((item) => canAccessPage(item.id as PageId, capabilities)),
     [capabilities]
   );
   const primaryItems = primaryPages

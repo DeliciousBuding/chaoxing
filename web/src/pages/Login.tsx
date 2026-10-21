@@ -2,7 +2,7 @@ import * as React from "react";
 import { Activity, GraduationCap, LockKeyhole, MapPin, ShieldCheck } from "lucide-react";
 import { api, ApiError, type SessionInfo } from "../lib/api";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
@@ -100,7 +100,6 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
           <Card>
             <CardHeader className="gap-1.5">
               <CardTitle as="h1" className="text-[20px] leading-7 tracking-[-0.025em]">登录工作区</CardTitle>
-              <CardDescription>使用平台成员账号。平台权限与 MCP OAuth 授权相互独立。</CardDescription>
             </CardHeader>
             <CardContent>
               <form className="space-y-4" onSubmit={submit}>

@@ -61,13 +61,16 @@ func TestProfileAndMediaProxyRequireSessionAndValidateInput(t *testing.T) {
 
 	w = do(t, mux, "GET", "/api/profile", "", csrfCookie, session)
 	profile := jsonMap(t, w)
-	if profile["display_name"] != "学习通用户" || profile["avatar_url"] != "/api/media/avatar" {
+	if profile["display_name"] != "学习通用户" || profile["avatar_url"] != "/api/media/avatar?account=root" {
 		t.Fatalf("unexpected profile: %#v", profile)
 	}
 
 	w = do(t, mux, "GET", "/api/media/avatar", "", csrfCookie, session)
 	if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Content-Type"), "image/png") {
 		t.Fatalf("avatar status=%d type=%q", w.Code, w.Header().Get("Content-Type"))
+	}
+	if w := do(t, mux, "GET", "/api/media/avatar?account=tenant", "", csrfCookie, session); w.Code != 404 {
+		t.Fatalf("cross-account avatar status=%d", w.Code)
 	}
 	etag := w.Header().Get("ETag")
 	if etag == "" || w.Header().Get("Cache-Control") != "private, max-age=21600" {

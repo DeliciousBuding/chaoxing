@@ -1,6 +1,6 @@
 import * as React from "react";
 import { api } from "../lib/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Label } from "../components/ui/label";
@@ -82,13 +82,12 @@ export function Work({ tools }: { tools: any[] }) {
     <div className="space-y-5">
       <PageHeader
         title="作业答题"
-        description="读取题目 → AI 生成草稿 → 显式保存 / 最终提交。默认不自动提交，所有写操作均可追溯。"
-        meta={<><Badge variant="secondary">{jobs.length} 个作业</Badge><span>草稿优先</span><span>·</span><span>人工确认</span></>}
+        meta={<span>草稿优先</span>}
         actions={<Badge variant="warning">最终提交需二次确认</Badge>}
       />
       <ErrorBanner error={error} />
       <Card>
-        <CardHeader><CardTitle>选择作业</CardTitle><CardDescription>课程、作业和题目范围均来自后端 allowlist。</CardDescription></CardHeader>
+        <CardHeader><CardTitle>选择作业</CardTitle></CardHeader>
         <CardContent className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           <div className="space-y-2">
             <Label htmlFor="work-course">课程</Label>
@@ -114,7 +113,7 @@ export function Work({ tools }: { tools: any[] }) {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>题目</CardTitle><CardDescription>客观题、填空题、简答题均先进入本地草稿，不直接写上游。</CardDescription></CardHeader>
+        <CardHeader><CardTitle>题目</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           {questions && <MetaSummary data={questions} />}
           {busy && !questions ? <Loading /> : !questions ? <EmptyState title="选择作业后读取题目" /> : (
@@ -137,11 +136,11 @@ export function Work({ tools }: { tools: any[] }) {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader><CardTitle>本地草稿</CardTitle><CardDescription>list_work_drafts</CardDescription></CardHeader>
+          <CardHeader><CardTitle>本地草稿</CardTitle></CardHeader>
           <CardContent>{drafts ? <JsonBlock value={drafts} /> : <EmptyState title="暂无草稿" />}</CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle>可执行工具</CardTitle><CardDescription>作业链路所有操作都来自后端 allowlist。</CardDescription></CardHeader>
+          <CardHeader><CardTitle>可执行工具</CardTitle></CardHeader>
           <CardContent>
             <div className="flex flex-wrap gap-2">
               {tools.filter((tool) => tool.id.startsWith("works.") || tool.id.startsWith("workdrafts.")).map((tool) => <Badge key={tool.id}>{tool.title}</Badge>)}

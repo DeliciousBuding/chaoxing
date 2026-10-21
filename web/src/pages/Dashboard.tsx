@@ -6,13 +6,11 @@ import {
   CheckCircle2,
   CircleAlert,
   Clock3,
-  Database,
   Globe2,
   HeartPulse,
   MapPin,
   RefreshCw,
   ServerCog,
-  ShieldCheck,
   Wifi
 } from "lucide-react";
 import {
@@ -21,15 +19,13 @@ import {
   type Course,
   type Profile,
   type SignAudit,
-  type ToolDefinition,
   type WatchSchedule
 } from "../lib/api";
 import { Avatar } from "../components/avatar";
 import { CourseCard } from "../components/course-card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { ErrorBanner, JsonBlock, MetaSummary, PageHeader } from "../components/common";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { ErrorBanner, PageHeader } from "../components/common";
 import { useUIStore } from "../lib/store";
 import { roleLabels } from "../lib/roles";
 import { formatBeijing } from "../lib/time";
@@ -61,15 +57,6 @@ function toneClass(tone: Tone) {
   }
 }
 
-function pulseDot(tone: Tone) {
-  return {
-    ok: "bg-success",
-    warn: "bg-warning",
-    danger: "bg-destructive",
-    muted: "bg-muted-foreground/45"
-  }[tone];
-}
-
 function beijingClock(value: Date) {
   const shifted = new Date(value.getTime() + 8 * 60 * 60 * 1000);
   const minutes = shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
@@ -91,15 +78,6 @@ function minuteOfDay(value?: string) {
   const [hour, minute] = value.split(":").map(Number);
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
   return hour * 60 + minute;
-}
-
-function clockLabel(value: number) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).format(new Date(value));
 }
 
 function courseKey(courseID: string, classID: string) {
@@ -137,44 +115,15 @@ function statusText(item: SignAudit) {
   return item.code || "待确认";
 }
 
-const PulseItem = React.memo(function PulseItem({
-  icon: Icon,
-  label,
-  value,
-  detail,
-  tone
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  value: string;
-  detail: string;
-  tone: Tone;
-}) {
-  return (
-    <div className="flex min-w-0 items-start gap-2.5 px-3 py-3 sm:px-4">
-      <Icon className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", toneClass(tone))} />
-      <div className="min-w-0">
-        <div className="text-[10px] font-medium uppercase tracking-[0.09em] text-muted-foreground">{label}</div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
-          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", pulseDot(tone))} />
-          <span className="truncate text-[12px] font-medium leading-4 text-foreground">{value}</span>
-        </div>
-        <div className="mt-0.5 truncate text-[10px] leading-4 text-muted-foreground">{detail}</div>
-      </div>
-    </div>
-  );
-});
-
-export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
+export function Dashboard() {
   const session = useUIStore((state) => state.session);
   const account = useUIStore((state) => state.account);
   const setPage = useUIStore((state) => state.setPage);
   const [status, setStatus] = React.useState<any>(null);
-  const [connection, setConnection] = React.useState<any>(null);
-  const [capabilities, setCapabilities] = React.useState<any>(null);
   const [profile, setProfile] = React.useState<Profile | null>(null);
   const [accountPolicy, setAccountPolicy] = React.useState<AdminAccount | null>(null);
   const [courses, setCourses] = React.useState<Course[]>([]);
+  const [coursesMeta, setCoursesMeta] = React.useState<any>(null);
   const [schedules, setSchedules] = React.useState<WatchSchedule[]>([]);
   const [signAudits, setSignAudits] = React.useState<SignAudit[]>([]);
   const [error, setError] = React.useState("");
@@ -191,11 +140,9 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
     setError("");
     setAuditsLoading(canReadAudits);
     setAuditsError("");
-    const [statusResult, connectionResult, capabilitiesResult, profileResult, coursesResult, schedulesResult, policyResult, auditsResult] =
+    const [statusResult, profileResult, coursesResult, schedulesResult, policyResult, auditsResult] =
       await Promise.allSettled([
         api.status(),
-        api.call("get_connection_status"),
-        api.call("get_capabilities"),
         api.profile(),
         api.call("list_courses"),
         api.watchSchedules(),
@@ -206,16 +153,14 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
     const failures: string[] = [];
     if (statusResult.status === "fulfilled") setStatus(statusResult.value);
     else failures.push(`运行状态：${errorMessage(statusResult.reason)}`);
-    if (connectionResult.status === "fulfilled") setConnection(connectionResult.value.data);
-    else setConnection(null);
-    if (capabilitiesResult.status === "fulfilled") setCapabilities(capabilitiesResult.value.data);
-    else setCapabilities(null);
     if (profileResult.status === "fulfilled") setProfile(profileResult.value);
     else setProfile(null);
     if (coursesResult.status === "fulfilled") {
       setCourses((coursesResult.value.data.result as Course[] | undefined) ?? []);
+      setCoursesMeta(coursesResult.value.data.meta ?? null);
     } else {
       setCourses([]);
+      setCoursesMeta(null);
       failures.push(`课程目录：${errorMessage(coursesResult.reason)}`);
     }
     if (schedulesResult.status === "fulfilled") setSchedules(schedulesResult.value.items ?? []);
@@ -264,18 +209,12 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
   );
   const watcherPanics = watcherRows.reduce((sum, item) => sum + (Number(item.consecutive_panics) || 0), 0);
   const watchersStale = watcherRows.some((item) => isStale(item));
-  const latestTick = watcherRows
-    .map((item) => (item.last_tick_at ? new Date(item.last_tick_at).getTime() : 0))
-    .filter((value) => Number.isFinite(value) && value > 0)
-    .sort((a, b) => b - a)[0];
   const process: Record<string, any> = runtime.process ?? {};
   const processCrashes = Number(process.consecutive_crashes) || 0;
   const processDegraded = Boolean(process.degraded);
-  const capabilityCount = Array.isArray(capabilities?.items) ? capabilities.items.length : null;
   const coolingEgress = egress.filter((item) => item.cooldown).length;
-  const connectionHealthy = connection?.meta?.status === "complete";
+  const upstreamHealthy = coursesMeta?.status === "complete";
   const statusPending = busy && !status;
-  const statusUnknown = !status;
   const accountID = account?.current ?? session?.account ?? "";
   const accountName = account?.accounts.find((item) => item.id === accountID)?.name ?? accountID;
   const displayName = profile?.display_name || accountName || session?.user?.display_name || "当前账号";
@@ -304,50 +243,39 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
       .sort((a, b) => (minuteOfDay(a.start) ?? 0) - (minuteOfDay(b.start) ?? 0));
   }, [clock.day, clock.minutes, courseLookup, schedules]);
   const nextSchedule = todaySchedules.find((row) => row.state === "active") ?? todaySchedules.find((row) => row.state === "upcoming");
-  const recentSigns = signAudits.slice(0, 5);
+  const recentSigns = signAudits.slice(0, 3);
+  const dashboardCourses = React.useMemo(
+    () =>
+      [...courses]
+        .sort((a, b) => Number(Boolean(a.retired)) - Number(Boolean(b.retired)))
+        .slice(0, 4),
+    [courses]
+  );
 
-  const pulse = [
+  const statusItems = [
     {
       icon: Wifi,
       label: "上游",
-      value: statusPending ? "读取中" : statusUnknown ? "未确认" : connectionHealthy ? "正常" : "待确认",
-      detail: "每次均为新鲜课程读取",
-      tone: (statusPending || statusUnknown ? "warn" : connectionHealthy ? "ok" : "warn") as Tone
+      value: statusPending ? "读取中" : upstreamHealthy ? "可用" : "待确认",
+      tone: (statusPending || !upstreamHealthy ? "warn" : "ok") as Tone
     },
     {
       icon: HeartPulse,
-      label: "课堂轮询",
-      value: watcherRows.length ? `${watcherRows.length} 个账号` : "未启用",
-      detail: watchersStale ? "存在停滞 watcher" : latestTick ? `最近 ${clockLabel(latestTick)}` : "等待首次 tick",
+      label: "轮询",
+      value: watcherRows.length === 0 ? "未启用" : watchersStale ? "已停滞" : watcherPanics > 0 ? "需关注" : "运行中",
       tone: (watchersStale || watcherPanics > 0 ? "warn" : "ok") as Tone
     },
     {
       icon: ServerCog,
-      label: "进程监督",
+      label: "进程",
       value: processDegraded ? "降级" : processCrashes > 0 ? "需关注" : "稳定",
-      detail: processDegraded ? "状态写入降级" : processCrashes > 0 ? `连续异常 ${processCrashes} 次` : "巡检计数已持久化",
       tone: (processDegraded || processCrashes > 0 ? "warn" : "ok") as Tone
     },
     {
       icon: Globe2,
       label: "出口",
-      value: egress.length ? `${egress.length} 条路径` : "直连",
-      detail: coolingEgress ? `${coolingEgress} 条冷却中` : "路径健康",
+      value: egress.length === 0 ? "直连" : coolingEgress > 0 ? "部分冷却" : "代理就绪",
       tone: (coolingEgress > 0 ? "warn" : "ok") as Tone
-    },
-    {
-      icon: ShieldCheck,
-      label: "会话",
-      value: "已加固",
-      detail: "HttpOnly · SameSite · CSRF",
-      tone: "ok" as Tone
-    },
-    {
-      icon: Database,
-      label: "能力边界",
-      value: capabilityCount === null ? "读取中" : `${capabilityCount} 项工具`,
-      detail: "后端 allowlist 约束",
-      tone: (capabilityCount === null ? "muted" : "ok") as Tone
     }
   ];
 
@@ -373,17 +301,14 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
   );
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <PageHeader
         title="总览"
-        description="今天的课堂、签到与课程放在同一视线内；状态按需展开，不把运行数字堆在首屏。"
         meta={
           <>
             <span>{clock.date}</span>
             <span aria-hidden="true">·</span>
             <span>北京时间 {clock.time}</span>
-            <span aria-hidden="true">·</span>
-            <span>{tools.length} 个受控工具</span>
           </>
         }
         actions={
@@ -402,31 +327,36 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
       <ErrorBanner error={error} />
 
       <section className="overflow-hidden rounded-card border border-border bg-card">
-        <div className="flex items-start gap-3 p-4 sm:items-center sm:p-5">
+        <div className="flex items-center gap-3 px-4 py-3 sm:px-5">
           <Avatar
             src={profile?.avatar_url}
             name={displayName}
-            className="h-11 w-11 border-border-strong bg-secondary"
+            className="h-9 w-9 border-border-strong bg-secondary"
           />
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <h2 className="truncate text-[15px] font-medium tracking-[-0.02em]">{displayName}</h2>
-              <Badge variant="secondary">{roleLabel}</Badge>
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <h2 className="truncate text-[14px] font-medium tracking-[-0.02em]">{displayName}</h2>
+              <span className="text-[11px] text-muted-foreground">{roleLabel}</span>
+              {accountName && <span className="truncate text-[11px] text-muted-foreground">· {accountName}</span>}
+              <span className="flex flex-wrap items-center gap-1.5 sm:ml-1">{accountBadges}</span>
             </div>
-            {accountName && (
-              <div className="mt-1 truncate text-[11px] text-muted-foreground">账号：{accountName}</div>
-            )}
-            <div className="mt-1 text-[10px] text-muted-foreground/85">私有管理面 · 数据不出租户</div>
-            <div className="mt-2 flex flex-wrap items-center gap-1.5 sm:hidden">{accountBadges}</div>
           </div>
-          <div className="hidden shrink-0 flex-wrap items-center gap-1.5 sm:flex">{accountBadges}</div>
         </div>
-        <div className="grid grid-cols-2 gap-px border-t border-border bg-border sm:grid-cols-3 xl:grid-cols-6">
-          {pulse.map((item) => (
-            <div key={item.label} className="bg-card">
-              <PulseItem {...item} />
-            </div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-border px-4 py-2.5 sm:flex sm:flex-wrap sm:items-center sm:gap-x-5 sm:px-5">
+          {statusItems.map((item) => (
+            <span key={item.label} className="inline-flex min-w-0 items-center gap-1.5 text-[11px]">
+              <item.icon className={cn("h-3 w-3 shrink-0", toneClass(item.tone))} />
+              <span className="text-muted-foreground">{item.label}</span>
+              <span className={cn("font-medium", toneClass(item.tone))}>{item.value}</span>
+            </span>
           ))}
+          <button
+            type="button"
+            onClick={() => setPage("settings")}
+            className="ml-auto hidden text-[11px] text-muted-foreground transition-colors hover:text-foreground sm:inline"
+          >
+            运行设置
+          </button>
         </div>
       </section>
 
@@ -439,7 +369,7 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
                 <h2 className="text-[13px] font-medium">今日课堂</h2>
               </div>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                {dayLabels[clock.day]} · 按已配置时段展示
+                {dayLabels[clock.day]}
                 {nextSchedule ? ` · 下一段 ${nextSchedule.course?.name || nextSchedule.course_id} ${nextSchedule.start}` : " · 今天没有待开始时段"}
               </p>
             </div>
@@ -467,14 +397,14 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
                   >
                     <div className={cn("font-mono text-[11px]", active ? "text-foreground" : "text-muted-foreground")}>
                       <div>{row.start}</div>
-                      <div className="text-[10px] opacity-65">{row.end}</div>
+                      <div className="text-[11px] opacity-65">{row.end}</div>
                     </div>
                     <div className="min-w-0">
                       <div className="flex min-w-0 items-center gap-2">
                         <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", row.state === "active" ? "bg-primary" : row.state === "done" ? "bg-muted-foreground/45" : "bg-success")} />
                         <span className="truncate text-[13px] font-medium">{row.course?.name || row.course_id}</span>
                       </div>
-                      <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] text-muted-foreground">
+                      <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
                         <span className="truncate">{row.course?.teacher || "教师未标注"}</span>
                         {row.room && (
                           <>
@@ -495,9 +425,9 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
                       {row.state === "active" ? (
                         <Badge variant="default">进行中</Badge>
                       ) : row.state === "done" ? (
-                        <span className="text-[10px] text-muted-foreground">已结束</span>
+                        <span className="text-[11px] text-muted-foreground">已结束</span>
                       ) : (
-                        <span className="text-[10px] text-muted-foreground">待开始</span>
+                        <span className="text-[11px] text-muted-foreground">待开始</span>
                       )}
                     </div>
                   </li>
@@ -505,9 +435,6 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
               })}
             </ol>
           )}
-          <div className="border-t border-border px-4 py-2.5 text-[10px] leading-4 text-muted-foreground sm:px-5">
-            课堂开始前后按配置轮询；自动签到只使用已绑定位置，不从浏览器坐标推断。
-          </div>
         </section>
 
         <section className="min-w-0 overflow-hidden rounded-card border border-border bg-card">
@@ -517,11 +444,7 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
                 <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
                 <h2 className="text-[13px] font-medium">最近签到</h2>
               </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">出口 IP、地点与上游确认结果</p>
             </div>
-            {canReadAudits && recentSigns.length > 0 && (
-              <span className="text-[10px] text-muted-foreground">{recentSigns.length} 条</span>
-            )}
           </div>
           {!canReadAudits ? (
             <div className="px-4 py-5 text-[11px] leading-5 text-muted-foreground sm:px-5">
@@ -554,12 +477,12 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
                         <span className="truncate text-[12px] font-medium">{course?.name || item.course_id}</span>
                         <Badge variant={auditVariant(item)} className="shrink-0">{statusText(item)}</Badge>
                       </div>
-                      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
+                      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
                         <span>{methodLabel(item.method)}</span>
                         <span aria-hidden="true">·</span>
                         <span>{formatBeijing(item.created_at)}</span>
                       </div>
-                      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground/85">
+                      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
                         {item.egress_ip && <span className="font-mono">{item.egress_ip}</span>}
                         {item.address && <span className="truncate" title={item.address}>{item.address}</span>}
                       </div>
@@ -577,9 +500,8 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
           <div>
             <div className="flex items-center gap-2">
               <Activity className="h-3.5 w-3.5 text-muted-foreground" />
-              <h2 className="text-[13px] font-medium">我的课程</h2>
+              <h2 className="text-[13px] font-medium">课程</h2>
             </div>
-            <p className="mt-1 text-[11px] text-muted-foreground">课程封面、教师与班级；内部 ID 收进卡片详情。</p>
           </div>
           <Button size="sm" variant="ghost" onClick={() => setPage("courses")}>
             全部课程
@@ -587,9 +509,9 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
           </Button>
         </div>
         {statusPending && courses.length === 0 ? (
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
             {[0, 1, 2, 3].map((item) => (
-              <div key={item} className="h-44 animate-pulse rounded-card border border-border bg-muted/35" />
+              <div key={item} className="h-[86px] animate-pulse rounded-card border border-border bg-muted/35 sm:h-44" />
             ))}
           </div>
         ) : courses.length === 0 ? (
@@ -597,105 +519,13 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
             课程目录尚未加载。真实课程只在后端读取成功后显示，不用空列表伪装完成。
           </div>
         ) : (
-          <div className="grid min-w-0 grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-            {courses.map((course) => (
+          <div className="grid min-w-0 grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+            {dashboardCourses.map((course) => (
               <CourseCard key={courseKey(course.course_id, course.class_id)} course={course} />
             ))}
           </div>
         )}
       </section>
-
-      <details className="group rounded-card border border-border bg-card">
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3.5 text-[12px] font-medium text-muted-foreground transition-colors hover:text-foreground sm:px-5">
-          <span>运行诊断与原始数据</span>
-          <span className="text-[10px] font-normal text-muted-foreground">出口、watcher、连接检查与能力边界</span>
-        </summary>
-        <div className="grid gap-4 border-t border-border p-4 lg:grid-cols-2 sm:p-5">
-          <div className="min-w-0">
-            <div className="mb-2 flex items-center gap-2 text-[12px] font-medium">
-              <Wifi className="h-3.5 w-3.5 text-muted-foreground" />
-              出口健康
-            </div>
-            {egress.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground">当前没有配置代理路径，使用直连出口。</p>
-            ) : (
-              <Table label="出口健康" className="min-w-[520px]">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Endpoint</TableHead>
-                    <TableHead>类型</TableHead>
-                    <TableHead>失败</TableHead>
-                    <TableHead>状态</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {egress.map((item) => (
-                    <TableRow key={item.key}>
-                      <TableCell className="font-mono text-xs">{item.key}</TableCell>
-                      <TableCell>{item.kind}</TableCell>
-                      <TableCell>{item.failures}</TableCell>
-                      <TableCell>
-                        <Badge variant={item.cooldown ? "destructive" : "success"}>{item.cooldown ? "冷却" : "健康"}</Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </div>
-          <div className="min-w-0">
-            <div className="mb-2 flex items-center gap-2 text-[12px] font-medium">
-              <HeartPulse className="h-3.5 w-3.5 text-muted-foreground" />
-              Watcher 健康
-            </div>
-            {watcherRows.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground">当前配置没有活跃 watcher。</p>
-            ) : (
-              <Table label="Watcher 健康" className="min-w-[620px]">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>账号</TableHead>
-                    <TableHead>最近 Tick</TableHead>
-                    <TableHead>连续 panic</TableHead>
-                    <TableHead>课堂轮询</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {watcherRows.map((item) => (
-                    <TableRow key={String(item.account)}>
-                      <TableCell className="font-mono text-xs">{String(item.account)}</TableCell>
-                      <TableCell className="text-xs">
-                        <span className="inline-flex items-center gap-2">
-                          {item.last_tick_at ? formatBeijing(item.last_tick_at) : "—"}
-                          {isStale(item) && <Badge variant="destructive">停滞</Badge>}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={Number(item.consecutive_panics) > 0 ? "destructive" : "success"}>{Number(item.consecutive_panics) || 0}</Badge>
-                      </TableCell>
-                      <TableCell>{Number(item.active_class_polls) || 0}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </div>
-          <div className="min-w-0">
-            <div className="mb-2 flex items-center gap-2 text-[12px] font-medium">
-              <Wifi className="h-3.5 w-3.5 text-muted-foreground" />
-              连接检查
-            </div>
-            {connection ? <><MetaSummary data={connection} /><JsonBlock value={connection} /></> : <p className="text-[11px] text-muted-foreground">尚未读取连接状态。</p>}
-          </div>
-          <div className="min-w-0">
-            <div className="mb-2 flex items-center gap-2 text-[12px] font-medium">
-              <Database className="h-3.5 w-3.5 text-muted-foreground" />
-              能力边界
-            </div>
-            {capabilities ? <JsonBlock value={capabilities} /> : <p className="text-[11px] text-muted-foreground">尚未读取能力契约。</p>}
-          </div>
-        </div>
-      </details>
     </div>
   );
 }

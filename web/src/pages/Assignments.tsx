@@ -1,6 +1,6 @@
 import * as React from "react";
 import { api } from "../lib/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader } from "../components/common";
@@ -78,8 +78,11 @@ export function Assignments() {
     <div className="space-y-5">
       <PageHeader
         title="待办与作业"
-        description="“没有查到”不等于“没有任务”；请始终关注覆盖状态，并从作业与考试清单取数。"
-        meta={<><Badge variant="secondary">{actions.length} 个待办</Badge><Badge variant="secondary">{rows.length} 个作业</Badge></>}
+        meta={
+          <Badge variant={actionItems ? (actions.length > 0 ? "warning" : "secondary") : "secondary"}>
+            {actionItems ? (actions.length > 0 ? "有待处理" : "暂无待办") : "读取中"}
+          </Badge>
+        }
         actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新待办</Button>}
       />
       <ErrorBanner error={error} />
@@ -87,7 +90,6 @@ export function Assignments() {
       <Card>
         <CardHeader>
           <CardTitle>待处理事项</CardTitle>
-          <CardDescription>来源：作业与考试清单，不从通知文本推断新任务。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {actionItems && <MetaSummary data={actionItems} />}
@@ -110,7 +112,7 @@ export function Assignments() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>全部作业</CardTitle><CardDescription>最多显示 100 条，可进入作业答题页处理具体作业。</CardDescription></CardHeader>
+        <CardHeader><CardTitle>全部作业</CardTitle></CardHeader>
         <CardContent>
           {assignments && <MetaSummary data={assignments} />}
           {busy && !assignments ? <Loading /> : rows.length === 0 ? <EmptyState title="没有作业数据" /> : (
@@ -165,7 +167,6 @@ export function Assignments() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <CardTitle>作业题目</CardTitle>
-                <CardDescription>读取 → AI 草稿；保存 / 最终提交请进入“作业答题”页。</CardDescription>
               </div>
               <Button size="sm" disabled={busy} onClick={() => void generateDraft()}>AI 草稿</Button>
             </div>

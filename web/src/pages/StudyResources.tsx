@@ -1,7 +1,7 @@
 import * as React from "react";
 import { CalendarDays, LibraryBig } from "lucide-react";
 import { api } from "../lib/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Input } from "../components/ui/input";
@@ -72,15 +72,12 @@ export function StudyResources() {
     <div className="space-y-5">
       <PageHeader
         title="课表与资料"
-        description="读取章节完成度、课程顶层资料文本和指定教学周课表；不做学习页任务点写入。"
-        meta={<><Badge variant="secondary">{courses.length} 门课程</Badge><span>北京时间</span><span>·</span><span>只读</span></>}
         actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={!selectedCourse || busy}><CalendarDays className="h-3.5 w-3.5" /> 读取当前范围</Button>}
       />
       <ErrorBanner error={error} />
       <Card>
         <CardHeader>
           <CardTitle>读取范围</CardTitle>
-          <CardDescription>课程与教学周共同决定章节、资料和课表查询。</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 lg:grid-cols-[1fr_180px_auto]">
           <div className="space-y-2">
@@ -109,7 +106,6 @@ export function StudyResources() {
       <Card>
         <CardHeader>
           <CardTitle>章节任务</CardTitle>
-          <CardDescription>只显示章节摘要与显式上报的任务点数量，未知状态不会被推断为已完成。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {chapters && <MetaSummary data={chapters} />}
@@ -139,7 +135,6 @@ export function StudyResources() {
         <Card>
           <CardHeader>
             <CardTitle><LibraryBig className="mr-2 inline h-4 w-4" />课程资料</CardTitle>
-            <CardDescription>顶层文本投影；不支持文件夹遍历或附件下载。</CardDescription>
           </CardHeader>
           <CardContent>
             {materials ? (
@@ -154,7 +149,6 @@ export function StudyResources() {
         <Card>
           <CardHeader>
             <CardTitle>教学周课表</CardTitle>
-            <CardDescription>原始结构仅做本地展示，不会自动生成待办。</CardDescription>
           </CardHeader>
           <CardContent>{schedule ? <JsonBlock value={schedule} className="max-h-96" /> : <EmptyState title="尚未读取课表" />}</CardContent>
         </Card>
