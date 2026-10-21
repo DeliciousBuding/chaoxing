@@ -84,15 +84,15 @@ export function Audit() {
         <form className="flex flex-wrap items-end gap-2" onSubmit={applyFilters}>
           <div className="space-y-1">
             <Label htmlFor="audit-category" className="text-[11px]">类别</Label>
-            <Select id="audit-category" className="w-32" value={category} onChange={(event) => setCategory(event.target.value)}>
+            <Select id="audit-category" className="w-[120px]" value={category} onChange={(event) => setCategory(event.target.value)}>
               {categories.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </Select>
           </div>
           <div className="space-y-1">
             <Label htmlFor="audit-actor" className="text-[11px]">操作者</Label>
-            <Input id="audit-actor" className="w-36" value={actor} onChange={(event) => setActor(event.target.value)} placeholder="username" maxLength={32} />
+            <Input id="audit-actor" className="w-[120px]" value={actor} onChange={(event) => setActor(event.target.value)} placeholder="username" maxLength={32} />
           </div>
-          <Button size="sm" type="submit" variant="outline" disabled={loading}><RefreshCw className="h-4 w-4" /> 查询</Button>
+          <Button size="sm" type="submit" variant="outline" disabled={loading}><RefreshCw className="h-4 w-4" /> <span className="hidden sm:inline">查询</span></Button>
         </form>
         }
       />
@@ -103,7 +103,7 @@ export function Audit() {
           <CardTitle className="flex items-center gap-2"><ScrollText className="h-4 w-4 text-primary" /> 最近事件</CardTitle>
         </CardHeader>
         <CardContent>
-          {loading ? <Loading label="正在读取审计日志" /> : items.length === 0 ? (
+          {loading ? <Loading label="正在读取审计日志" /> : error ? null : items.length === 0 ? (
             <EmptyState bare title="没有匹配的审计事件" />
           ) : (
             <>
@@ -187,7 +187,7 @@ export function Audit() {
             </div>
             </>
           )}
-          <div className="mt-4 flex items-center justify-between gap-2">
+          {!loading && !error && items.length > 0 && <div className="mt-4 flex items-center justify-between gap-2">
             <div className="text-xs text-muted-foreground">第 {Math.floor(offset / limit) + 1} 页</div>
             <div className="flex gap-2">
               <Button size="sm" variant="outline" disabled={loading || offset === 0} onClick={() => void load(Math.max(0, offset - limit), applied)}>
@@ -197,7 +197,7 @@ export function Audit() {
                 下一页 <ChevronRight className="h-4 w-4" />
               </Button>
             </div>
-          </div>
+          </div>}
         </CardContent>
       </Card>
     </div>
