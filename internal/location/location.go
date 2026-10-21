@@ -115,6 +115,9 @@ func ValidateAndNormalize(p Preset) (Preset, error) {
 	if !finiteCoordinate(p.Latitude, p.Longitude) || p.Latitude < -90 || p.Latitude > 90 || p.Longitude < -180 || p.Longitude > 180 {
 		return Preset{}, errors.New("location coordinates are outside range")
 	}
+	if p.Latitude == 0 && p.Longitude == 0 {
+		return Preset{}, errors.New("location coordinates must not be 0,0")
+	}
 	p.Latitude, p.Longitude = ToBD09(p.Latitude, p.Longitude, p.CoordinateSystem)
 	p.CoordinateSystem = CoordinateBD09
 	return p, nil

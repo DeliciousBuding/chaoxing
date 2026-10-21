@@ -16,11 +16,13 @@ import (
 )
 
 const (
-	imTokenURL     = "https://a1-vip6.easemob.com/cx-dev/cxstudy/token"
-	imGroupsURL    = "https://a1-vip6.easemob.com/cx-dev/cxstudy/users/%s/joined_chatgroups?detail=true&version=v3&pagenum=1&pagesize=200"
-	imRoamingURL   = "https://a1-vip6.easecdn.com/cx-dev/cxstudy/users/%s/messageroaming"
-	imUserAgent    = "Easemob-SDK(Android) 4.9.0.1"
-	imPasswordDESK = "SL2(M/eD"
+	imTokenURL          = "https://a1-vip6.easemob.com/cx-dev/cxstudy/token"
+	imGroupsURL         = "https://a1-vip6.easemob.com/cx-dev/cxstudy/users/%s/joined_chatgroups?detail=true&version=v3&pagenum=1&pagesize=200"
+	imRoamingURL        = "https://a1-vip6.easecdn.com/cx-dev/cxstudy/users/%s/messageroaming"
+	imUserAgent         = "Easemob-SDK(Android) 4.9.0.1"
+	imPasswordDESK      = "SL2(M/eD"
+	maxIMGroupsPerSweep = 6
+	maxIMBytesPerSweep  = 2 << 20
 )
 
 type imConfig struct {
@@ -37,14 +39,21 @@ type imGroup struct {
 // ListGroupActivities reads sign-in cards from Easemob group history. It is a
 // read-only discovery source; actual submission still goes through SignActivity.
 func (c *Client) ListGroupActivities(ctx context.Context) ([]Activity, error) {
+	if !c.config.GroupActivities {
+		return []Activity{}, nil
+	}
 	if err := c.lock(ctx); err != nil {
 		return nil, err
 	}
 	defer c.queries.Release()
-	return c.listGroupActivities(ctx)
+	groups, err := c.fetchIMGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.listGroupActivities(ctx, groups)
 }
 
-func (c *Client) listGroupActivities(ctx context.Context) ([]Activity, error) {
+func (c *Client) listGroupActivities(ctx context.Context, groups []imGroup) ([]Activity, error) {
 	if !c.config.GroupActivities {
 		return []Activity{}, nil
 	}
@@ -55,28 +64,26 @@ func (c *Client) listGroupActivities(ctx context.Context) ([]Activity, error) {
 	if err != nil {
 		return nil, err
 	}
-	groups, err := c.fetchIMGroups(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if len(groups) > 20 {
-		groups = groups[:20]
+	if len(groups) > maxIMGroupsPerSweep {
+		groups = groups[:maxIMGroupsPerSweep]
 	}
 	seen := map[string]bool{}
 	rows := []Activity{}
 	successfulGroups := 0
 	var firstGroupErr error
+	totalBytes := 0
 	for _, group := range groups {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		items, err := c.imGroupActivities(ctx, cfg, group)
+		items, groupBytes, err := c.imGroupActivities(ctx, cfg, group)
 		if err != nil {
 			if firstGroupErr == nil {
 				firstGroupErr = err
 			}
 			continue
 		}
+		totalBytes += groupBytes
 		successfulGroups++
 		for _, item := range items {
 			k := item.CourseID + ":" + item.ClassID + ":" + item.ID
@@ -87,6 +94,9 @@ func (c *Client) listGroupActivities(ctx context.Context) ([]Activity, error) {
 			item.Source = "group"
 			item.GroupName = group.Name
 			rows = append(rows, item)
+		}
+		if totalBytes >= maxIMBytesPerSweep {
+			break
 		}
 	}
 	if len(groups) > 0 && successfulGroups == 0 && firstGroupErr != nil {
@@ -185,12 +195,12 @@ func (c *Client) fetchIMGroups(ctx context.Context) ([]imGroup, error) {
 	return groups, nil
 }
 
-func (c *Client) imGroupActivities(ctx context.Context, cfg imConfig, group imGroup) ([]Activity, error) {
+func (c *Client) imGroupActivities(ctx context.Context, cfg imConfig, group imGroup) ([]Activity, int, error) {
 	payload := map[string]any{"end": -1, "queue": group.ID + "@conference.easemob.com", "start": -1}
 	b, _ := json.Marshal(payload)
 	body, err := c.imDo(ctx, http.MethodPost, fmt.Sprintf(imRoamingURL, cfg.Username), bytes.NewReader(b), "text/plain;charset=UTF-8", "Bearer "+cfg.AccessToken)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var roaming struct {
 		Data struct {
@@ -200,7 +210,7 @@ func (c *Client) imGroupActivities(ctx context.Context, cfg imConfig, group imGr
 		} `json:"data"`
 	}
 	if json.Unmarshal(body, &roaming) != nil {
-		return nil, fault("UPSTREAM_SCHEMA", "IM history not recognized")
+		return nil, len(body), fault("UPSTREAM_SCHEMA", "IM history not recognized")
 	}
 	rows := []Activity{}
 	for _, message := range roaming.Data.Msgs {
@@ -222,7 +232,7 @@ func (c *Client) imGroupActivities(ctx context.Context, cfg imConfig, group imGr
 			}
 		}
 	}
-	return rows, nil
+	return rows, len(body), nil
 }
 
 type easemobMessage struct {

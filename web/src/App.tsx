@@ -2,7 +2,7 @@ import * as React from "react";
 import { api } from "./lib/api";
 import { useUIStore } from "./lib/store";
 import { AppShell } from "./components/app-shell";
-import { ErrorBanner, PageSkeleton } from "./components/common";
+import { ErrorBanner, PageErrorBoundary, PageSkeleton } from "./components/common";
 
 const Login = React.lazy(() => import("./pages/Login").then((m) => ({ default: m.Login })));
 const Dashboard = React.lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
@@ -138,9 +138,11 @@ export default function App() {
           >
             <div className="space-y-4">
               <ErrorBanner error={globalError} />
-              <React.Suspense fallback={<PageSkeleton />}>
-                <React.Fragment key={refreshToken}>{content}</React.Fragment>
-              </React.Suspense>
+              <PageErrorBoundary resetKey={`${page}:${refreshToken}`}>
+                <React.Suspense fallback={<PageSkeleton />}>
+                  <React.Fragment key={refreshToken}>{content}</React.Fragment>
+                </React.Suspense>
+              </PageErrorBoundary>
             </div>
           </AppShell>
         )}

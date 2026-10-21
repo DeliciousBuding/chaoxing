@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DeliciousBuding/chaoxing/internal/persist"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
 
@@ -169,11 +170,7 @@ func (c *Cache) Put(key string, value Answer) error {
 	if err != nil || len(b) > 2<<20 {
 		return fmt.Errorf("answer cache write failed")
 	}
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return fmt.Errorf("answer cache write failed")
-	}
-	if err := os.Rename(tmp, c.path); err != nil {
+	if err := persist.Write(c.path, b, 0o600); err != nil {
 		return fmt.Errorf("answer cache write failed")
 	}
 	return nil

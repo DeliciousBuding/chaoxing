@@ -41,6 +41,19 @@ func (f *fakeGroupSource) ListGroupActivities(context.Context) ([]upstream.Activ
 	return f.groupItems, nil
 }
 
+type orderGroupSource struct {
+	fakeSource
+	signer      *fakeSigner
+	groupCalls  int
+	atGroupScan int
+}
+
+func (f *orderGroupSource) ListGroupActivities(context.Context) ([]upstream.Activity, error) {
+	f.groupCalls++
+	f.atGroupScan = len(f.signer.requests)
+	return nil, nil
+}
+
 type fakeSigner struct {
 	requests []upstream.SignRequest
 	result   upstream.SignResult
@@ -330,6 +343,56 @@ func TestWatchMergesGroupCardAndUsesPresetSignCode(t *testing.T) {
 	}
 }
 
+func TestWatchSignsBeforeSlowGroupScan(t *testing.T) {
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	src := &orderGroupSource{
+		fakeSource: fakeSource{items: []upstream.Activity{signIn("c", "k", "primary-1", true)}},
+		signer:     signer,
+	}
+	r, err := New(Config{
+		Interval: time.Minute, AutoSign: true,
+		Classes:   []Class{{CourseID: "c", ClassID: "k"}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, &fakeSender{}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai) }
+	r.Tick(context.Background())
+
+	if len(signer.requests) != 1 {
+		t.Fatalf("sign requests=%d", len(signer.requests))
+	}
+	if src.groupCalls != 1 || src.atGroupScan != 1 {
+		t.Fatalf("groupCalls=%d signAtGroupScan=%d", src.groupCalls, src.atGroupScan)
+	}
+}
+
+func TestWatchStillSignsWhenPollDelayIsExhausted(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "primary-2", true)}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	r, err := New(Config{
+		Interval: time.Minute, AutoSign: true, ClassPollDelayMin: time.Second, ClassPollDelayMax: time.Second,
+		Classes: []Class{
+			{CourseID: "c", ClassID: "k"},
+			{CourseID: "c", ClassID: "k2"},
+		},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, &fakeSender{}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai) }
+	// Simulate the discovery budget expiring between classes. The signer has no
+	// random delay, so the already-discovered activity must still be processed.
+	r.wait = func(context.Context, time.Duration) bool { return false }
+	r.Tick(context.Background())
+
+	if len(signer.requests) != 1 {
+		t.Fatalf("sign requests=%d", len(signer.requests))
+	}
+}
+
 func TestWatchCapturesPracticePageOnce(t *testing.T) {
 	item := signIn("c", "k", "practice-1", false)
 	item.Kind = "practice"
@@ -424,6 +487,27 @@ func TestWatchAutoSignFailureDoesNotRetry(t *testing.T) {
 	}
 	if r.state[key(src.items[0])].Code != "INTERNAL" {
 		t.Fatalf("%+v", r.state)
+	}
+}
+
+func TestWatchAutoSignTransientFailureRetriesNextTick(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
+	snd := &fakeSender{}
+	signer := &fakeSigner{err: &upstream.Fault{Code: "UPSTREAM_UNAVAILABLE", Message: "synthetic transport failure"}}
+	r, err := New(Config{Interval: time.Minute, AutoSign: true, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json"}, src, snd, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
+	r.Tick(context.Background())
+	if len(signer.requests) != 1 || !r.state[key(src.items[0])].LastAttempt.IsZero() {
+		t.Fatalf("requests=%d state=%+v", len(signer.requests), r.state)
+	}
+	now = now.Add(time.Minute)
+	r.Tick(context.Background())
+	if len(signer.requests) != 2 {
+		t.Fatalf("transient failure was not retried: %d", len(signer.requests))
 	}
 }
 
@@ -533,15 +617,51 @@ func TestWatchLeadUsesSeconds(t *testing.T) {
 	}
 }
 
-func TestWatchInvalidStateFailsClosed(t *testing.T) {
+func TestWatchInvalidStateIsPreservedAndStartsDegraded(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "watch-state.json")
 	if err := os.WriteFile(path, []byte("not-json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	signer := &fakeSigner{}
-	_, err := New(Config{Interval: time.Minute, AutoSign: true, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: path}, &fakeSource{}, &fakeSender{}, signer)
-	if err == nil || len(signer.requests) != 0 {
-		t.Fatal(err, signer.requests)
+	r, err := New(Config{Interval: time.Minute, AutoSign: true, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: path}, &fakeSource{}, &fakeSender{}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Metrics().StateDegraded || len(signer.requests) != 0 {
+		t.Fatalf("degraded=%v requests=%v", r.Metrics().StateDegraded, signer.requests)
+	}
+	matches, err := filepath.Glob(path + ".corrupt-*")
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("corrupt state not preserved: %v %v", matches, err)
+	}
+}
+
+func TestWatchPrunesOldStateEvenWhenActivityRemainsInFeed(t *testing.T) {
+	r, err := New(Config{Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json"}, &fakeSource{}, &fakeSender{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, shanghai)
+	r.state = map[string]entry{
+		"old-active":     {LastSent: now.Add(-25 * time.Hour)},
+		"recent-active":  {LastSent: now.Add(-time.Hour)},
+		"recent-missing": {LastSent: now.Add(-7 * time.Hour)},
+	}
+	active := map[string]upstream.Activity{
+		"old-active":    {ID: "old-active"},
+		"recent-active": {ID: "recent-active"},
+	}
+	if !r.pruneInactive(active, now) {
+		t.Fatal("prune reported no change")
+	}
+	if _, ok := r.state["old-active"]; ok {
+		t.Fatal("24-hour stale state survived while still present in the feed")
+	}
+	if _, ok := r.state["recent-missing"]; ok {
+		t.Fatal("six-hour missing state survived")
+	}
+	if _, ok := r.state["recent-active"]; !ok {
+		t.Fatal("recent active state was removed")
 	}
 }
 
@@ -780,6 +900,18 @@ func TestActiveScheduleKey(t *testing.T) {
 	}
 	if activeScheduleKey(time.Date(2026, 10, 20, 10, 0, 0, 0, shanghai), class, 0, 0, time.Time{}) != "" {
 		t.Fatal("returned a key outside the schedule")
+	}
+}
+
+func TestActiveScheduleKeyRejectsOverlap(t *testing.T) {
+	class := Class{Schedule: []Schedule{
+		{Days: []string{"Tue"}, Start: "08:00", End: "09:40", Key: "first"},
+		{Days: []string{"Tue"}, Start: "10:00", End: "11:40", Key: "second"},
+	}}
+	// Both padding windows overlap at 09:50; there is no safe automatic choice.
+	key, ambiguous := activeScheduleKeyInfo(time.Date(2026, 10, 20, 9, 50, 0, 0, shanghai), class, 20*time.Minute, 20*time.Minute, time.Time{})
+	if !ambiguous || key != "" {
+		t.Fatalf("ambiguous=%v key=%q", ambiguous, key)
 	}
 }
 

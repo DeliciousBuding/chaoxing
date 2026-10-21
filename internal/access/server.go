@@ -10,7 +10,9 @@ import (
 	"errors"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,6 +37,11 @@ type grant struct {
 	expires                                               int64
 }
 
+type loginNonce struct {
+	expires int64
+	ip      string
+}
+
 // Server must have one process owning its StateDir. Codes, login sessions and
 // pending consents are volatile; clients and hashed bearer tokens survive restart.
 type Server struct {
@@ -45,15 +52,20 @@ type Server struct {
 	committed      []byte
 	refreshKey     []byte
 	sessions       map[string]session
-	logins         map[string]int64
+	logins         map[string]loginNonce
 	pending, codes map[string]grant
 	cimd           map[string]client
 	fetch          func(context.Context, string) (client, error)
 	sem            chan struct{}
+	tokenSem       chan struct{}
+	loginSem       chan struct{}
 	budget         float64
 	budgetAt       time.Time
+	tokenBudget    float64
+	tokenAt        time.Time
 	loginCount     int
 	loginWindow    time.Time
+	loginAttempts  map[string][]int64
 }
 
 func New(cfg Config) (*Server, error) {
@@ -78,7 +90,7 @@ func New(cfg Config) (*Server, error) {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 		return nil, errors.New("state directory must have mode 0700")
 	}
-	s := &Server{cfg: cfg, path: filepath.Join(cfg.StateDir, "oauth-state.json"), sessions: map[string]session{}, logins: map[string]int64{}, pending: map[string]grant{}, codes: map[string]grant{}, cimd: map[string]client{}, fetch: fetchCIMD, sem: make(chan struct{}, 4), budget: 60, budgetAt: time.Now()}
+	s := &Server{cfg: cfg, path: filepath.Join(cfg.StateDir, "oauth-state.json"), sessions: map[string]session{}, logins: map[string]loginNonce{}, pending: map[string]grant{}, codes: map[string]grant{}, cimd: map[string]client{}, fetch: fetchCIMD, sem: make(chan struct{}, 4), tokenSem: make(chan struct{}, 4), loginSem: make(chan struct{}, 1), budget: 60, budgetAt: time.Now(), tokenBudget: 30, tokenAt: time.Now(), loginAttempts: map[string][]int64{}}
 	s.state, err = loadState(s.path)
 	if err != nil {
 		return nil, err
@@ -138,8 +150,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	for _, p := range []string{"/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp", "/.well-known/openid-configuration", "/.well-known/openid-configuration/mcp"} {
 		mux.HandleFunc("GET "+p, s.serverMetadata)
 	}
-	for _, p := range []string{"GET /oauth/authorize", "GET /oauth/login", "POST /oauth/login", "POST /oauth/consent", "POST /oauth/register", "POST /oauth/token", "POST /oauth/revoke"} {
+	for _, p := range []string{"GET /oauth/authorize", "GET /oauth/login", "POST /oauth/login", "POST /oauth/consent", "POST /oauth/register"} {
 		mux.Handle(p, s.bounded(http.HandlerFunc(s.route)))
+	}
+	for _, p := range []string{"POST /oauth/token", "POST /oauth/revoke"} {
+		mux.Handle(p, s.tokenBounded(http.HandlerFunc(s.route)))
 	}
 }
 
@@ -156,24 +171,32 @@ func (s *Server) RegisterPathDiscovery(mux *http.ServeMux) {
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource"+u.Path+"/mcp", s.resourceMetadata)
 }
 func (s *Server) bounded(next http.Handler) http.Handler {
+	return s.boundedWith(next, s.sem, &s.budget, &s.budgetAt, 60)
+}
+
+func (s *Server) tokenBounded(next http.Handler) http.Handler {
+	return s.boundedWith(next, s.tokenSem, &s.tokenBudget, &s.tokenAt, 30)
+}
+
+func (s *Server) boundedWith(next http.Handler, sem chan struct{}, budget *float64, budgetAt *time.Time, max float64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
-		case s.sem <- struct{}{}:
-			defer func() { <-s.sem }()
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
 		default:
 			oauthError(w, 503, "temporarily_unavailable")
 			return
 		}
 		s.mu.Lock()
 		now := time.Now()
-		s.budget += now.Sub(s.budgetAt).Seconds()
-		if s.budget > 60 {
-			s.budget = 60
+		*budget += now.Sub(*budgetAt).Seconds()
+		if *budget > max {
+			*budget = max
 		}
-		s.budgetAt = now
-		ok := s.budget >= 1
+		*budgetAt = now
+		ok := *budget >= 1
 		if ok {
-			s.budget--
+			*budget = *budget - 1
 		}
 		s.mu.Unlock()
 		if !ok {
@@ -188,6 +211,11 @@ func (s *Server) bounded(next http.Handler) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
 		// Chromium serializes a same-origin form POST's Origin as "null" under
 		// no-referrer. Keep the origin for local forms, but suppress cross-origin
 		// referrers so authorization query parameters never reach callbacks.
@@ -428,11 +456,9 @@ var pageTemplate = template.Must(template.New("owner").Parse(`<!doctype html><ht
 
 func (s *Server) page(w http.ResponseWriter, d pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	source := ""
-	if d.Consent {
-		source = " " + d.CallbackOrigin
-	}
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; form-action 'self'"+source+"; frame-ancestors 'none'; base-uri 'none'")
+	// Consent is persisted by this server and the callback redirect is issued
+	// with a server-side 303, so the form never needs an external form-action.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	_ = pageTemplate.Execute(w, d)
 }
 func safeNext(raw string) string {
@@ -446,6 +472,89 @@ func (s *Server) browserOK(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	return (origin == "" || origin == s.cfg.Issuer) && r.Header.Get("Sec-Fetch-Site") != "cross-site"
 }
+
+// oauthClientNetwork returns a stable coarse network for the edge client. The
+// service sees Cloudflare through loopback; trust its overwritten forwarding
+// headers only in that case. Direct callers never get to choose their bucket
+// via a spoofed header.
+func oauthClientNetwork(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return "unknown"
+	}
+	remote, err := netip.ParseAddr(host)
+	if err != nil || !remote.IsValid() {
+		return "unknown"
+	}
+	remote = remote.Unmap()
+	if remote.IsLoopback() {
+		if candidate, err := netip.ParseAddr(strings.TrimSpace(r.Header.Get("CF-Connecting-IP"))); err == nil && candidate.IsValid() {
+			return maskClientNetwork(candidate.Unmap())
+		}
+		values := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+		for i := len(values) - 1; i >= 0; i-- {
+			candidate, err := netip.ParseAddr(strings.TrimSpace(values[i]))
+			if err != nil || !candidate.IsValid() || candidate.IsLoopback() {
+				continue
+			}
+			return maskClientNetwork(candidate.Unmap())
+		}
+	}
+	return maskClientNetwork(remote)
+}
+
+func maskClientNetwork(addr netip.Addr) string {
+	bits := 64
+	if addr.Is4() {
+		bits = 24
+	}
+	return netip.PrefixFrom(addr, bits).Masked().String()
+}
+
+func (s *Server) loginAllowedLocked(ip string, now time.Time) bool {
+	if s.loginWindow.IsZero() || now.Sub(s.loginWindow) >= time.Minute {
+		s.loginWindow = now
+		s.loginCount = 0
+	}
+	cutoff := now.Add(-15 * time.Minute).Unix()
+	recent := s.loginAttempts[ip]
+	kept := recent[:0]
+	perMinute, perQuarter := 0, 0
+	for _, at := range recent {
+		if at <= cutoff {
+			continue
+		}
+		kept = append(kept, at)
+		perQuarter++
+		if at > now.Add(-time.Minute).Unix() {
+			perMinute++
+		}
+	}
+	s.loginAttempts[ip] = kept
+	return s.loginCount < maxLoginGlobal && perMinute < maxLoginPerMin && perQuarter < maxLoginPer15m
+}
+
+func (s *Server) recordLoginFailureLocked(ip string, now time.Time) {
+	if s.loginWindow.IsZero() || now.Sub(s.loginWindow) >= time.Minute {
+		s.loginWindow = now
+		s.loginCount = 0
+	}
+	s.loginCount++
+	s.loginAttempts[ip] = append(s.loginAttempts[ip], now.Unix())
+	if len(s.loginAttempts) > 1024 {
+		for key := range s.loginAttempts {
+			if key != ip {
+				delete(s.loginAttempts, key)
+				break
+			}
+		}
+	}
+}
+
+func (s *Server) clearLoginFailuresLocked(ip string) {
+	delete(s.loginAttempts, ip)
+}
+
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		next := safeNext(r.URL.Query().Get("next"))
@@ -455,15 +564,24 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Lock()
 		s.pruneLocked()
-		if len(s.logins) >= maxPending {
+		now := time.Now()
+		ip := oauthClientNetwork(r)
+		pendingForIP := 0
+		for _, entry := range s.logins {
+			if entry.ip == ip && entry.expires > now.Unix() {
+				pendingForIP++
+			}
+		}
+		if len(s.logins) >= maxPending || pendingForIP >= maxLoginPending {
 			s.mu.Unlock()
-			oauthError(w, 503, "temporarily_unavailable")
+			w.Header().Set("Retry-After", "30")
+			oauthError(w, 429, "temporarily_unavailable")
 			return
 		}
 		nonce := randomToken()
-		s.logins[digest(nonce)] = time.Now().Add(10 * time.Minute).Unix()
+		s.logins[digest(nonce)] = loginNonce{expires: now.Add(loginNonceTTL).Unix(), ip: ip}
 		s.mu.Unlock()
-		http.SetCookie(w, &http.Cookie{Name: "__Host-chaoxing-login", Value: nonce, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 600})
+		http.SetCookie(w, &http.Cookie{Name: "__Host-chaoxing-login", Value: nonce, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(loginNonceTTL.Seconds())})
 		s.page(w, pageData{Nonce: nonce, Next: next})
 		return
 	}
@@ -480,25 +598,43 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	s.pruneLocked()
-	expiry, ok := s.logins[digest(nonce)]
-	delete(s.logins, digest(nonce))
-	if time.Since(s.loginWindow) >= time.Minute {
-		s.loginWindow = time.Now()
-		s.loginCount = 0
-	}
-	s.loginCount++
-	limited := s.loginCount > 6
+	now := time.Now()
+	nonceKey := digest(nonce)
+	entry, ok := s.logins[nonceKey]
+	delete(s.logins, nonceKey)
 	s.mu.Unlock()
-	if !ok || expiry <= time.Now().Unix() || limited {
+	if !ok || entry.expires <= now.Unix() {
+		w.Header().Set("Retry-After", "60")
 		oauthError(w, 429, "access_denied")
 		return
 	}
+	s.mu.Lock()
+	ip := oauthClientNetwork(r)
+	limited := !s.loginAllowedLocked(ip, now)
+	s.mu.Unlock()
+	if limited {
+		w.Header().Set("Retry-After", "60")
+		oauthError(w, 429, "access_denied")
+		return
+	}
+	select {
+	case s.loginSem <- struct{}{}:
+		defer func() { <-s.loginSem }()
+	default:
+		w.Header().Set("Retry-After", "2")
+		oauthError(w, 429, "temporarily_unavailable")
+		return
+	}
 	if !verifyPassword(s.cfg.OwnerPasswordHash, r.PostForm.Get("password")) {
+		s.mu.Lock()
+		s.recordLoginFailureLocked(ip, time.Now())
+		s.mu.Unlock()
 		oauthError(w, 403, "access_denied")
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearLoginFailuresLocked(ip)
 	if len(s.sessions) >= maxPending {
 		oauthError(w, 503, "temporarily_unavailable")
 		return

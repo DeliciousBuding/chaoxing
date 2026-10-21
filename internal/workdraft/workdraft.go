@@ -133,13 +133,13 @@ func (s *Store) answer(ctx context.Context, args map[string]any) (any, error) {
 	}
 	s.works[key] = work
 	saveErr := s.save()
-	s.mu.Unlock()
-	if saveErr != nil {
-		return nil, saveErr
-	}
 	drafts := make([]Item, 0, len(work.Questions))
 	for _, item := range work.Questions {
 		drafts = append(drafts, item)
+	}
+	s.mu.Unlock()
+	if saveErr != nil {
+		return nil, saveErr
 	}
 	sort.Slice(drafts, func(i, j int) bool { return drafts[i].QuestionID < drafts[j].QuestionID })
 	return map[string]any{
@@ -221,6 +221,10 @@ func (s *Store) export(ctx context.Context, args map[string]any) (any, error) {
 	}
 	s.mu.Lock()
 	work := s.works[workKey(arg(args, "course_id"), arg(args, "class_id"), arg(args, "job_id"))]
+	questions := make(map[string]Item, len(work.Questions))
+	for id, item := range work.Questions {
+		questions[id] = item
+	}
 	s.mu.Unlock()
 	save := map[string]string{}
 	for key, value := range set.FormData {
@@ -234,7 +238,7 @@ func (s *Store) export(ctx context.Context, args map[string]any) (any, error) {
 	submit["pyFlag"] = ""
 	answered := 0
 	for _, question := range set.Questions {
-		draft, ok := work.Questions[question.ID]
+		draft, ok := questions[question.ID]
 		if !ok {
 			continue
 		}

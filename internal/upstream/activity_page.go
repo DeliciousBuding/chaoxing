@@ -12,6 +12,8 @@ import (
 	"golang.org/x/net/html"
 )
 
+const maxActivityPageBytes = 1 << 20
+
 type activityPageLink struct {
 	Href string `json:"href"`
 	Text string `json:"text,omitempty"`
@@ -66,11 +68,15 @@ func (c *Client) activityPageLocked(ctx context.Context, args map[string]any) (a
 	if !ok {
 		return nil, fault("NOT_FOUND", "activity is not in the current class feed")
 	}
-	entry, err := url.Parse(strings.TrimSpace(activity.URL))
+	rawURL := activity.RawURL
+	if rawURL == "" {
+		rawURL = activity.URL
+	}
+	entry, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || !safeURL(entry) {
 		return nil, fault("UNSUPPORTED", "activity has no safe page URL")
 	}
-	body, resp, err := c.authenticatedReadResponse(ctx, "GET", entry.String(), nil)
+	body, resp, err := c.authenticatedReadResponseLimit(ctx, "GET", entry.String(), nil, maxActivityPageBytes)
 	if err != nil {
 		return nil, err
 	}

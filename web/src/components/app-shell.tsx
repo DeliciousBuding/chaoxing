@@ -27,7 +27,7 @@ const SidebarButton = React.memo(function SidebarButton({
       onClick={onClick}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "group relative flex h-10 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-all",
+        "group relative flex h-10 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         active
           ? "bg-primary/14 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
           : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
@@ -55,7 +55,7 @@ function Sidebar({ version }: { version: string }) {
         </div>
       </div>
       <div role="separator" className="my-3 h-px w-full shrink-0 bg-border" />
-      <nav className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
+      <nav aria-label="主导航" className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
         {pageGroups.map((group) => (
           <div key={group.id} className="space-y-1">
             <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">{group.title}</div>
@@ -86,7 +86,7 @@ function ThemeSelect() {
   return (
     <div className="relative">
       <Palette className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-      <Select className="h-9 w-[132px] pl-9" value={theme} onChange={(event) => setTheme(event.target.value as Theme)}>
+      <Select aria-label="主题" className="h-9 w-[132px] pl-9" value={theme} onChange={(event) => setTheme(event.target.value as Theme)}>
         {themes.map((item) => (
           <option key={item} value={item}>{themeLabels[item]}</option>
         ))}
@@ -120,7 +120,7 @@ function Header({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <ThemeSelect />
-          <Select className="h-9 w-44" value={account?.current ?? session.account ?? "root"} onChange={(event) => onSwitchAccount(event.target.value)}>
+          <Select aria-label="当前账号" className="h-9 w-44" value={account?.current ?? session.account ?? "root"} onChange={(event) => onSwitchAccount(event.target.value)}>
             {accounts.map((item) => (
               <option key={item.id} value={item.id}>{item.name}</option>
             ))}
@@ -141,7 +141,7 @@ function MobileNav() {
   const page = useUIStore((state) => state.page);
   const setPage = useUIStore((state) => state.setPage);
   return (
-    <div className="flex gap-2 overflow-x-auto border-b border-border/70 bg-card/60 px-4 py-3 lg:hidden">
+    <div role="navigation" aria-label="页面导航" className="flex gap-2 overflow-x-auto border-b border-border/70 bg-card/60 px-4 py-3 lg:hidden">
       {pages.map((item) => {
         const Icon = item.icon;
         return (
@@ -149,8 +149,9 @@ function MobileNav() {
             key={item.id}
             type="button"
             onClick={() => setPage(item.id as PageId)}
+            aria-current={page === item.id ? "page" : undefined}
             className={cn(
-              "flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition",
+              "flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
               page === item.id ? "border-primary/50 bg-primary/15 text-primary" : "border-border bg-background/60 text-muted-foreground"
             )}
           >
@@ -185,6 +186,12 @@ export function AppShell({
     const saved = Number(window.localStorage.getItem("chaoxing-nova-layout:sidebar"));
     return Number.isFinite(saved) && saved >= 15 && saved <= 27 ? saved : 18;
   });
+  const mainRef = React.useRef<HTMLElement | null>(null);
+
+  React.useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0 });
+    mainRef.current?.focus({ preventScroll: true });
+  }, [page]);
 
   const saveLayout = React.useCallback((layout: Layout, meta: { isUserInteraction: boolean }) => {
     const next = layout.sidebar;
@@ -199,9 +206,15 @@ export function AppShell({
 
   const content = (
     <>
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-xl focus:bg-primary focus:px-4 focus:py-2 focus:text-primary-foreground"
+      >
+        跳到主要内容
+      </a>
       <Header session={session} account={account} onSwitchAccount={onSwitchAccount} onLogout={onLogout} onRefresh={onRefresh} />
       {!isDesktop && <MobileNav />}
-      <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-12 sm:p-5 lg:p-6">
+      <main ref={mainRef} id="main-content" tabIndex={-1} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-12 sm:p-5 lg:p-6 focus:outline-none">
         <MotionDiv key={page} {...transition} transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}>
           {children}
         </MotionDiv>

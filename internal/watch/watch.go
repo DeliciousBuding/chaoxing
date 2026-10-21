@@ -140,6 +140,7 @@ type Metrics struct {
 	LastPanicKind     string    `json:"last_panic_kind,omitempty"`
 	Ticks             uint64    `json:"ticks"`
 	ActiveClassPolls  uint64    `json:"active_class_polls"`
+	StateDegraded     bool      `json:"state_degraded,omitempty"`
 }
 
 type Runner struct {
@@ -169,7 +170,13 @@ const (
 	defaultPollPadding = 20 * time.Minute
 	maxPollPadding     = 30 * time.Minute
 	maxWatchStateBytes = 2 << 20
-	tickBudget         = 90 * time.Second
+	// A tick has three independently valuable phases: discovery, sign-in and
+	// best-effort evidence collection. Keep an overall supervision budget, but
+	// give discovery its own shorter budget so a slow class feed cannot consume
+	// the time reserved for signing.
+	tickBudget      = 150 * time.Second
+	pollBudget      = 60 * time.Second
+	groupScanBudget = 30 * time.Second
 )
 
 func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer, answerer ...AnswerActivitySource) (*Runner, error) {
@@ -639,25 +646,26 @@ func (r *Runner) Tick(ctx context.Context) {
 	active := map[string]upstream.Activity{}
 	classes := map[string]Class{}
 	byCourseClass := map[string]Class{}
+	captured := []upstream.Activity{}
 	polledClasses := 0
+	pollCtx, cancelPoll := context.WithTimeout(ctx, pollBudget)
+	defer cancelPoll()
 	for _, class := range r.cfg.Classes {
 		byCourseClass[class.CourseID+":"+class.ClassID] = class
 		if !classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) {
 			continue
 		}
-		if polledClasses > 0 && !r.wait(ctx, r.classPollDelay()) {
-			return
+		if polledClasses > 0 && !r.wait(pollCtx, r.classPollDelay()) {
+			break
 		}
 		polledClasses++
 		r.activePolls.Add(1)
-		items, err := r.source.ListClassActivities(ctx, class.CourseID, class.ClassID)
+		items, err := r.source.ListClassActivities(pollCtx, class.CourseID, class.ClassID)
 		if err != nil {
 			log.Printf("activity watch: class %s: %s", class.ClassID, upstream.SafeFault(err).Code)
 			continue
 		}
-		if r.cfg.Capture {
-			r.captureActivities(ctx, items, now)
-		}
+		captured = append(captured, items...)
 		for _, item := range items {
 			if item.Signable || item.Answerable {
 				k := key(item)
@@ -666,34 +674,67 @@ func (r *Runner) Tick(ctx context.Context) {
 			}
 		}
 	}
+	// Act on the primary class feed before any evidence capture or fallback
+	// group sweep. A slow page fetch or group scan must never delay a sign-in
+	// that has already been discovered.
+	changed := r.processActivities(ctx, active, classes, now)
 	if groupSource, ok := r.source.(GroupActivitySource); ok && polledClasses > 0 {
 		// Course-group history is a fallback for cards missing from the class
 		// feed. Scan it on a slower cadence, and only while a watched class is
 		// active, so the primary sign-in loop stays fast and predictable.
 		if r.lastGroupScan.IsZero() || now.Sub(r.lastGroupScan) >= r.cfg.GroupScanInterval {
-			if !r.wait(ctx, r.classPollDelay()) {
-				return
-			}
-			r.lastGroupScan = now
-			groupRows, err := groupSource.ListGroupActivities(ctx)
-			if err != nil {
-				log.Printf("activity watch: group feed: %s", upstream.SafeFault(err).Code)
-			} else if r.cfg.Capture {
-				r.captureActivities(ctx, groupRows, now)
-			}
-			for _, item := range groupRows {
-				class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
-				if !ok || !classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) || !item.Signable {
-					continue
+			groupCtx, cancelGroup := context.WithTimeout(ctx, groupScanBudget)
+			if r.wait(groupCtx, r.classPollDelay()) {
+				groupRows, err := groupSource.ListGroupActivities(groupCtx)
+				if err != nil {
+					log.Printf("activity watch: group feed: %s", upstream.SafeFault(err).Code)
+					r.lastGroupScan = now.Add(-r.cfg.GroupScanInterval + 30*time.Second)
+				} else {
+					r.lastGroupScan = now
+					for _, item := range groupRows {
+						class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
+						if !ok || !classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) || !item.Signable {
+							continue
+						}
+						k := key(item)
+						if _, exists := active[k]; !exists {
+							active[k] = item
+							classes[k] = class
+						}
+					}
+					changed = r.processActivities(ctx, active, classes, now) || changed
+					captured = append(captured, groupRows...)
 				}
-				k := key(item)
-				if _, exists := active[k]; !exists {
-					active[k] = item
-					classes[k] = class
-				}
 			}
+			cancelGroup()
 		}
 	}
+	// Page evidence is best-effort and deliberately runs after every sign-in
+	// decision, including the group fallback. A slow or oversized H5 page must
+	// not delay a sign-in that the group feed discovered.
+	if r.cfg.Capture {
+		r.captureActivities(ctx, captured, now)
+	}
+	changed = r.pruneInactive(active, now) || changed
+	if r.cfg.Capture && (r.lastCapturePrune.IsZero() || now.Sub(r.lastCapturePrune) >= time.Hour) {
+		if err := r.cfg.CaptureStore.PruneActivityCaptures(ctx, r.cfg.CaptureAccount, now.Add(-r.cfg.CaptureRetention)); err != nil {
+			log.Printf("activity capture prune failed: %v", err)
+		} else {
+			r.lastCapturePrune = now
+		}
+	}
+	if changed {
+		if err := r.save(); err != nil {
+			log.Printf("activity watch: state write failed: %v", err)
+		}
+	}
+}
+
+// processActivities performs the time-critical sign-in/answer decisions for
+// every activity currently known to this tick. It is intentionally separate
+// from pruning and persistence so it can run as soon as discovery produces
+// actionable rows, before slower capture work.
+func (r *Runner) processActivities(ctx context.Context, active map[string]upstream.Activity, classes map[string]Class, now time.Time) bool {
 	changed := false
 	for k, item := range active {
 		e, seen := r.state[k]
@@ -716,7 +757,7 @@ func (r *Runner) Tick(ctx context.Context) {
 			if seen && e.Status == "failed" {
 				priority = 8
 			}
-			if err := r.sender.Send(ctx, notify.Message{Title: title, Body: body, Priority: priority}); err != nil {
+			if err := r.notify(ctx, notify.Message{Title: title, Body: body, Priority: priority}); err != nil {
 				log.Printf("activity watch: notify failed: %v", err)
 				continue
 			}
@@ -725,9 +766,12 @@ func (r *Runner) Tick(ctx context.Context) {
 			continue
 		}
 		if r.cfg.AutoSign && autoSignType(item, classes[k]) && (!seen || e.LastAttempt.IsZero()) {
-			scheduleKey := activeScheduleKey(now, classes[k], r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart)
-			changed = r.autoSign(ctx, classes[k], item, e, scheduleKey) || changed
-			continue
+			scheduleKey, ambiguous := activeScheduleKeyInfo(now, classes[k], r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart)
+			if !ambiguous {
+				changed = r.autoSign(ctx, classes[k], item, e, scheduleKey) || changed
+				continue
+			}
+			log.Printf("activity watch: overlapping schedules for class %s; refusing automatic location selection", item.ClassID)
 		}
 		if seen && e.Status == "signed" {
 			continue
@@ -749,7 +793,7 @@ func (r *Runner) Tick(ctx context.Context) {
 				priority = 9
 			}
 		}
-		if err := r.sender.Send(ctx, notify.Message{Title: title, Body: body, Priority: priority}); err != nil {
+		if err := r.notify(ctx, notify.Message{Title: title, Body: body, Priority: priority}); err != nil {
 			log.Printf("activity watch: notify failed: %v", err)
 			continue
 		}
@@ -757,28 +801,23 @@ func (r *Runner) Tick(ctx context.Context) {
 		changed = true
 		log.Printf("activity watch: alerted %s (attempt %d)", item.ID, e.Count+1)
 	}
+	return changed
+}
+
+func (r *Runner) pruneInactive(active map[string]upstream.Activity, now time.Time) bool {
+	changed := false
 	for k, e := range r.state {
-		if _, still := active[k]; !still && now.Sub(maxTime(e.LastSent, e.LastAttempt)) > 6*time.Hour {
+		last := maxTime(e.LastSent, e.LastAttempt)
+		// Drop rows that disappeared from the feed after six hours, and keep a
+		// hard 24-hour ceiling for activities that somehow remain in the feed.
+		// Without the second bound a permanently returned row would keep the
+		// private state file growing until its write limit is reached.
+		if _, still := active[k]; (!still && now.Sub(last) > 6*time.Hour) || now.Sub(last) > 24*time.Hour {
 			delete(r.state, k)
 			changed = true
 		}
-		if now.Sub(maxTime(e.LastSent, e.LastAttempt)) > 24*time.Hour {
-			delete(r.state, k)
-			changed = true
-		}
 	}
-	if r.cfg.Capture && (r.lastCapturePrune.IsZero() || now.Sub(r.lastCapturePrune) >= time.Hour) {
-		if err := r.cfg.CaptureStore.PruneActivityCaptures(ctx, r.cfg.CaptureAccount, now.Add(-r.cfg.CaptureRetention)); err != nil {
-			log.Printf("activity capture prune failed: %v", err)
-		} else {
-			r.lastCapturePrune = now
-		}
-	}
-	if changed {
-		if err := r.save(); err != nil {
-			log.Printf("activity watch: state write failed: %v", err)
-		}
-	}
+	return changed
 }
 
 func (r *Runner) classPollDelay() time.Duration {
@@ -811,7 +850,11 @@ func waitContext(ctx context.Context, d time.Duration) bool {
 }
 
 func (r *Runner) captureActivities(ctx context.Context, items []upstream.Activity, now time.Time) {
+	pageCaptured := false
 	for _, item := range items {
+		if ctx.Err() != nil {
+			return
+		}
 		payload, err := json.Marshal(item)
 		if err != nil {
 			continue
@@ -827,9 +870,13 @@ func (r *Runner) captureActivities(ctx context.Context, items []upstream.Activit
 			log.Printf("activity capture save failed: class=%s code=%s", item.ClassID, upstream.SafeFault(err).Code)
 			continue
 		}
-		if !r.cfg.CaptureActivityPages || (item.Kind != "practice" && item.Kind != "homework") || saved.HadPage {
+		if !r.cfg.CaptureActivityPages || pageCaptured || (item.Kind != "practice" && item.Kind != "homework") || saved.HadPage {
 			continue
 		}
+		// At most one page fetch per tick. A 1 MiB HTML page is already a
+		// meaningful heap spike on the router; fan-out across one class's
+		// activities would starve the next polling cycle.
+		pageCaptured = true
 		page, err := r.cfg.ActivityPageSource.ActivityPage(ctx, map[string]any{
 			"course_id": item.CourseID, "class_id": item.ClassID, "activity_id": item.ID,
 		})
@@ -864,20 +911,24 @@ func (r *Runner) autoAnswer(ctx context.Context, item upstream.Activity, e entry
 	if err != nil {
 		safe := upstream.SafeFault(err)
 		next.Status, next.Code = "failed", safe.Code
+		if retryableActivityError(err) {
+			next.LastAttempt = time.Time{}
+			next.Status = "retry"
+		}
 		title, body = "🚨 学习通自动抢答失败", formatFailureBody(item, safe.Code)
 	} else {
 		next.Status, next.Method, next.Code = "answered", result.Method, ""
 	}
-	r.state[key(item)] = next
 	priority := 6
 	if err != nil {
 		priority = 8
 	}
-	if sendErr := r.sender.Send(ctx, notify.Message{Title: title, Body: body, Priority: priority}); sendErr != nil {
+	if sendErr := r.notify(ctx, notify.Message{Title: title, Body: body, Priority: priority}); sendErr != nil {
 		log.Printf("activity watch: notify failed: %v", sendErr)
 	} else {
 		next.LastSent, next.Count = now, e.Count+1
 	}
+	r.state[key(item)] = next
 	log.Printf("activity watch: auto answer %s: status=%s", item.ID, next.Status)
 	return true
 }
@@ -889,7 +940,7 @@ func (r *Runner) recordAnswerReview(ctx context.Context, item upstream.Activity,
 	now := r.now()
 	next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: "review", Method: "agent", Code: decision.Reason}
 	title, body := "🧠 学习通课堂答题需要确认", formatReviewBody(item, decision)
-	if err := r.sender.Send(ctx, notify.Message{Title: title, Body: body, Priority: 7}); err != nil {
+	if err := r.notify(ctx, notify.Message{Title: title, Body: body, Priority: 7}); err != nil {
 		log.Printf("activity watch: notify failed: %v", err)
 	} else {
 		next.LastSent, next.Count = now, e.Count+1
@@ -910,7 +961,7 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 			now := r.now()
 			next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: "failed", Code: "LOCATION_RESOLVE_FAILED"}
 			r.state[key(item)] = next
-			if sendErr := r.sender.Send(ctx, notify.Message{Title: "🚨 学习通位置解析失败", Body: formatFailureBody(item, "LOCATION_RESOLVE_FAILED"), Priority: 8}); sendErr != nil {
+			if sendErr := r.notify(ctx, notify.Message{Title: "🚨 学习通位置解析失败", Body: formatFailureBody(item, "LOCATION_RESOLVE_FAILED"), Priority: 8}); sendErr != nil {
 				log.Printf("activity watch: notify failed: %v", sendErr)
 			}
 			return true
@@ -934,22 +985,47 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 	if err != nil {
 		safe := upstream.SafeFault(err)
 		next.Status, next.Code = "failed", safe.Code
+		if retryableActivityError(err) {
+			next.LastAttempt = time.Time{}
+			next.Status = "retry"
+		}
 		title, body = "🚨 学习通自动签到失败", formatFailureBody(item, safe.Code)
 	} else {
 		next.Status, next.Method, next.Code = "signed", result.Method, ""
 	}
-	r.state[key(item)] = next
 	priority := 6
 	if err != nil {
 		priority = 8
 	}
-	if sendErr := r.sender.Send(ctx, notify.Message{Title: title, Body: body, Priority: priority}); sendErr != nil {
+	if sendErr := r.notify(ctx, notify.Message{Title: title, Body: body, Priority: priority}); sendErr != nil {
 		log.Printf("activity watch: notify failed: %v", sendErr)
 	} else {
 		next.LastSent, next.Count = now, e.Count+1
 	}
+	r.state[key(item)] = next
 	log.Printf("activity watch: auto sign %s: status=%s", item.ID, next.Status)
 	return true
+}
+
+func (r *Runner) notify(ctx context.Context, message notify.Message) error {
+	notifyCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	return r.sender.Send(notifyCtx, message)
+}
+
+func retryableActivityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	switch upstream.SafeFault(err).Code {
+	case "UPSTREAM_UNAVAILABLE", "RATE_LIMITED", "AUTH_COOLDOWN":
+		return true
+	default:
+		return false
+	}
 }
 
 func autoSignType(item upstream.Activity, class Class) bool {
@@ -964,12 +1040,23 @@ func autoSignType(item upstream.Activity, class Class) bool {
 }
 
 func activeScheduleKey(t time.Time, class Class, before, after time.Duration, termStart time.Time) string {
+	key, _ := activeScheduleKeyInfo(t, class, before, after, termStart)
+	return key
+}
+
+func activeScheduleKeyInfo(t time.Time, class Class, before, after time.Duration, termStart time.Time) (string, bool) {
+	keys := map[string]struct{}{}
 	for _, schedule := range class.Schedule {
 		if scheduleActiveAt(t, schedule, before, after, termStart) {
-			return schedule.EffectiveKey()
+			keys[schedule.EffectiveKey()] = struct{}{}
 		}
 	}
-	return ""
+	if len(keys) == 1 {
+		for key := range keys {
+			return key, false
+		}
+	}
+	return "", len(keys) > 1
 }
 
 func classActive(t time.Time, class Class, before, after time.Duration, termStart time.Time) bool {
@@ -1302,11 +1389,11 @@ func (r *Runner) load() error {
 		return err
 	}
 	if len(b) > maxWatchStateBytes {
-		return errors.New("watch state exceeds size limit")
+		return r.recoverState(errors.New("watch state exceeds size limit"))
 	}
 	var s stateFile
 	if json.Unmarshal(b, &s) != nil || s.Entries == nil || (s.Version != 1 && s.Version != 2) {
-		return errors.New("watch state is invalid")
+		return r.recoverState(errors.New("watch state is invalid or unsupported"))
 	}
 	if s.Version == 1 {
 		for k, e := range s.Entries {
@@ -1315,6 +1402,17 @@ func (r *Runner) load() error {
 		}
 	}
 	r.state = s.Entries
+	return nil
+}
+
+func (r *Runner) recoverState(cause error) error {
+	backup := r.cfg.StatePath + ".corrupt-" + time.Now().UTC().Format("20060102T150405Z")
+	if err := os.Rename(r.cfg.StatePath, backup); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("watch state is unusable and could not be preserved: %w", cause)
+	}
+	log.Printf("activity watch: state set aside at %s: %v", backup, cause)
+	r.state = map[string]entry{}
+	r.metrics.StateDegraded = true
 	return nil
 }
 

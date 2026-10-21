@@ -47,13 +47,24 @@ type SignRequest struct {
 }
 
 type SignResult struct {
-	ActivityID string    `json:"activity_id"`
-	CourseID   string    `json:"course_id"`
-	ClassID    string    `json:"class_id"`
-	Method     string    `json:"method"`
-	State      string    `json:"state"`
-	Verified   bool      `json:"verified"`
-	FetchedAt  time.Time `json:"fetched_at"`
+	ActivityID   string    `json:"activity_id"`
+	CourseID     string    `json:"course_id"`
+	ClassID      string    `json:"class_id"`
+	Method       string    `json:"method"`
+	State        string    `json:"state"`
+	Verified     bool      `json:"verified"`
+	Address      string    `json:"address,omitempty"`
+	Latitude     *float64  `json:"latitude,omitempty"`
+	Longitude    *float64  `json:"longitude,omitempty"`
+	EgressIP     string    `json:"egress_ip,omitempty"`
+	EgressSource string    `json:"egress_ip_source,omitempty"`
+	FetchedAt    time.Time `json:"fetched_at"`
+}
+
+type signAuditTrace struct {
+	Address   string
+	Latitude  *float64
+	Longitude *float64
 }
 
 type activeInfo struct {
@@ -79,16 +90,31 @@ type locationResultPayload struct {
 // as MCP/CLI calls so sign state cannot race a concurrent query.
 func (c *Client) SignActivity(ctx context.Context, req SignRequest) (SignResult, error) {
 	if err := c.lock(ctx); err != nil {
+		c.recordSignAudit(req, SignResult{}, err, nil)
 		return SignResult{}, err
 	}
-	defer c.queries.Release()
-	return c.signActivityWithSolver(ctx, req)
+	trace := &signAuditTrace{}
+	result, signErr := func() (SignResult, error) {
+		defer c.queries.Release()
+		return c.signActivityWithSolver(ctx, req, trace)
+	}()
+	c.recordSignAudit(req, result, signErr, trace)
+	return result, signErr
+}
+
+// signActivityLocked is used by Call, which already owns the account query
+// slot. It keeps manual MCP/CLI sign-in on the same audit path as the watcher.
+func (c *Client) signActivityLocked(ctx context.Context, req SignRequest) (SignResult, error) {
+	trace := &signAuditTrace{}
+	result, err := c.signActivityWithSolver(ctx, req, trace)
+	c.recordSignAudit(req, result, err, trace)
+	return result, err
 }
 
 // signActivityWithSolver runs the sign state machine and, when a solver is
 // configured, resolves one slider challenge before a single retry.
-func (c *Client) signActivityWithSolver(ctx context.Context, req SignRequest) (SignResult, error) {
-	result, err := c.signActivity(ctx, req)
+func (c *Client) signActivityWithSolver(ctx context.Context, req SignRequest, trace *signAuditTrace) (SignResult, error) {
+	result, err := c.signActivity(ctx, req, trace)
 	if err == nil || c.config.CaptchaSolver == nil {
 		return result, err
 	}
@@ -98,12 +124,12 @@ func (c *Client) signActivityWithSolver(ctx context.Context, req SignRequest) (S
 	if solveErr := c.solveSignCaptcha(ctx, req); solveErr != nil {
 		return SignResult{}, solveErr
 	}
-	return c.signActivity(ctx, req)
+	return c.signActivity(ctx, req, trace)
 }
 
 // signActivity submits exactly one selected activity and verifies attendance.
 // Callers must already hold the account query slot.
-func (c *Client) signActivity(ctx context.Context, req SignRequest) (SignResult, error) {
+func (c *Client) signActivity(ctx context.Context, req SignRequest, trace *signAuditTrace) (SignResult, error) {
 	if strings.TrimSpace(req.CourseID) == "" || strings.TrimSpace(req.ClassID) == "" || strings.TrimSpace(req.ActivityID) == "" {
 		return SignResult{}, fault("INVALID_ARGUMENT", "course, class and activity IDs are required")
 	}
@@ -188,7 +214,7 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest) (SignResult,
 		}
 		return SignResult{}, fault("UNSUPPORTED", "only normal, location, gesture and password sign-in are implemented")
 	}
-	state, err := c.signSelected(ctx, activity, info, req, method)
+	state, err := c.signSelected(ctx, activity, info, req, method, trace)
 	if err != nil {
 		return SignResult{}, err
 	}
@@ -213,7 +239,8 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest) (SignResult,
 	}
 	return SignResult{
 		ActivityID: activity.ID, CourseID: activity.CourseID, ClassID: activity.ClassID,
-		Method: method, State: state, Verified: true, FetchedAt: time.Now().UTC(),
+		Method: method, State: state, Verified: true, Address: trace.Address,
+		Latitude: trace.Latitude, Longitude: trace.Longitude, FetchedAt: time.Now().UTC(),
 	}, nil
 }
 
@@ -294,7 +321,10 @@ func (c *Client) attendanceVerified(ctx context.Context, activityID string) (boo
 	return payload.Data.Status.value != 0, nil
 }
 
-func (c *Client) signSelected(ctx context.Context, activity Activity, info activeInfo, req SignRequest, method string) (string, error) {
+func (c *Client) signSelected(ctx context.Context, activity Activity, info activeInfo, req SignRequest, method string, trace *signAuditTrace) (string, error) {
+	if trace != nil {
+		trace.Address = strings.TrimSpace(req.Address)
+	}
 	identity, err := c.fetchSignIdentity(ctx)
 	if err != nil {
 		return "", err
@@ -361,7 +391,7 @@ func (c *Client) signSelected(ctx context.Context, activity Activity, info activ
 			return "", err
 		}
 		req.FaceEnc, req.FaceCode = faceEnc, faceCode
-		return c.signFace(ctx, activity, info, req, identity)
+		return c.signFace(ctx, activity, info, req, identity, trace)
 	}
 	if method == "password" || method == "gesture" {
 		if err := c.checkSignCode(ctx, activity.ID, req.SignCode); err != nil {
@@ -417,7 +447,7 @@ func (c *Client) signSelected(ctx context.Context, activity Activity, info activ
 		return signResponseState(string(b))
 	}
 
-	state, err := c.signLocation(ctx, activity, info, req, identity, false)
+	state, err := c.signLocation(ctx, activity, info, req, identity, false, trace)
 	if err == nil {
 		return state, nil
 	}
@@ -427,7 +457,7 @@ func (c *Client) signSelected(ctx context.Context, activity Activity, info activ
 	}
 	// The reference client tightens its random offset after errorLocation and
 	// lets the operator retry once. Automatic mode performs that single retry.
-	return c.signLocation(ctx, activity, info, req, identity, true)
+	return c.signLocation(ctx, activity, info, req, identity, true, trace)
 }
 
 func (c *Client) checkSignCode(ctx context.Context, activityID, code string) error {
@@ -444,7 +474,7 @@ func (c *Client) checkSignCode(ctx context.Context, activityID, code string) err
 	return nil
 }
 
-func (c *Client) signLocation(ctx context.Context, activity Activity, info activeInfo, req SignRequest, identity signIdentity, tight bool) (string, error) {
+func (c *Client) signLocation(ctx context.Context, activity Activity, info activeInfo, req SignRequest, identity signIdentity, tight bool, trace *signAuditTrace) (string, error) {
 	if info.LocationLat == nil || info.LocationLng == nil {
 		return "", fault("UNSUPPORTED", "location activity has no published center")
 	}
@@ -458,6 +488,9 @@ func (c *Client) signLocation(ctx context.Context, activity Activity, info activ
 	lat, lng = jitterLocation(lat, lng, tight)
 	address := firstNonBlank(req.Address, activity.Course, "课堂位置")
 	resultLat, resultLng := roundCoordinate(lat, 6), roundCoordinate(lng, 6)
+	if trace != nil {
+		trace.Address, trace.Latitude, trace.Longitude = address, &resultLat, &resultLng
+	}
 	locationResult, err := json.Marshal(locationResultPayload{
 		Result: 1, Latitude: resultLat, Longitude: resultLng, Address: address,
 		MockData: `{"strategy":0,"probability":-1}`,
@@ -489,7 +522,7 @@ func (c *Client) signLocation(ctx context.Context, activity Activity, info activ
 	return signResponseState(string(b))
 }
 
-func (c *Client) signFace(ctx context.Context, activity Activity, info activeInfo, req SignRequest, identity signIdentity) (string, error) {
+func (c *Client) signFace(ctx context.Context, activity Activity, info activeInfo, req SignRequest, identity signIdentity, trace *signAuditTrace) (string, error) {
 	if req.FaceEnc == "" || req.FaceObjectID == "" {
 		return "", fault("INVALID_ARGUMENT", "face sign requires an enrolled object id and face enc")
 	}
@@ -506,6 +539,11 @@ func (c *Client) signFace(ctx context.Context, activity Activity, info activeInf
 		}
 		jLat, jLng := jitterLocation(*req.Latitude, *req.Longitude, false)
 		lat, lng = formatCoordinate(jLat), formatCoordinate(jLng)
+		if trace != nil {
+			trace.Address = firstNonBlank(req.Address, activity.Course, "课堂位置")
+			resultLat, resultLng := roundCoordinate(jLat, 6), roundCoordinate(jLng, 6)
+			trace.Latitude, trace.Longitude = &resultLat, &resultLng
+		}
 	}
 	pairs := []string{
 		"name", identity.Name, "activeId", activity.ID, "courseId", activity.CourseID,

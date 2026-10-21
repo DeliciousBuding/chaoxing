@@ -23,6 +23,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/admission"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
+	"github.com/DeliciousBuding/chaoxing/internal/signaudit"
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
 	"golang.org/x/net/publicsuffix"
 )
@@ -134,6 +135,7 @@ type Config struct {
 	GroupActivities                       bool
 	Transport                             http.RoundTripper
 	CaptchaSolver                         CaptchaSolver
+	SignAudit                             signaudit.Store
 }
 
 // CaptchaSolver turns a slider background and cutout pair into an upstream
@@ -315,7 +317,14 @@ func (c *Client) sessionPayload() ([]byte, error) {
 	}
 	return json.Marshal(all)
 }
+
+const maxRawResponseBytes = 4 << 20
+
 func (c *Client) raw(ctx context.Context, method, rawurl string, form url.Values) ([]byte, *http.Response, error) {
+	return c.rawLimit(ctx, method, rawurl, form, maxRawResponseBytes)
+}
+
+func (c *Client) rawLimit(ctx context.Context, method, rawurl string, form url.Values, limit int64) ([]byte, *http.Response, error) {
 	u, e := url.Parse(rawurl)
 	if e != nil || !safeURL(u) {
 		return nil, nil, fault("INVALID_URL", "upstream URL not permitted")
@@ -340,11 +349,14 @@ func (c *Client) raw(ctx context.Context, method, rawurl string, form url.Values
 		return nil, nil, fault("UPSTREAM_UNAVAILABLE", "upstream transport failed")
 	}
 	defer resp.Body.Close()
-	b, e := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024+1))
+	if limit <= 0 {
+		return nil, resp, fault("RESPONSE_TOO_LARGE", "upstream response exceeds limit")
+	}
+	b, e := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if e != nil {
 		return nil, resp, fault("UPSTREAM_UNAVAILABLE", "response read failed")
 	}
-	if len(b) > 4*1024*1024 {
+	if int64(len(b)) > limit {
 		return nil, resp, fault("RESPONSE_TOO_LARGE", "upstream response exceeds limit")
 	}
 	// Save cookies at every redirect hop in Jar but snapshot final response here.
@@ -445,7 +457,11 @@ func (c *Client) authenticatedRead(ctx context.Context, method, u string, form u
 	return b, e
 }
 func (c *Client) authenticatedReadResponse(ctx context.Context, method, u string, form url.Values) ([]byte, *http.Response, error) {
-	b, r, e := c.raw(ctx, method, u, form)
+	return c.authenticatedReadResponseLimit(ctx, method, u, form, maxRawResponseBytes)
+}
+
+func (c *Client) authenticatedReadResponseLimit(ctx context.Context, method, u string, form url.Values, limit int64) ([]byte, *http.Response, error) {
+	b, r, e := c.rawLimit(ctx, method, u, form, limit)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -453,7 +469,7 @@ func (c *Client) authenticatedReadResponse(ctx context.Context, method, u string
 		if e = c.login(ctx); e != nil {
 			return nil, nil, e
 		}
-		b, r, e = c.raw(ctx, method, u, form)
+		b, r, e = c.rawLimit(ctx, method, u, form, limit)
 		if e != nil {
 			return nil, nil, e
 		}
@@ -572,7 +588,7 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		if v, ok := floatArg(args, "longitude"); ok {
 			req.Longitude = &v
 		}
-		result, e := c.signActivityWithSolver(ctx, req)
+		result, e := c.signActivityLocked(ctx, req)
 		if e != nil {
 			return nil, e
 		}
@@ -589,7 +605,7 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		if v, ok := floatArg(args, "longitude"); ok {
 			req.Longitude = &v
 		}
-		result, e := c.signActivityWithSolver(ctx, req)
+		result, e := c.signActivityLocked(ctx, req)
 		if e != nil {
 			return nil, e
 		}

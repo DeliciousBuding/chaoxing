@@ -405,6 +405,9 @@ type request struct {
 }
 
 func main() {
+	// OpenWrt's BusyBox TZ value is not sufficient for Go's zoneinfo lookup.
+	// Scheduling already uses a fixed Beijing zone; make logs/backups agree.
+	time.Local = time.FixedZone("CST", 8*60*60)
 	if e := run(); e != nil {
 		if errors.Is(e, errPartial) {
 			os.Exit(3)

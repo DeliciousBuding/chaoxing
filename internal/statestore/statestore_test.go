@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
+	"github.com/DeliciousBuding/chaoxing/internal/signaudit"
 )
 
 func open(t *testing.T) (*Store, string) {
@@ -79,7 +80,7 @@ func TestNewerSchemaRejected(t *testing.T) {
 	}
 }
 
-func TestV1HealthSchemaMigratesToV3(t *testing.T) {
+func TestV1HealthSchemaMigratesToCurrent(t *testing.T) {
 	path := filepath.Join(privateDir(t), "legacy.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -104,7 +105,7 @@ func TestV1HealthSchemaMigratesToV3(t *testing.T) {
 	}
 	defer s.Close()
 	var version int
-	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 4 {
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 5 {
 		t.Fatal(version, err)
 	}
 	health, err := s.ProxyHealth()
@@ -116,6 +117,32 @@ func TestV1HealthSchemaMigratesToV3(t *testing.T) {
 	}
 	if _, err := s.ProxyAssignments(); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.ListSignAudits(context.Background(), "root", 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSignAuditRoundTrip(t *testing.T) {
+	s, _ := open(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	lat, lng := 31.2304, 121.4737
+	record := signaudit.Record{
+		AccountKey: "root", CourseID: "course-1", ClassID: "class-1", ActivityID: "activity-1",
+		Method: "location", State: "success", Verified: true, EgressIP: "203.0.113.10",
+		EgressSource: "cloudflare-trace", Address: "synthetic address", Latitude: &lat, Longitude: &lng,
+		CreatedAt: now,
+	}
+	if err := s.SaveSignAudit(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.ListSignAudits(context.Background(), "root", 10)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+	got := items[0]
+	if got.ActivityID != "activity-1" || got.EgressIP != "203.0.113.10" || !got.Verified || got.Latitude == nil || *got.Latitude != lat {
+		t.Fatalf("unexpected audit: %+v", got)
 	}
 }
 

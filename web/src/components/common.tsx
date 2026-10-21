@@ -3,6 +3,7 @@ import { div as MotionDiv } from "motion/react-m";
 import { AlertTriangle, CheckCircle2, Database, Inbox, Loader2 } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Card, CardContent, CardHeader } from "./ui/card";
+import { Button } from "./ui/button";
 import { Skeleton } from "./ui/skeleton";
 import { cn } from "../lib/utils";
 import { useReducedMotion } from "../lib/hooks";
@@ -14,6 +15,7 @@ export function ErrorBanner({ error }: { error: unknown }) {
   const message = error instanceof Error ? error.message : String(error);
   return (
     <MotionDiv
+      role="alert"
       initial={reduced ? false : { opacity: 0, y: -6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.16 }}
@@ -26,6 +28,54 @@ export function ErrorBanner({ error }: { error: unknown }) {
       </div>
     </MotionDiv>
   );
+}
+
+type ErrorBoundaryProps = {
+  children: React.ReactNode;
+  resetKey?: string | number;
+};
+
+type ErrorBoundaryState = {
+  error: Error | null;
+};
+
+export class PageErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  }
+
+  componentDidUpdate(previous: ErrorBoundaryProps) {
+    if (previous.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardHeader>
+            <div className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <span className="font-semibold">页面加载失败</span>
+            </div>
+            <div className="text-sm text-muted-foreground">
+              当前页面渲染异常，管理服务本身可能仍然正常。可以重试，或切换到其他页面后返回。
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="break-all rounded-xl border border-destructive/30 bg-background/60 p-3 font-mono text-xs text-destructive">
+              {this.state.error.message || "unknown render error"}
+            </div>
+            <Button size="sm" onClick={() => this.setState({ error: null })}>重试当前页面</Button>
+          </CardContent>
+        </Card>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 export function EmptyState({ title, description }: { title: string; description?: string }) {
@@ -42,7 +92,7 @@ export function EmptyState({ title, description }: { title: string; description?
 
 export function Loading({ label = "加载中" }: { label?: string }) {
   return (
-    <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
+    <div role="status" aria-live="polite" className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
       <Loader2 className="h-4 w-4 animate-spin" />
       {label}
     </div>

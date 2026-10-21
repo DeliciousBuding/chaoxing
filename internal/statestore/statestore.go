@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
+	"github.com/DeliciousBuding/chaoxing/internal/signaudit"
 	_ "modernc.org/sqlite"
 )
 
@@ -146,6 +147,26 @@ CREATE TABLE IF NOT EXISTS location_bindings (
   FOREIGN KEY (preset_id) REFERENCES location_presets(id) ON DELETE CASCADE
 );`
 
+const schemaV5 = `
+CREATE TABLE IF NOT EXISTS sign_audits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_key TEXT NOT NULL,
+  course_id TEXT NOT NULL,
+  class_id TEXT NOT NULL,
+  activity_id TEXT NOT NULL,
+  method TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT '',
+  code TEXT NOT NULL DEFAULT '',
+  verified INTEGER NOT NULL DEFAULT 0,
+  egress_ip TEXT NOT NULL DEFAULT '',
+  egress_source TEXT NOT NULL DEFAULT '',
+  address TEXT NOT NULL DEFAULT '',
+  latitude REAL,
+  longitude REAL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sign_audits_account_idx ON sign_audits(account_key, created_at DESC);`
+
 func (s *Store) migrate() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -158,8 +179,8 @@ func (s *Store) migrate() error {
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 4 {
-		return fmt.Errorf("state schema version %d newer than supported 4", version)
+	if version > 5 {
+		return fmt.Errorf("state schema version %d newer than supported 5", version)
 	}
 	if version == 0 {
 		if _, err := tx.ExecContext(ctx, schemaV1); err != nil {
@@ -181,6 +202,11 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if version < 5 {
+		if _, err := tx.ExecContext(ctx, schemaV5); err != nil {
+			return err
+		}
+	}
 	// IF NOT EXISTS alone also accepts a conflicting view or malformed table.
 	rows, err := tx.QueryContext(ctx, "SELECT proxy_key, failures, cool_until FROM proxy_health LIMIT 0")
 	if err != nil {
@@ -198,8 +224,11 @@ func (s *Store) migrate() error {
 	if err := validateLocationTables(ctx, tx); err != nil {
 		return err
 	}
-	if version < 4 {
-		if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 4"); err != nil {
+	if err := validateSignAuditTable(ctx, tx); err != nil {
+		return err
+	}
+	if version < 5 {
+		if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 5"); err != nil {
 			return err
 		}
 	}
@@ -235,6 +264,15 @@ func validateLocationTables(ctx context.Context, tx *sql.Tx) error {
 	}
 	rows, err = tx.QueryContext(ctx, `SELECT account_key, course_id, class_id, schedule_key, preset_id, updated_at
 		FROM location_bindings LIMIT 0`)
+	if err != nil {
+		return err
+	}
+	return rows.Close()
+}
+
+func validateSignAuditTable(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, account_key, course_id, class_id, activity_id, method, state, code,
+		verified, egress_ip, egress_source, address, latitude, longitude, created_at FROM sign_audits LIMIT 0`)
 	if err != nil {
 		return err
 	}
@@ -460,6 +498,78 @@ func (s *Store) DeleteProxyAssignment(accountKey string) error {
 	defer cancel()
 	_, err := s.db.ExecContext(ctx, "DELETE FROM proxy_assignments WHERE account_key=?", accountKey)
 	return err
+}
+
+// SaveSignAudit records one successful or failed sign-in attempt. It is a
+// private operator audit trail, not an upstream-authoritative attendance log.
+func (s *Store) SaveSignAudit(_ context.Context, record signaudit.Record) error {
+	if err := record.Validate(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	verified := 0
+	if record.Verified {
+		verified = 1
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sign_audits (
+		account_key, course_id, class_id, activity_id, method, state, code, verified,
+		egress_ip, egress_source, address, latitude, longitude, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.AccountKey, record.CourseID, record.ClassID, record.ActivityID,
+		record.Method, record.State, record.Code, verified,
+		record.EgressIP, record.EgressSource, record.Address,
+		nullableFloat(record.Latitude), nullableFloat(record.Longitude), record.CreatedAt.Unix())
+	return err
+}
+
+// ListSignAudits returns newest-first records scoped to one account.
+func (s *Store) ListSignAudits(ctx context.Context, account string, limit int) ([]signaudit.Record, error) {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return nil, errors.New("sign audit account is required")
+	}
+	if limit < 1 || limit > 100 {
+		return nil, errors.New("sign audit limit must be between 1 and 100")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `SELECT account_key, course_id, class_id, activity_id, method, state, code,
+		verified, egress_ip, egress_source, address, latitude, longitude, created_at
+		FROM sign_audits WHERE account_key=? ORDER BY created_at DESC, id DESC LIMIT ?`, account, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []signaudit.Record{}
+	for rows.Next() {
+		var item signaudit.Record
+		var verified int
+		var created int64
+		var latitude, longitude sql.NullFloat64
+		if err := rows.Scan(&item.AccountKey, &item.CourseID, &item.ClassID, &item.ActivityID,
+			&item.Method, &item.State, &item.Code, &verified, &item.EgressIP, &item.EgressSource,
+			&item.Address, &latitude, &longitude, &created); err != nil {
+			return nil, err
+		}
+		item.Verified = verified != 0
+		item.CreatedAt = time.Unix(created, 0).UTC()
+		if latitude.Valid {
+			item.Latitude = &latitude.Float64
+		}
+		if longitude.Valid {
+			item.Longitude = &longitude.Float64
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func nullableFloat(value *float64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func nullableJSON(b []byte) any {

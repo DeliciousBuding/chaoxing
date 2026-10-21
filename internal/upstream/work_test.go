@@ -31,3 +31,21 @@ func TestParseWorkQuestionsRejectsGradedPage(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPublicWorkFormWithholdsSubmissionSecrets(t *testing.T) {
+	form, redacted := publicWorkForm(map[string]string{
+		"workId": "1", "answerwqbid": "q1,", "pyFlag": "",
+		"enc": "placeholder-secret", "ktoken": "placeholder-token", "cpi": "placeholder-cpi",
+	})
+	if form["workId"] != "1" || form["answerwqbid"] != "q1," {
+		t.Fatalf("safe fields lost: %+v", form)
+	}
+	for _, name := range []string{"enc", "ktoken", "cpi"} {
+		if _, ok := form[name]; ok {
+			t.Fatalf("secret field %s leaked", name)
+		}
+	}
+	if len(redacted) != 3 {
+		t.Fatalf("redacted=%v", redacted)
+	}
+}

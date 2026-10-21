@@ -17,19 +17,22 @@ type CourseRow = {
   teacher?: string;
 };
 
+const emptyPreset = (): LocationPreset => ({
+  label: "",
+  address: "",
+  latitude: 0,
+  longitude: 0,
+  coordinate_system: "bd09"
+});
+
 export function Locations() {
   const [config, setConfig] = React.useState<MapConfig>({ enabled: false });
   const [presets, setPresets] = React.useState<LocationPreset[]>([]);
   const [bindings, setBindings] = React.useState<LocationBinding[]>([]);
   const [courses, setCourses] = React.useState<CourseRow[]>([]);
   const [schedules, setSchedules] = React.useState<WatchSchedule[]>([]);
-  const [form, setForm] = React.useState<LocationPreset>({
-    label: "",
-    address: "",
-    latitude: 0,
-    longitude: 0,
-    coordinate_system: "bd09"
-  });
+  const [form, setForm] = React.useState<LocationPreset>(emptyPreset);
+  const [editingId, setEditingId] = React.useState<number | null>(null);
   const [selectedPreset, setSelectedPreset] = React.useState<LocationPreset | null>(null);
   const [selectedCourse, setSelectedCourse] = React.useState<CourseRow | null>(null);
   const [scheduleKey, setScheduleKey] = React.useState("");
@@ -162,11 +165,16 @@ export function Locations() {
       setError("经纬度无效");
       return;
     }
+    if (form.latitude === 0 && form.longitude === 0) {
+      setError("请选择有效坐标，不能保存 0,0");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
-      const saved = await api.saveLocation(form);
+      const saved = await api.saveLocation({ ...form, id: editingId ?? undefined });
       setForm({ ...saved });
+      setEditingId(saved.id ?? null);
       setSelectedPreset(saved);
       await reload();
     } catch (err) {
@@ -182,10 +190,25 @@ export function Locations() {
     try {
       await api.deleteLocation(preset.id);
       if (selectedPreset?.id === preset.id) setSelectedPreset(null);
+      if (editingId === preset.id) startNewPreset();
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally { setBusy(false); }
+  }
+
+  function startNewPreset() {
+    setForm(emptyPreset());
+    setEditingId(null);
+    setSelectedPreset(null);
+    setError("");
+  }
+
+  function editPreset(preset: LocationPreset) {
+    setForm({ ...preset });
+    setEditingId(preset.id ?? null);
+    setSelectedPreset(preset);
+    setError("");
   }
 
   async function bindCourse() {
@@ -255,6 +278,9 @@ export function Locations() {
             <CardHeader>
               <CardTitle>地图选点</CardTitle>
               <CardDescription>地图点击与拖拽使用 BD-09；手输支持 BD-09 / GCJ-02 / WGS-84，保存时统一归一化为 BD-09。</CardDescription>
+              <Badge variant={editingId ? "warning" : "secondary"}>
+                {editingId ? `编辑中：${form.label || "未命名位置"}` : "新建位置"}
+              </Badge>
             </CardHeader>
             <CardContent className="space-y-4">
               {config.enabled ? (
@@ -275,11 +301,11 @@ export function Locations() {
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-2">
                       <Label>纬度</Label>
-                      <Input type="number" step="any" value={form.latitude} onChange={(event) => setForm({ ...form, latitude: Number(event.target.value) })} />
+                      <Input type="number" inputMode="decimal" min={-90} max={90} step="any" value={form.latitude} onChange={(event) => setForm({ ...form, latitude: Number(event.target.value) })} />
                     </div>
                     <div className="space-y-2">
                       <Label>经度</Label>
-                      <Input type="number" step="any" value={form.longitude} onChange={(event) => setForm({ ...form, longitude: Number(event.target.value) })} />
+                      <Input type="number" inputMode="decimal" min={-180} max={180} step="any" value={form.longitude} onChange={(event) => setForm({ ...form, longitude: Number(event.target.value) })} />
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -300,7 +326,7 @@ export function Locations() {
                   </div>
                   <div className="flex gap-2">
                     <Button size="sm" onClick={() => void reverseGeocode()} disabled={busy}>反查地址</Button>
-                    <Button size="sm" onClick={() => void savePreset()} disabled={busy}>保存位置</Button>
+                    <Button size="sm" onClick={() => void savePreset()} disabled={busy}>{editingId ? "更新位置" : "保存位置"}</Button>
                   </div>
                 </div>
               ) : (
@@ -309,11 +335,11 @@ export function Locations() {
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-2">
                       <Label>纬度</Label>
-                      <Input type="number" step="any" value={form.latitude} onChange={(event) => setForm({ ...form, latitude: Number(event.target.value) })} />
+                      <Input type="number" inputMode="decimal" min={-90} max={90} step="any" value={form.latitude} onChange={(event) => setForm({ ...form, latitude: Number(event.target.value) })} />
                     </div>
                     <div className="space-y-2">
                       <Label>经度</Label>
-                      <Input type="number" step="any" value={form.longitude} onChange={(event) => setForm({ ...form, longitude: Number(event.target.value) })} />
+                      <Input type="number" inputMode="decimal" min={-180} max={180} step="any" value={form.longitude} onChange={(event) => setForm({ ...form, longitude: Number(event.target.value) })} />
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -332,7 +358,7 @@ export function Locations() {
                     <Label>地址</Label>
                     <Input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} />
                   </div>
-                  <Button size="sm" onClick={() => void savePreset()} disabled={busy}>保存位置</Button>
+                  <Button size="sm" onClick={() => void savePreset()} disabled={busy}>{editingId ? "更新位置" : "保存位置"}</Button>
                 </div>
               )}
             </CardContent>
@@ -349,7 +375,6 @@ export function Locations() {
                 <Select value={selectedPreset?.id ? String(selectedPreset.id) : ""} onChange={(event) => {
                   const preset = presets.find((item) => item.id === Number(event.target.value)) ?? null;
                   setSelectedPreset(preset);
-                  if (preset) setForm({ ...preset });
                 }}>
                   <option value="">请选择</option>
                   {presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
@@ -396,7 +421,10 @@ export function Locations() {
         <div className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>位置预设</CardTitle>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle>位置预设</CardTitle>
+                <Button size="sm" variant="outline" onClick={startNewPreset} disabled={busy}>新建位置</Button>
+              </div>
               <CardDescription>保存在生产数据库，不进入仓库。</CardDescription>
             </CardHeader>
             <CardContent>
@@ -415,7 +443,7 @@ export function Locations() {
                           <TableCell><Badge variant="secondary">{preset.coordinate_system === "bd09" ? "BD-09" : preset.coordinate_system ?? "BD-09"}</Badge></TableCell>
                         <TableCell>
                           <div className="flex gap-2">
-                            <Button size="sm" variant="outline" onClick={() => { setSelectedPreset(preset); setForm({ ...preset }); }}>编辑</Button>
+                            <Button size="sm" variant="outline" onClick={() => editPreset(preset)}>编辑</Button>
                             <Button size="sm" variant="outline" onClick={() => void removePreset(preset)}>删除</Button>
                           </div>
                         </TableCell>

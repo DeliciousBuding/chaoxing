@@ -19,7 +19,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, rectSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { api, type ToolDefinition } from "../lib/api";
+import { api, type SignAudit, type ToolDefinition } from "../lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -83,6 +83,7 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
   const [status, setStatus] = React.useState<any>(null);
   const [connection, setConnection] = React.useState<any>(null);
   const [capabilities, setCapabilities] = React.useState<any>(null);
+  const [signAudits, setSignAudits] = React.useState<SignAudit[]>([]);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const dashboardOrder = useUIStore((state) => state.dashboardOrder);
@@ -104,6 +105,7 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
       setStatus(nextStatus);
       setConnection(nextConnection.data);
       setCapabilities(nextCapabilities.data);
+      void api.signAudits(20).then((value) => setSignAudits(value.items)).catch(() => setSignAudits([]));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -119,6 +121,14 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
   const egress: any[] = runtime.egress ?? [];
   const accounts: any[] = status?.accounts ?? [];
   const capabilityCount = Array.isArray(capabilities?.items) ? capabilities.items.length : null;
+  const serverNow = runtime.now ? new Date(runtime.now).getTime() : Date.now();
+  const STALE_MS = 20 * 60 * 1000;
+  function isStale(row: Record<string, any>) {
+    const reference = row.last_tick_at || row.started_at;
+    if (!reference) return false;
+    const at = new Date(reference).getTime();
+    return Number.isFinite(at) && serverNow - at > STALE_MS;
+  }
   const watcherRows: Array<Record<string, any> & { account: string }> =
     Object.entries(runtime.watchers ?? {}).map(([account, value]) => ({
       account,
@@ -127,48 +137,49 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
   const watcherPanics = watcherRows.reduce((sum, item) => sum + (Number(item.consecutive_panics) || 0), 0);
   const watchersStale = watcherRows.some((item) => isStale(item));
   const process: Record<string, any> = runtime.process ?? {};
-  const serverNow = status?.runtime?.now ? new Date(status.runtime.now).getTime() : Date.now();
-  const STALE_MS = 20 * 60 * 1000;
-  const isStale = (row: Record<string, any>) => {
-    const reference = row.last_tick_at || row.started_at;
-    if (!reference) return false;
-    const at = new Date(reference).getTime();
-    return Number.isFinite(at) && serverNow - at > STALE_MS;
-  };
   const processCrashes = Number(process.consecutive_crashes) || 0;
   const processDegraded = Boolean(process.degraded);
+  const statusPending = busy && !status;
+  const statusUnknown = !status;
 
   const metrics = React.useMemo<Record<DashboardCardId, Metric>>(() => ({
     security: {
       id: "security", title: "安全会话", description: "HttpOnly Cookie + Strict SameSite + CSRF 双提交", icon: ShieldCheck,
-      value: "Active", tone: "success"
+      value: statusPending ? "读取中" : statusUnknown ? "未确认" : "Active",
+      tone: statusPending || statusUnknown ? "warning" : "success"
     },
     egress: {
       id: "egress", title: "出口路径", description: "账号粘性与健康冷却已启用", icon: Globe2,
-      value: egress.length, tone: "primary"
+      value: statusPending ? "…" : statusUnknown ? "—" : egress.length, tone: "primary"
     },
     upstream: {
       id: "upstream", title: "上游连接", description: "每次均为新鲜读取，不做缓存伪造", icon: Activity,
       value: connection?.meta?.status === "complete" ? "正常" : "待确认", tone: connection?.meta?.status === "complete" ? "success" : "warning"
     },
     watchers: {
-      id: "watchers", title: "Watcher 监督", description: `panic 已隔离并可观测；当前连续 panic ${watcherPanics} 次`, icon: HeartPulse,
-      value: watcherRows.length, tone: watcherPanics > 0 ? "warning" : "success"
+      id: "watchers", title: "Watcher 监督",
+      description: watchersStale
+        ? `存在停滞 watcher；当前连续 panic ${watcherPanics} 次`
+        : `panic 已隔离并可观测；当前连续 panic ${watcherPanics} 次`,
+      icon: HeartPulse,
+      value: watcherRows.length, tone: watcherPanics > 0 || watchersStale ? "warning" : "success"
     },
     supervisor: {
       id: "supervisor", title: "进程监督",
-      description: processDegraded
+      description: statusPending || statusUnknown
+        ? "等待进程监督状态"
+        : processDegraded
         ? "状态文件写入降级；计数仅保存在内存"
         : `procd 异常退出计数已持久化；当前连续 ${processCrashes} 次`,
       icon: ServerCog,
-      value: processCrashes > 0 ? processCrashes : "稳定",
-      tone: processDegraded ? "warning" : processCrashes > 0 ? "warning" : "success"
+      value: statusPending ? "读取中" : statusUnknown ? "未确认" : processCrashes > 0 ? processCrashes : "稳定",
+      tone: statusPending || statusUnknown || processDegraded || processCrashes > 0 ? "warning" : "success"
     },
     capabilities: {
       id: "capabilities", title: "能力域", description: "以 capabilities 契约为准，不猜测接口", icon: Database,
       value: capabilityCount ?? "—", tone: "primary"
     }
-  }), [capabilityCount, connection?.meta?.status, egress.length, processCrashes, processDegraded, watchersStale]);
+  }), [capabilityCount, connection?.meta?.status, egress.length, processCrashes, processDegraded, statusPending, statusUnknown, watcherPanics, watchersStale]);
 
   const order = React.useMemo(() => {
     const valid = dashboardOrder.filter((id): id is DashboardCardId => id in metrics);
@@ -279,6 +290,47 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
                     <TableCell className="text-xs">{item.last_panic_kind || "—"}</TableCell>
                     <TableCell>{Number(item.active_class_polls) || 0}</TableCell>
                     <TableCell>{Number(item.ticks) || 0}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>签到审计</CardTitle>
+          <CardDescription>最近 20 次签到尝试的出口 IP、签到地址与结果；仅当前账号可见。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {signAudits.length === 0 ? (
+            <p className="text-sm text-muted-foreground">暂无签到审计记录。</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>时间</TableHead>
+                  <TableHead>活动</TableHead>
+                  <TableHead>方式</TableHead>
+                  <TableHead>结果</TableHead>
+                  <TableHead>出口 IP</TableHead>
+                  <TableHead>签到地址</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {signAudits.map((item, index) => (
+                  <TableRow key={`${item.created_at}:${item.activity_id}:${index}`}>
+                    <TableCell className="text-xs">{formatBeijing(item.created_at)}</TableCell>
+                    <TableCell className="font-mono text-xs">{item.course_id} / {item.class_id}</TableCell>
+                    <TableCell>{item.method || "—"}</TableCell>
+                    <TableCell>
+                      <Badge variant={item.verified ? "success" : item.state === "failed" ? "destructive" : "warning"}>
+                        {item.verified ? "已确认" : item.code || item.state || "未知"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">{item.egress_ip || "未获取"}</TableCell>
+                    <TableCell className="max-w-56 truncate text-xs" title={item.address || ""}>{item.address || "—"}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

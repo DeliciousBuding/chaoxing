@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0-rc.19 — 2026-10-21
+
+- Put sign-in and answer decisions on the critical path: class discovery now processes actionable rows immediately, before page capture or the slower group fallback. The tick has a 60s discovery budget, a 30s group-scan budget and a 150s overall supervision budget; exhausting discovery no longer discards already-discovered actions.
+- Run the group fallback before page evidence capture, cap page capture to one page per tick and cap page HTML at 1 MiB before parsing. This keeps a slow or oversized H5 page from delaying a group-discovered sign-in or the next polling cycle.
+- Refuse automatic location selection when multiple schedule windows overlap, instead of silently choosing the first configured room. Overlapping schedules fall through to an operator alert.
+- Retry transient sign-in failures (`UPSTREAM_UNAVAILABLE`, rate limits and auth cooldown) on the next tick, while still treating upstream business rejections as terminal. Bound each activity notification to 8s so a slow push cannot consume the remaining sign-in window.
+- Quarantine corrupt or unsupported watch state to a timestamped `.corrupt-*` file, start with empty in-memory suppression state and expose `state_degraded` through ready checks instead of entering a procd restart loop.
+- Keep the six-hour disappearing-activity prune and restore the independent 24-hour hard ceiling, so an upstream row that stays in the feed cannot grow the private state file indefinitely.
+- Join watcher goroutines during SIGTERM, wait up to 10s before closing the state store, and only write the supervisor clean marker after watchers have stopped. Raise the procd `term_timeout` to 20s.
+- Fix the `workdraft` data race: answer/export now copy question maps while holding the store lock and never iterate shared maps after unlock. Add a concurrent `-race` regression test.
+- Harden OAuth login availability: two-minute login nonces, a per-network pending cap, per-network login windows, a 60/minute global ceiling and a single PBKDF2 verification slot. Add CSP/COOP/XFO/Permissions/HSTS/robots headers to OAuth pages and remove the unnecessary external consent `form-action`.
+- Count only actual password-verification failures against the OAuth global failure ceiling, clear a network's failure bucket after a successful login, and give `/oauth/token` and `/oauth/revoke` a separate concurrency/burst budget so anonymous login or registration traffic cannot starve them.
+- Strip query strings and fragments from activity URLs returned by tools and stored in captures, while retaining the internal raw URL only for the one-shot page evidence read. Redact `enc`/`ktoken`/`cpi` and other session-bound work-form values from public question results; full values remain available only to the local draft exporter.
+- Check and tighten private upload staging: require a real `0700` uploads directory, reject group/world-readable files, verify service ownership on Unix, and delete the staged file after a successful pan upload.
+- Reject `0,0` as a location preset and make the management console distinguish new versus editing state, so an empty coordinate field cannot silently become Null Island or overwrite an existing preset.
+- Catch page-level render failures with a retryable error boundary, and remove the Dashboard watcher TDZ crash by computing staleness before the first use.
+- Cap a group-activity sweep at six groups and 2 MiB, retry a failed sweep after 30s instead of waiting the full cadence, and unify the answer cache with the atomic `persist.Write` path.
+- Set the process local zone to fixed UTC+8 so OpenWrt logs and backup timestamps agree with the already-fixed Asia/Shanghai scheduler.
+- Add a private `sign_audits` SQLite table (schema v5) and a Web UI audit table. Every watcher or manual sign-in records the submitted method, result/code, address and jittered coordinates, plus a best-effort public egress IP obtained through the same sticky egress path.
+
 ## 0.5.0-rc.18 — 2026-10-21
 
 - Add an embedded SVG favicon and a hidden username field to the owner login form, removing avoidable browser 404/accessibility console noise.

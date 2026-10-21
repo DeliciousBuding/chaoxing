@@ -68,3 +68,25 @@ func TestActivityPageHonorsSessionQueryGate(t *testing.T) {
 		t.Fatalf("gate bypass: %v", err)
 	}
 }
+
+func TestActivityPageRejectsOversizedBodyBeforeParsing(t *testing.T) {
+	now := time.Now().UnixMilli()
+	row := fmt.Sprintf(`{"id":9302,"nameOne":"Synthetic oversized page","type":42,"status":1,"userStatus":0,"startTime":%d,"endTime":%d,"url":"https://mobilelearn.chaoxing.com/practice/oversized"}`, now-1000, now+600000)
+	c := academicClient(t, []Course{{ID: "course-1", ClassID: "class-1", Name: "Synthetic"}}, roundtrip(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/v2/apis/active/student/activelist":
+			return response(r, activityResponse(row)), nil
+		case "/practice/oversized":
+			return response(r, strings.Repeat("x", maxActivityPageBytes+1)), nil
+		default:
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	}))
+	_, err := c.Call(context.Background(), "get_activity_page", map[string]any{
+		"course_id": "course-1", "class_id": "class-1", "activity_id": "9302",
+	})
+	if err == nil || SafeFault(err).Code != "RESPONSE_TOO_LARGE" {
+		t.Fatalf("oversized page was not rejected: %v", err)
+	}
+}

@@ -15,22 +15,25 @@ const activityAPI = "https://mobilelearn.chaoxing.com/v2/apis/active/student/act
 
 // Activity is the normalized, read-only projection of one class activity.
 type Activity struct {
-	ID            string     `json:"id"`
-	CourseID      string     `json:"course_id"`
-	ClassID       string     `json:"class_id"`
-	Course        string     `json:"course"`
-	Title         string     `json:"title"`
-	Kind          string     `json:"kind"`
-	State         string     `json:"state"`
-	UserState     string     `json:"user_state"`
-	RawType       int        `json:"raw_type"`
-	RawOtherID    int        `json:"raw_other_id"`
-	RawStatus     int        `json:"raw_status"`
-	RawUserStatus int        `json:"raw_user_status"`
-	SignType      string     `json:"sign_type"`
-	Signable      bool       `json:"signable"`
-	Answerable    bool       `json:"answerable"`
+	ID            string `json:"id"`
+	CourseID      string `json:"course_id"`
+	ClassID       string `json:"class_id"`
+	Course        string `json:"course"`
+	Title         string `json:"title"`
+	Kind          string `json:"kind"`
+	State         string `json:"state"`
+	UserState     string `json:"user_state"`
+	RawType       int    `json:"raw_type"`
+	RawOtherID    int    `json:"raw_other_id"`
+	RawStatus     int    `json:"raw_status"`
+	RawUserStatus int    `json:"raw_user_status"`
+	SignType      string `json:"sign_type"`
+	Signable      bool   `json:"signable"`
+	Answerable    bool   `json:"answerable"`
+	// URL is safe to return to clients; RawURL stays internal because upstream
+	// activity links may carry short-lived signature/query material.
 	URL           string     `json:"url,omitempty"`
+	RawURL        string     `json:"-"`
 	StartsAt      *time.Time `json:"starts_at,omitempty"`
 	EndsAt        *time.Time `json:"ends_at,omitempty"`
 	StartsAtTitle string     `json:"starts_at_title,omitempty"`
@@ -109,20 +112,32 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 		items = append(items, rows...)
 		classes = append(classes, map[string]any{"course_id": co.ID, "class_id": co.ClassID, "complete": true})
 	}
-	groupAvailable := false
-	if groupRows, err := c.listGroupActivities(ctx); err == nil {
-		groupAvailable = true
-		known := map[string]bool{}
-		for _, item := range items {
-			known[item.CourseID+":"+item.ClassID+":"+item.ID] = true
-		}
-		for _, item := range groupRows {
-			if !known[item.CourseID+":"+item.ClassID+":"+item.ID] {
-				items = append(items, item)
+	groupAvailable := !c.config.GroupActivities
+	var groupErr error
+	if c.config.GroupActivities {
+		groups, err := c.fetchIMGroups(ctx)
+		if err != nil {
+			groupErr = err
+		} else {
+			groupRows, err := c.listGroupActivities(ctx, groups)
+			if err != nil {
+				groupErr = err
+			} else {
+				groupAvailable = true
+				known := map[string]bool{}
+				for _, item := range items {
+					known[item.CourseID+":"+item.ClassID+":"+item.ID] = true
+				}
+				for _, item := range groupRows {
+					if !known[item.CourseID+":"+item.ClassID+":"+item.ID] {
+						items = append(items, item)
+					}
+				}
 			}
 		}
-	} else {
-		code := academicCode(err)
+	}
+	if groupErr != nil {
+		code := academicCode(groupErr)
 		warnings = append(warnings, "group activity feed unavailable: "+code)
 	}
 	if failed == len(selected) && firstErr != nil {
@@ -233,7 +248,8 @@ func normalizeActivity(raw rawActivity, co Course, ext string) Activity {
 		RawUserStatus: int(raw.UserStatus.value),
 		Ext:           strings.TrimSpace(ext),
 		Source:        "class",
-		URL:           strings.TrimSpace(raw.URL),
+		URL:           publicActivityURL(raw.URL),
+		RawURL:        strings.TrimSpace(raw.URL),
 	}
 	a.SignType = signType(raw.OtherID.value)
 	a.Signable = kind == "signin" && state == "active" && userState == "unsigned"
@@ -241,6 +257,15 @@ func normalizeActivity(raw rawActivity, co Course, ext string) Activity {
 	a.StartsAt = msTime(raw.StartTime.value)
 	a.EndsAt = msTime(raw.EndTime.value)
 	return a
+}
+
+func publicActivityURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.User != nil || u.Scheme != "https" || u.Host == "" {
+		return ""
+	}
+	u.RawQuery, u.Fragment = "", ""
+	return u.String()
 }
 
 func activityKind(rawType int64) string {

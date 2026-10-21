@@ -336,6 +336,56 @@ func TestFailClosedAndBounds(t *testing.T) {
 		t.Fatal("plaintext owner config accepted")
 	}
 }
+
+func TestOAuthLoginPendingIsBoundedPerNetwork(t *testing.T) {
+	_, h := setup(t, config(t))
+	for i := 0; i < maxLoginPending; i++ {
+		w := request(h, "GET", "/oauth/login?next="+url.QueryEscape("/oauth/authorize"), "", "")
+		if w.Code != 200 {
+			t.Fatalf("pending %d: %d", i, w.Code)
+		}
+	}
+	w := request(h, "GET", "/oauth/login?next="+url.QueryEscape("/oauth/authorize"), "", "")
+	if w.Code != 429 {
+		t.Fatalf("pending limit not enforced: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestOAuthLoginAttemptsAreBoundedPerNetwork(t *testing.T) {
+	s, _ := setup(t, config(t))
+	now := time.Now()
+	s.mu.Lock()
+	for i := 0; i < maxLoginPerMin; i++ {
+		if !s.loginAllowedLocked("203.0.113.0/24", now) {
+			t.Fatalf("attempt %d rejected too early", i)
+		}
+		s.recordLoginFailureLocked("203.0.113.0/24", now)
+	}
+	if s.loginAllowedLocked("203.0.113.0/24", now) {
+		t.Fatal("per-network login limit not enforced")
+	}
+	if !s.loginAllowedLocked("198.51.100.0/24", now) {
+		t.Fatal("one network exhausted another network's bucket")
+	}
+	s.mu.Unlock()
+}
+
+func TestOAuthLoginGlobalBudgetCountsOnlyRecordedFailures(t *testing.T) {
+	s, _ := setup(t, config(t))
+	now := time.Now()
+	s.mu.Lock()
+	for i := 0; i < maxLoginGlobal; i++ {
+		s.recordLoginFailureLocked("198.51.100.0/24", now)
+	}
+	if s.loginAllowedLocked("203.0.113.0/24", now) {
+		t.Fatal("global failure budget was not enforced")
+	}
+	s.loginCount = 0
+	if !s.loginAllowedLocked("203.0.113.0/24", now) {
+		t.Fatal("read-only budget check consumed the global failure budget")
+	}
+	s.mu.Unlock()
+}
 func TestPersistenceFailureRollsBack(t *testing.T) {
 	s, _ := setup(t, config(t))
 	s.mu.Lock()

@@ -3,6 +3,7 @@ package workdraft
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -130,6 +131,31 @@ func TestWorkDraftRejectsUnknownQuestion(t *testing.T) {
 	if err == nil || upstream.SafeFault(err).Code != "NOT_FOUND" {
 		t.Fatal(err)
 	}
+}
+
+func TestWorkDraftConcurrentUpsertAndExportAreSafe(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "work-drafts.json"), fakeQuestions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"course_id": "course-1", "class_id": "class-1", "job_id": "work-1"}
+	var wg sync.WaitGroup
+	for i := 0; i < 40; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if _, err := store.Call(context.Background(), "upsert_work_draft", withQuestion(args, "q1", "A")); err != nil {
+				t.Errorf("upsert: %v", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := store.Call(context.Background(), "export_work_draft", args); err != nil {
+				t.Errorf("export: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func withQuestion(args map[string]any, questionID, answer string) map[string]any {

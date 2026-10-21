@@ -32,6 +32,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
 	"github.com/DeliciousBuding/chaoxing/internal/location"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
+	"github.com/DeliciousBuding/chaoxing/internal/signaudit"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
 
@@ -76,6 +77,7 @@ type cachedAsset struct {
 type Execute func(ctx context.Context, account, tool string, arguments map[string]any) (any, error)
 type Status func() any
 type CaptureList func(ctx context.Context, account, activityKey string, limit int, includePage bool) ([]capture.Activity, error)
+type SignAuditList func(ctx context.Context, account string, limit int) ([]signaudit.Record, error)
 type ScheduleList func(account string) []ScheduleView
 
 // ScheduleView is the authenticated, read-only projection used by the
@@ -100,6 +102,7 @@ type Config struct {
 	Execute           Execute
 	Status            Status
 	Captures          CaptureList
+	SignAudits        SignAuditList
 	Schedules         ScheduleList
 	Location          location.Service
 	Map               *location.MapConfig
@@ -258,6 +261,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("POST /api/account/select", s.bounded(s.authenticated(s.selectAccount)))
 	mux.Handle("GET /api/status", s.bounded(s.authenticated(s.status)))
 	mux.Handle("GET /api/captures", s.heavyBounded(s.authenticated(s.captures)))
+	mux.Handle("GET /api/sign-audits", s.heavyBounded(s.authenticated(s.signAudits)))
 	mux.Handle("GET /api/tools", s.bounded(s.authenticated(s.tools)))
 	mux.Handle("POST /api/tools/call", s.heavyBounded(s.authenticated(s.call)))
 	s.registerLocationRoutes(mux)
@@ -699,6 +703,33 @@ func (s *Server) captures(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func (s *Server) signAudits(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.sessionAccount(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, 400, "INVALID_ARGUMENT", "limit must be 1..100")
+			return
+		}
+		limit = parsed
+	}
+	if s.cfg.SignAudits == nil {
+		writeJSON(w, 200, map[string]any{"items": []signaudit.Record{}})
+		return
+	}
+	rows, err := s.cfg.SignAudits(r.Context(), account, limit)
+	if err != nil {
+		writeError(w, 502, "SIGN_AUDIT_UNAVAILABLE", upstream.SafeFault(err).Message)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": rows})
 }
 
 func (s *Server) tools(w http.ResponseWriter, _ *http.Request) {

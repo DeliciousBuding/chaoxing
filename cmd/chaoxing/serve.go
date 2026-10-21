@@ -27,6 +27,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/mcphttp"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
+	"github.com/DeliciousBuding/chaoxing/internal/signaudit"
 	"github.com/DeliciousBuding/chaoxing/internal/statelock"
 	"github.com/DeliciousBuding/chaoxing/internal/statestore"
 	"github.com/DeliciousBuding/chaoxing/internal/supervisor"
@@ -73,15 +74,16 @@ const maxTenants = 32
 // session and upstream client. The client is created lazily so unused tenants
 // cost nothing on memory-constrained hosts.
 type tenantRuntime struct {
-	cfg      tenantConfig
-	pool     *egress.Pool
-	once     sync.Once
-	client   *upstream.Client
-	err      error
-	watch    *watch.Runner
-	execOnce sync.Once
-	execute  func(context.Context, string, map[string]any) (any, error)
-	execErr  error
+	cfg        tenantConfig
+	pool       *egress.Pool
+	signAudits signaudit.Store
+	once       sync.Once
+	client     *upstream.Client
+	err        error
+	watch      *watch.Runner
+	execOnce   sync.Once
+	execute    func(context.Context, string, map[string]any) (any, error)
+	execErr    error
 }
 
 func (t *tenantRuntime) upstreamClient() (*upstream.Client, error) {
@@ -92,6 +94,7 @@ func (t *tenantRuntime) upstreamClient() (*upstream.Client, error) {
 			return
 		}
 		cfg.Transport = t.pool
+		cfg.SignAudit = t.signAudits
 		t.client, t.err = upstream.New(cfg)
 	})
 	return t.client, t.err
@@ -177,10 +180,27 @@ func uploadPreparedFile(ctx context.Context, client *upstream.Client, stateDir s
 	if filename == "" || filepath.Base(filename) != filename || strings.Contains(filename, "/") || strings.Contains(filename, `\`) {
 		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "upload file_name must be a filename without paths"}
 	}
-	path := filepath.Join(stateDir, "uploads", filename)
+	uploadDir := filepath.Join(stateDir, "uploads")
+	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
+		return nil, &upstream.Fault{Code: "UPLOAD_UNAVAILABLE", Message: "private upload directory is unavailable"}
+	}
+	dirInfo, err := os.Lstat(uploadDir)
+	if err != nil || !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, &upstream.Fault{Code: "UPLOAD_UNAVAILABLE", Message: "private upload directory is not a real directory"}
+	}
+	if dirInfo.Mode().Perm()&0o077 != 0 {
+		return nil, &upstream.Fault{Code: "UPLOAD_UNAVAILABLE", Message: "private upload directory must not be group/world-accessible"}
+	}
+	path := filepath.Join(uploadDir, filename)
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "upload file is unavailable or is not a regular file"}
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "upload file must not be group/world-readable"}
+	}
+	if !ownedByCurrentUser(info) {
+		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "upload file must be owned by the service user"}
 	}
 	content, err := os.ReadFile(path)
 	if err != nil || len(content) == 0 || len(content) > 5*1024*1024 {
@@ -189,6 +209,9 @@ func uploadPreparedFile(ctx context.Context, client *upstream.Client, stateDir s
 	result, err := client.UploadFile(ctx, filename, content)
 	if err != nil {
 		return nil, err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("upload cleanup failed: %s", upstream.SafeFault(err).Code)
 	}
 	return map[string]any{"result": result, "complete": true, "coverage": "chaoxing_pan_upload", "fetched_at": result.FetchedAt}, nil
 }
@@ -222,7 +245,7 @@ func validateTenants(c config) error {
 
 // publicMux mounts the root account and all configured tenants. It returns the
 // mux and the ordered tenant ids for the management status endpoint.
-func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool, captures capture.Store, locations location.Service, rootExecute func(context.Context, string, map[string]any) (any, error)) (*http.ServeMux, []string, []*tenantRuntime, error) {
+func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool, captures capture.Store, signAudits signaudit.Store, locations location.Service, rootExecute func(context.Context, string, map[string]any) (any, error)) (*http.ServeMux, []string, []*tenantRuntime, error) {
 	mux := http.NewServeMux()
 	a.Register(mux)
 	mux.Handle("/mcp", a.ProtectMCP(mcphttp.NewWithVersion(rootExecute, version)))
@@ -233,7 +256,7 @@ func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool
 	tenantIDs := []string{}
 	runtimes := []*tenantRuntime{}
 	for _, tc := range c.Tenants {
-		tr := &tenantRuntime{cfg: tc, pool: pool}
+		tr := &tenantRuntime{cfg: tc, pool: pool, signAudits: signAudits}
 		ta, e := access.New(access.Config{Issuer: c.Issuer + "/t/" + tc.ID, StateDir: filepath.Join(tc.StateDir, "oauth"), OwnerPasswordHash: tc.OwnerPasswordHash, EnableCIMD: os.Getenv("CHAOXING_ENABLE_CIMD") == "true"})
 		if e != nil {
 			return nil, nil, nil, e
@@ -401,11 +424,11 @@ func supervisorNotifier(c config) (notify.Sender, error) {
 }
 
 func stateStoreNeeded(c config) bool {
-	if len(c.Proxies) > 0 || watchCaptureEnabled(c.Watch) || (c.Location != nil && c.Location.Enabled) {
+	if len(c.Proxies) > 0 || (c.Watch != nil && c.Watch.Enabled) || watchCaptureEnabled(c.Watch) || (c.Location != nil && c.Location.Enabled) {
 		return true
 	}
 	for _, tenant := range c.Tenants {
-		if watchCaptureEnabled(tenant.Watch) {
+		if (tenant.Watch != nil && tenant.Watch.Enabled) || watchCaptureEnabled(tenant.Watch) {
 			return true
 		}
 	}
@@ -473,6 +496,7 @@ func serve() error {
 	var store *statestore.Store
 	var health egress.HealthStore
 	var captures capture.Store
+	var signAudits signaudit.Store
 	if stateStoreNeeded(c) {
 		store, e = statestore.Open(filepath.Join(c.StateDir, "chaoxing.db"))
 		if e != nil {
@@ -483,6 +507,7 @@ func serve() error {
 			health = healthAdapter{store}
 		}
 		captures = store
+		signAudits = store
 	}
 	pool, e := egress.New(c.Proxies, health)
 	if e != nil {
@@ -493,6 +518,7 @@ func serve() error {
 		return err
 	}
 	rootConfig.Transport = pool
+	rootConfig.SignAudit = signAudits
 	x, e := upstream.New(rootConfig)
 	if e != nil {
 		return e
@@ -530,7 +556,7 @@ func serve() error {
 	if e != nil {
 		return e
 	}
-	mux, tenantIDs, tenants, e := publicMux(c, x, a, pool, captures, locations, rootExecute)
+	mux, tenantIDs, tenants, e := publicMux(c, x, a, pool, captures, signAudits, locations, rootExecute)
 	if e != nil {
 		return e
 	}
@@ -556,6 +582,7 @@ func serve() error {
 		count, consecutive, ticks, active := len(detailed), 0, 0, 0
 		var lastTick, lastPanic time.Time
 		stale := false
+		stateDegraded := false
 		now := time.Now().UTC()
 		for _, value := range detailed {
 			m, ok := value.(watch.Metrics)
@@ -574,11 +601,12 @@ func serve() error {
 			if watcherStale(now, m.StartedAt, m.LastTickAt) {
 				stale = true
 			}
+			stateDegraded = stateDegraded || m.StateDegraded
 		}
 		return map[string]any{
 			"count": count, "consecutive_panics": consecutive, "last_tick_at": lastTick,
 			"last_panic_at": lastPanic, "ticks": ticks, "active_class_polls": active,
-			"stale": stale, "now": now,
+			"stale": stale, "state_degraded": stateDegraded, "now": now,
 		}
 	}
 	accountExecute := func(ctx context.Context, account, tool string, arguments map[string]any) (any, error) {
@@ -603,6 +631,12 @@ func serve() error {
 		}
 		return store.ListActivityCaptures(ctx, account, activityKey, limit, includePage)
 	}
+	signAuditList := func(ctx context.Context, account string, limit int) ([]signaudit.Record, error) {
+		if store == nil {
+			return []signaudit.Record{}, nil
+		}
+		return store.ListSignAudits(ctx, account, limit)
+	}
 	ui, err := webui.New(webui.Config{
 		Version:           version,
 		Issuer:            c.Issuer,
@@ -613,7 +647,8 @@ func serve() error {
 		Status: func() any {
 			return map[string]any{"egress": pool.Status(), "process": sup.Metrics(), "tenants": tenantIDs, "watchers": watcherMetrics(), "now": time.Now().UTC()}
 		},
-		Captures: captureList,
+		Captures:   captureList,
+		SignAudits: signAuditList,
 		Schedules: func(account string) []webui.ScheduleView {
 			var classes []watch.Class
 			if account == "root" {
@@ -649,14 +684,15 @@ func serve() error {
 		health := watcherHealth()
 		stale, _ := health["stale"].(bool)
 		panics, _ := health["consecutive_panics"].(int)
+		stateDegraded, _ := health["state_degraded"].(bool)
 		degraded := sup.Metrics().Degraded
-		ok := !stale && panics < 3 && !degraded
+		ok := !stale && panics < 3 && !degraded && !stateDegraded
 		w.Header().Set("Content-Type", "application/json")
 		if !ok {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok": ok, "stale": stale, "consecutive_panics": panics, "degraded": degraded,
+			"ok": ok, "stale": stale, "consecutive_panics": panics, "degraded": degraded, "state_degraded": stateDegraded,
 		})
 	})
 	local := http.NewServeMux()
@@ -726,12 +762,21 @@ func serve() error {
 	priv := &http.Server{Addr: c.LocalListen, Handler: local, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 100 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var watchers sync.WaitGroup
 	if watcher != nil {
-		go watcher.Run(ctx)
+		watchers.Add(1)
+		go func() {
+			defer watchers.Done()
+			watcher.Run(ctx)
+		}()
 	}
 	for _, tenant := range tenants {
 		if tenant.watch != nil {
-			go tenant.watch.Run(ctx)
+			watchers.Add(1)
+			go func(r *watch.Runner) {
+				defer watchers.Done()
+				r.Run(ctx)
+			}(tenant.watch)
 		}
 	}
 	errs := make(chan error, 2)
@@ -742,11 +787,26 @@ func serve() error {
 	case <-ctx.Done():
 		e = nil
 	}
+	// Stop signal delivery and cancel every watcher before closing the HTTP
+	// listeners and, later, the state store.
+	stop()
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = pub.Shutdown(shutdown)
 	_ = priv.Shutdown(shutdown)
-	if e == nil || errors.Is(e, http.ErrServerClosed) {
+	watchersDone := make(chan struct{})
+	go func() {
+		watchers.Wait()
+		close(watchersDone)
+	}()
+	watchersStopped := false
+	select {
+	case <-watchersDone:
+		watchersStopped = true
+	case <-time.After(10 * time.Second):
+		log.Printf("shutdown: watcher did not stop within 10s; refusing to mark a clean process exit")
+	}
+	if watchersStopped && (e == nil || errors.Is(e, http.ErrServerClosed)) {
 		if markErr := sup.MarkClean(); markErr != nil {
 			log.Printf("supervisor clean shutdown marker failed: %v", markErr)
 		}

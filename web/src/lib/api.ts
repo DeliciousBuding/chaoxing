@@ -32,6 +32,23 @@ export interface LocationBinding {
   updated_at?: string;
 }
 
+export interface SignAudit {
+  account: string;
+  course_id: string;
+  class_id: string;
+  activity_id: string;
+  method: string;
+  state: string;
+  code?: string;
+  verified: boolean;
+  egress_ip?: string;
+  egress_ip_source?: string;
+  address?: string;
+  latitude?: number;
+  longitude?: number;
+  created_at: string;
+}
+
 export interface MapConfig {
   enabled: boolean;
   ak?: string;
@@ -125,6 +142,7 @@ export const api = {
     if (options.activityKey) query.set("activity_key", options.activityKey);
     return request<{ items: JsonObject[] }>(`/api/captures?${query.toString()}`);
   },
+  signAudits: (limit = 20) => request<{ items: SignAudit[] }>(`/api/sign-audits?limit=${limit}`),
   locations: () => request<{ items: LocationPreset[] }>("/api/locations"),
   saveLocation: (preset: LocationPreset) => request<LocationPreset>(preset.id ? `/api/locations/${preset.id}` : "/api/locations", {
     method: preset.id ? "PUT" : "POST",

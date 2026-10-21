@@ -94,6 +94,22 @@ func TestActivityFeedPartialKeepsRows(t *testing.T) {
 	}
 }
 
+func TestActivityPublicURLDropsQueryAndFragment(t *testing.T) {
+	got := publicActivityURL("https://mobilelearn.chaoxing.com/practice/page?enc=placeholder-secret#fragment")
+	if got != "https://mobilelearn.chaoxing.com/practice/page" {
+		t.Fatalf("url was not redacted: %q", got)
+	}
+	if publicActivityURL("javascript:alert(1)") != "" {
+		t.Fatal("non-https URL accepted")
+	}
+	if publicActivityURL("//evil.example/path") != "" {
+		t.Fatal("protocol-relative URL accepted")
+	}
+	if publicActivityURL("http://mobilelearn.chaoxing.com/path") != "" {
+		t.Fatal("plain-http URL accepted")
+	}
+}
+
 func TestActivityFeedAllClassesFailingReturnsError(t *testing.T) {
 	courses := []Course{{ID: "synthetic-course", ClassID: "class-a", Name: "Synthetic"}}
 	c := academicClient(t, courses, roundtrip(func(r *http.Request) (*http.Response, error) {

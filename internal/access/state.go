@@ -28,6 +28,11 @@ const (
 	maxClients      = 128
 	maxTokens       = 4096
 	maxPending      = 128
+	maxLoginPending = 4
+	loginNonceTTL   = 2 * time.Minute
+	maxLoginPerMin  = 5
+	maxLoginPer15m  = 20
+	maxLoginGlobal  = 60
 	maxStateBytes   = 2 << 20
 	accessTTL       = 15 * time.Minute
 	refreshTTL      = 30 * 24 * time.Hour
@@ -154,9 +159,22 @@ func (s *Server) pruneLocked() {
 		}
 	}
 	for k, v := range s.logins {
-		if v <= now {
+		if v.expires <= now {
 			delete(s.logins, k)
 		}
+	}
+	for ip, attempts := range s.loginAttempts {
+		kept := attempts[:0]
+		for _, at := range attempts {
+			if at > now-15*60 {
+				kept = append(kept, at)
+			}
+		}
+		if len(kept) == 0 {
+			delete(s.loginAttempts, ip)
+			continue
+		}
+		s.loginAttempts[ip] = kept
 	}
 }
 

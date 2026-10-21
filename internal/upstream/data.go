@@ -594,9 +594,10 @@ func (c *Client) AssignmentQuestions(ctx context.Context, args map[string]any) (
 	}
 	c.workJobs[workJobKey(job)] = job
 	c.cacheWorkQuestionSet(set)
+	formData, redacted := publicWorkForm(set.FormData)
 	return map[string]any{
 		"assignment": assignment, "job": set.Job, "job_id": set.Job.ID,
-		"questions": set.Questions, "form_data": set.FormData,
+		"questions": set.Questions, "form_data": formData, "redacted_form_fields": redacted,
 		"warnings": set.Warnings, "complete": true,
 		"coverage": "assignment_task_redirect_work_page", "fetched_at": set.FetchedAt,
 	}, nil

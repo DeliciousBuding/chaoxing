@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,11 +119,43 @@ func (c *Client) WorkQuestions(ctx context.Context, args map[string]any) (any, e
 	if err != nil {
 		return nil, err
 	}
+	formData, redacted := publicWorkForm(set.FormData)
 	return map[string]any{
-		"job": set.Job, "questions": set.Questions, "form_data": set.FormData,
+		"job": set.Job, "questions": set.Questions, "form_data": formData, "redacted_form_fields": redacted,
 		"warnings": set.Warnings, "complete": true, "coverage": "single_work_question_page",
 		"fetched_at": set.FetchedAt,
 	}, nil
+}
+
+// publicWorkForm keeps the stable form fields needed for display while
+// withholding values that are session-bound or reusable submission secrets.
+// The cached WorkQuestionSet retains the full fields for export_work_draft.
+func publicWorkForm(values map[string]string) (map[string]string, []string) {
+	out := make(map[string]string, len(values))
+	redacted := []string{}
+	for name, value := range values {
+		if sensitiveWorkFormName(name) {
+			redacted = append(redacted, name)
+			continue
+		}
+		out[name] = value
+	}
+	sort.Strings(redacted)
+	return out, redacted
+}
+
+func sensitiveWorkFormName(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	switch n {
+	case "enc", "ktoken", "cpi", "token", "csrf", "validate", "password", "pwd", "secret":
+		return true
+	}
+	for _, prefix := range []string{"enc", "token", "csrf", "auth", "session", "signature"} {
+		if strings.HasPrefix(n, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) GetWorkQuestions(ctx context.Context, courseID, classID, jobID string) (WorkQuestionSet, error) {

@@ -109,6 +109,7 @@ func TestRefreshHundredsConstantStateAndProofReplay(t *testing.T) {
 		// The endpoint limiter is tested separately; exercise rotation mechanics.
 		s.mu.Lock()
 		s.budget = 60
+		s.tokenBudget = 30
 		s.mu.Unlock()
 		w = form(h, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}})
 		if w.Code != 200 {
