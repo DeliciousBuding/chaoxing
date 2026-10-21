@@ -146,6 +146,8 @@ export class ApiError extends Error {
   }
 }
 
+export const SESSION_EXPIRED_EVENT = "chaoxing:session-expired";
+
 function csrfToken(): string {
   const prefix = "__Host-chaoxing_csrf=";
   for (const part of document.cookie.split(";")) {
@@ -170,6 +172,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!response.ok || body?.ok === false) {
     const error = body?.error ?? {};
+    if (response.status === 401 && path !== "/api/auth/login" && typeof window !== "undefined") {
+      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    }
     throw new ApiError(error.code ?? `HTTP_${response.status}`, error.message ?? response.statusText);
   }
   return body as T;

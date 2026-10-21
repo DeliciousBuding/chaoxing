@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
-import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary } from "../components/common";
+import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 export function Assignments() {
@@ -76,10 +76,12 @@ export function Assignments() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div className="text-sm text-muted-foreground">“没有查到”不等于“没有任务”；请始终关注覆盖状态。</div>
-        <Button size="sm" onClick={() => void load()} disabled={busy}>刷新待办</Button>
-      </div>
+      <PageHeader
+        title="待办与作业"
+        description="“没有查到”不等于“没有任务”；请始终关注覆盖状态，并从作业与考试清单取数。"
+        meta={<><Badge variant="secondary">{actions.length} 个待办</Badge><Badge variant="secondary">{rows.length} 个作业</Badge></>}
+        actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新待办</Button>}
+      />
       <ErrorBanner error={error} />
 
       <Card>
@@ -92,7 +94,7 @@ export function Assignments() {
           {busy && !actionItems ? <Loading /> : actions.length === 0 ? <EmptyState title="当前没有明确待办" /> : (
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {actions.map((item, index) => (
-                <div key={index} className="rounded-xl border bg-card/70 p-4">
+                <div key={index} className="rounded-control border border-border bg-muted/25 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <Badge variant={item.kind === "assignment" ? "warning" : "secondary"}>{item.kind}</Badge>
                     <span className="text-xs text-muted-foreground">{item.action || "pending"}</span>

@@ -960,12 +960,14 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 		parts := strings.Fields(r.Header.Get("Authorization"))
 		ok := false
 		scopes := ""
+		clientID := ""
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && len(parts[1]) <= 128 {
 			s.mu.Lock()
 			t, found := s.state.Access[digest(parts[1])]
 			ok = found && t.Expires > time.Now().Unix() && (t.Resource == "" || t.Resource == s.cfg.Issuer+"/mcp")
 			if ok {
 				scopes = t.Scope
+				clientID = t.Client
 				if scopes == "" {
 					scopes = scopeRead
 				}
@@ -977,7 +979,11 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 			oauthError(w, 401, "invalid_token")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(authz.WithScopes(r.Context(), scopes)))
+		ctx := authz.WithScopes(r.Context(), scopes)
+		if clientID != "" {
+			ctx = authz.WithPrincipal(ctx, "mcp:"+clientID)
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

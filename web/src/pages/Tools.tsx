@@ -4,11 +4,12 @@ import { api, type ToolDefinition } from "../lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
+import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
-import { ErrorBanner, JsonBlock, MetaSummary } from "../components/common";
+import { ErrorBanner, JsonBlock, MetaSummary, PageHeader } from "../components/common";
 
 export function Tools({ tools }: { tools: ToolDefinition[] }) {
   const [query, setQuery] = React.useState("");
@@ -73,11 +74,19 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[360px_1fr]">
+    <div className="space-y-5">
+      <PageHeader
+        title="工具面板"
+        description="所有工具均来自后端 allowlist；不提供任意 URL、文件路径或命令执行。"
+        meta={<><Badge variant="secondary">{tools.length} 个工具</Badge><Badge variant="secondary">{filtered.length} 个匹配</Badge></>}
+        actions={selected ? <Badge>{selected.scope}</Badge> : undefined}
+      />
+      <ErrorBanner error={error} />
+      <div className="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
       <Card className="h-fit">
         <CardHeader>
-          <CardTitle>工具面板</CardTitle>
-          <CardDescription>所有工具均来自后端 allowlist，不提供任意 URL 或命令执行。</CardDescription>
+          <CardTitle>工具目录</CardTitle>
+          <CardDescription>按标题、名称和描述过滤。</CardDescription>
           <div className="relative pt-2">
             <Search className="absolute left-3 top-5 h-4 w-4 text-muted-foreground" />
             <Input className="pl-9" placeholder="搜索工具" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -88,7 +97,7 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
             <button
               key={tool.id}
               onClick={() => choose(tool)}
-              className={`w-full rounded-xl border p-3 text-left transition ${selected?.id === tool.id ? "border-primary/50 bg-primary/10" : "hover:bg-muted"}`}
+              className={`w-full rounded-control border p-3 text-left transition-colors ${selected?.id === tool.id ? "border-primary/40 bg-primary/10" : "border-transparent hover:bg-muted"}`}
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="text-sm font-medium">{tool.title}</span>
@@ -101,7 +110,6 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
       </Card>
 
       <div className="space-y-5">
-        <ErrorBanner error={error} />
         {selected ? (
           <Card>
             <CardHeader>
@@ -123,9 +131,7 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
                           {field.enum.map((item) => <option key={item} value={item}>{item}</option>)}
                         </Select>
                       ) : field.type === "boolean" ? (
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border-input"
+                        <Checkbox
                           checked={Boolean(values[name])}
                           onChange={(event) => setValues({ ...values, [name]: event.target.checked })}
                         />
@@ -156,6 +162,7 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
             <CardContent className="space-y-3"><MetaSummary data={result} /><JsonBlock value={result} /></CardContent>
           </Card>
         )}
+      </div>
       </div>
     </div>
   );

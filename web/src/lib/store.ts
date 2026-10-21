@@ -7,9 +7,9 @@ export const themes = ["nova-dark", "nova-light", "midnight", "contrast"] as con
 export type Theme = (typeof themes)[number];
 
 export const themeLabels: Record<Theme, string> = {
-  "nova-dark": "Nova 深色",
-  "nova-light": "Nova 浅色",
-  midnight: "午夜蓝",
+  "nova-dark": "深色",
+  "nova-light": "浅色",
+  midnight: "石墨",
   contrast: "高对比"
 };
 
@@ -72,7 +72,10 @@ export const useUIStore = create<UIState>()(
       setDashboardOrder: (dashboardOrder) => set({ dashboardOrder }),
       refresh: () => set((state) => ({ refreshToken: state.refreshToken + 1, globalError: "" })),
       setGlobalError: (globalError) => set({ globalError }),
-      resetIdentity: () => set({ session: null, account: null, tools: [], globalError: "" })
+      resetIdentity: () => {
+        set({ session: null, account: null, tools: [], page: "dashboard", globalError: "" });
+        writePageURL("dashboard", "replace");
+      }
     }),
     {
       name: "chaoxing-ui-preferences",

@@ -57,14 +57,14 @@ export function pageIcon(id: PageId): LucideIcon {
 }
 
 export function canAccessPage(id: PageId, capabilities?: Capabilities) {
-  if (!capabilities) return true;
   const page = pages.find((item) => item.id === id);
   const requirement = page && "requirement" in page ? page.requirement : undefined;
   if (!requirement) return true;
+  if (!capabilities) return false;
   if (requirement === "manage_users") return capabilities.manage_users;
   if (requirement === "view_audit") return capabilities.view_audit;
   if (requirement === "sensitive") return capabilities.sensitive_read;
   if (requirement === "accounts") return capabilities.manage_accounts;
-  if (requirement === "work") return capabilities.tool_scopes.includes("chaoxing.work");
+  if (requirement === "work") return capabilities.tool_scopes?.includes("chaoxing.work") ?? false;
   return true;
 }

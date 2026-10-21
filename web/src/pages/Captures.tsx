@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
-import { EmptyState, ErrorBanner, JsonBlock, Loading } from "../components/common";
+import { EmptyState, ErrorBanner, JsonBlock, Loading, PageHeader } from "../components/common";
 import { formatBeijing } from "../lib/time";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
@@ -38,10 +38,12 @@ export function Captures() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div className="text-sm text-muted-foreground">生产捕获只保存脱敏结构，用于逆向随堂练习提交协议。</div>
-        <Button size="sm" onClick={() => void load()} disabled={busy}>刷新捕获</Button>
-      </div>
+      <PageHeader
+        title="生产捕获"
+        description="只保存脱敏结构，用于逆向随堂练习提交协议；不保留 hidden value、cookie 或原始 HTML。"
+        meta={<><Badge variant="secondary">{rows.length} 条</Badge><span>默认保留 7 天</span></>}
+        actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新捕获</Button>}
+      />
       <ErrorBanner error={error} />
       <Card>
         <CardHeader><CardTitle>活动捕获</CardTitle><CardDescription>默认保留 7 天；page evidence 不包含 hidden value、cookie 或原始 HTML。</CardDescription></CardHeader>

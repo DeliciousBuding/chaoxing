@@ -22,14 +22,12 @@ func (s *Server) registerLocationRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) sessionAccount(r *http.Request) (string, bool) {
-	id, ok := r.Context().Value(sessionIDKey{}).(string)
-	if !ok || id == "" {
+	session, ok := s.requestSession(r)
+	if !ok || session.account == "" {
 		return "", false
 	}
-	s.mu.Lock()
-	session, exists := s.sessions[id]
-	s.mu.Unlock()
-	if !exists || session.account == "" {
+	accounts, ok := s.accountsForSession(session)
+	if !ok || !containsAccount(accounts, session.account) {
 		return "", false
 	}
 	return session.account, true
@@ -89,7 +87,7 @@ func (s *Server) saveLocation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_LOCATION", err.Error())
 		return
 	}
-	s.recordAudit(r, s.requestSession(r), "config", "location.preset.create", strconv.FormatInt(item.ID, 10), account, true, map[string]any{"preset_id": item.ID, "label": item.Label})
+	s.recordAudit(r, s.sessionForAudit(r), "config", "location.preset.create", strconv.FormatInt(item.ID, 10), account, true, map[string]any{"preset_id": item.ID, "label": item.Label})
 	writeJSON(w, 200, item)
 }
 
@@ -113,7 +111,7 @@ func (s *Server) updateLocation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_LOCATION", err.Error())
 		return
 	}
-	s.recordAudit(r, s.requestSession(r), "config", "location.preset.update", strconv.FormatInt(item.ID, 10), account, true, map[string]any{"preset_id": item.ID, "label": item.Label})
+	s.recordAudit(r, s.sessionForAudit(r), "config", "location.preset.update", strconv.FormatInt(item.ID, 10), account, true, map[string]any{"preset_id": item.ID, "label": item.Label})
 	writeJSON(w, 200, item)
 }
 
@@ -131,7 +129,7 @@ func (s *Server) deleteLocation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_LOCATION", err.Error())
 		return
 	}
-	s.recordAudit(r, s.requestSession(r), "config", "location.preset.delete", strconv.FormatInt(id, 10), account, true, nil)
+	s.recordAudit(r, s.sessionForAudit(r), "config", "location.preset.delete", strconv.FormatInt(id, 10), account, true, nil)
 	writeJSON(w, 200, map[string]any{"deleted": true})
 }
 
@@ -164,7 +162,7 @@ func (s *Server) saveLocationBinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_LOCATION_BINDING", err.Error())
 		return
 	}
-	s.recordAudit(r, s.requestSession(r), "config", "location.binding.save", binding.CourseID+":"+binding.ClassID+":"+binding.ScheduleKey, account, true, map[string]any{"preset_id": binding.PresetID})
+	s.recordAudit(r, s.sessionForAudit(r), "config", "location.binding.save", binding.CourseID+":"+binding.ClassID+":"+binding.ScheduleKey, account, true, map[string]any{"preset_id": binding.PresetID})
 	writeJSON(w, 200, map[string]any{"saved": true})
 }
 
@@ -185,7 +183,7 @@ func (s *Server) deleteLocationBinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_LOCATION_BINDING", err.Error())
 		return
 	}
-	s.recordAudit(r, s.requestSession(r), "config", "location.binding.delete", req.CourseID+":"+req.ClassID+":"+req.ScheduleKey, account, true, nil)
+	s.recordAudit(r, s.sessionForAudit(r), "config", "location.binding.delete", req.CourseID+":"+req.ClassID+":"+req.ScheduleKey, account, true, nil)
 	writeJSON(w, 200, map[string]any{"deleted": true})
 }
 

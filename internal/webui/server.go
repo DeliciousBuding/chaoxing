@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -26,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
@@ -52,14 +54,20 @@ func distFS() fs.FS {
 }
 
 const (
-	sessionCookie  = "__Host-chaoxing_session"
-	csrfCookie     = "__Host-chaoxing_csrf"
-	sessionTTL     = 8 * time.Hour
-	idleTTL        = 30 * time.Minute
-	maxBodyBytes   = 128 << 10
-	maxSessions    = 32
-	loginMinuteIP  = 5
-	loginQuarterIP = 20
+	sessionCookie      = "__Host-chaoxing_session"
+	csrfCookie         = "__Host-chaoxing_csrf"
+	sessionTTL         = 8 * time.Hour
+	idleTTL            = 30 * time.Minute
+	maxBodyBytes       = 128 << 10
+	maxSessions        = 32
+	maxSessionsPerUser = 6
+	loginMinuteIP      = 5
+	loginQuarterIP     = 20
+)
+
+var (
+	errSessionInvalid          = errors.New("session is not active")
+	errControlPlaneUnavailable = errors.New("control plane is unavailable")
 )
 
 type Account struct {
@@ -140,6 +148,7 @@ type webSession struct {
 	displayName string
 	role        string
 	authVersion int64
+	accounts    []Account
 	csrf        string
 	created     time.Time
 	lastSeen    time.Time
@@ -165,6 +174,9 @@ type Server struct {
 	loginSem       chan struct{}
 	indexHTML      []byte
 	assets         map[string]cachedAsset
+	auditFailures  atomic.Uint64
+	auditStreak    atomic.Uint64
+	auditLastFail  atomic.Int64
 }
 
 var allToolScopes = []string{"chaoxing.read", "chaoxing.sign", "chaoxing.work", "chaoxing.answer", "chaoxing.work.submit", "chaoxing.upload", "chaoxing.face"}
@@ -219,21 +231,14 @@ func firstAccountID(accounts []Account) string {
 }
 
 func (s *Server) sessionRole(session webSession) string {
-	if session.role == "" {
-		return controlplane.RoleOwner
+	role := strings.TrimSpace(session.role)
+	if role == "" {
+		return "anonymous"
 	}
-	return session.role
-}
-
-func (s *Server) controlUser(ctx context.Context, session webSession) (controlplane.User, bool) {
-	if s.cfg.Control == nil || session.userID <= 0 {
-		return controlplane.User{ID: 0, Username: "owner", DisplayName: "Owner", Role: controlplane.RoleOwner, Status: controlplane.StatusActive}, true
+	if !controlplane.ValidRole(role) {
+		return ""
 	}
-	user, err := s.cfg.Control.UserByID(ctx, session.userID)
-	if err != nil || !user.Active() || user.AuthVersion != session.authVersion {
-		return controlplane.User{}, false
-	}
-	return user, true
+	return role
 }
 
 func New(cfg Config) (*Server, error) {
@@ -501,8 +506,12 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 		if r.Method != http.MethodGet && !s.sameOrigin(w, r) {
 			return
 		}
-		id, ok := s.currentSession(w, r)
-		if !ok {
+		id, session, err := s.currentSessionRecord(w, r)
+		if err != nil {
+			if errors.Is(err, errControlPlaneUnavailable) {
+				writeError(w, 503, "CONTROL_PLANE_UNAVAILABLE", "control plane is temporarily unavailable")
+				return
+			}
 			writeError(w, 401, "UNAUTHENTICATED", "login required")
 			return
 		}
@@ -510,17 +519,53 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, 403, "CSRF_INVALID", "cross-site request rejected")
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), sessionIDKey{}, id)))
+		next(w, r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, authorizedSession{id: id, session: session})))
 	}
 }
 
-type sessionIDKey struct{}
+type sessionContextKey struct{}
 
-func (s *Server) requestSession(r *http.Request) webSession {
-	id, _ := r.Context().Value(sessionIDKey{}).(string)
+type authorizedSession struct {
+	id      string
+	session webSession
+}
+
+// requestSession returns the live server-side record, not a zero value for a
+// deleted session. A missing session is always a hard authentication failure.
+func (s *Server) requestSession(r *http.Request) (webSession, bool) {
+	auth, ok := r.Context().Value(sessionContextKey{}).(authorizedSession)
+	if !ok || auth.id == "" {
+		return webSession{}, false
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.sessions[id]
+	session, exists := s.sessions[auth.id]
+	s.mu.Unlock()
+	if !exists {
+		return webSession{}, false
+	}
+	if s.cfg.Control != nil && (session.userID <= 0 || session.authVersion <= 0) {
+		return webSession{}, false
+	}
+	if auth.session.userID != 0 && session.userID != auth.session.userID {
+		return webSession{}, false
+	}
+	return session, true
+}
+
+func (s *Server) requestSessionID(r *http.Request) (string, bool) {
+	auth, ok := r.Context().Value(sessionContextKey{}).(authorizedSession)
+	if !ok || auth.id == "" {
+		return "", false
+	}
+	s.mu.Lock()
+	_, exists := s.sessions[auth.id]
+	s.mu.Unlock()
+	return auth.id, exists
+}
+
+func (s *Server) sessionForAudit(r *http.Request) webSession {
+	session, _ := s.requestSession(r)
+	return session
 }
 
 func (s *Server) sameOrigin(w http.ResponseWriter, r *http.Request) bool {
@@ -536,9 +581,14 @@ func (s *Server) sameOrigin(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *Server) currentSession(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id, _, err := s.currentSessionRecord(w, r)
+	return id, err == nil
+}
+
+func (s *Server) currentSessionRecord(w http.ResponseWriter, r *http.Request) (string, webSession, error) {
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil || len(cookie.Value) < 32 || len(cookie.Value) > 128 {
-		return "", false
+		return "", webSession{}, errSessionInvalid
 	}
 	id := digest(cookie.Value)
 	s.mu.Lock()
@@ -551,13 +601,23 @@ func (s *Server) currentSession(w http.ResponseWriter, r *http.Request) (string,
 		}
 	}
 	s.mu.Unlock()
-	if ok && s.cfg.Control != nil && session.userID > 0 {
-		user, userErr := s.cfg.Control.UserByID(r.Context(), session.userID)
-		if userErr != nil || !user.Active() || user.AuthVersion != session.authVersion {
+	if ok && s.cfg.Control != nil {
+		if session.userID <= 0 || session.authVersion <= 0 {
 			s.mu.Lock()
 			delete(s.sessions, id)
 			s.mu.Unlock()
 			ok = false
+		} else {
+			valid, validationErr := s.cfg.Control.SessionValid(r.Context(), session.userID, session.authVersion)
+			if validationErr != nil {
+				return "", webSession{}, fmt.Errorf("%w: %v", errControlPlaneUnavailable, validationErr)
+			}
+			if !valid {
+				s.mu.Lock()
+				delete(s.sessions, id)
+				s.mu.Unlock()
+				ok = false
+			}
 		}
 	}
 	if ok {
@@ -573,8 +633,9 @@ func (s *Server) currentSession(w http.ResponseWriter, r *http.Request) (string,
 	if !ok {
 		// Clear the stale cookie only after all response headers can still be set.
 		http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+		return "", webSession{}, errSessionInvalid
 	}
-	return id, ok
+	return id, session, nil
 }
 
 func (s *Server) csrfOK(w http.ResponseWriter, r *http.Request, sessionID string) bool {
@@ -594,14 +655,15 @@ func (s *Server) csrfOK(w http.ResponseWriter, r *http.Request, sessionID string
 
 func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 	s.ensureCSRF(w, r)
-	id, ok := s.currentSession(w, r)
-	if !ok {
+	_, session, err := s.currentSessionRecord(w, r)
+	if err != nil {
+		if errors.Is(err, errControlPlaneUnavailable) {
+			writeError(w, 503, "CONTROL_PLANE_UNAVAILABLE", "control plane is temporarily unavailable")
+			return
+		}
 		writeJSON(w, 200, map[string]any{"authenticated": false, "csrf": s.csrfValue(w, r), "version": s.cfg.Version})
 		return
 	}
-	s.mu.Lock()
-	session := s.sessions[id]
-	s.mu.Unlock()
 	payload := s.sessionPayload(session)
 	payload["csrf"] = s.csrfValue(w, r)
 	payload["version"] = s.cfg.Version
@@ -638,22 +700,45 @@ func (s *Server) recordAudit(r *http.Request, session webSession, category, acti
 	if details == nil {
 		details = map[string]any{}
 	}
-	role := session.role
+	role := strings.TrimSpace(session.role)
 	if role == "" {
-		role = controlplane.RoleOwner
-		if session.userID == 0 && session.username != "" {
-			role = "anonymous"
-		}
+		role = "anonymous"
 	}
 	encoded, err := json.Marshal(details)
 	if err != nil {
 		encoded = []byte("{}")
 	}
-	_ = s.cfg.Control.RecordAudit(r.Context(), controlplane.AuditEvent{
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
+	defer cancel()
+	err = s.cfg.Control.RecordAudit(ctx, controlplane.AuditEvent{
 		ActorID: session.userID, ActorUsername: session.username, ActorRole: role,
 		AccountKey: account, Category: category, Action: action, Target: target, Success: success,
 		IP: s.remoteIP(r), UserAgent: r.UserAgent(), RequestID: randomToken(), Details: encoded,
 	})
+	if err != nil {
+		total := s.auditFailures.Add(1)
+		streak := s.auditStreak.Add(1)
+		s.auditLastFail.Store(time.Now().Unix())
+		if streak == 1 || streak%100 == 0 {
+			log.Printf("control-plane audit write failed: total=%d consecutive=%d: %v", total, streak, err)
+		}
+		return
+	}
+	s.auditStreak.Store(0)
+}
+
+// ControlHealth exposes bounded control-plane write diagnostics for the
+// authenticated status page and readiness checks. It contains no audit data.
+func (s *Server) ControlHealth() map[string]any {
+	last := ""
+	if unix := s.auditLastFail.Load(); unix > 0 {
+		last = time.Unix(unix, 0).UTC().Format(time.RFC3339)
+	}
+	return map[string]any{
+		"audit_write_failures":             s.auditFailures.Load(),
+		"audit_consecutive_write_failures": s.auditStreak.Load(),
+		"audit_last_write_failure_at":      last,
+	}
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -690,6 +775,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Control != nil {
 		user, authErr := s.cfg.Control.Authenticate(r.Context(), req.Username, req.Password)
 		if authErr != nil {
+			if !errors.Is(authErr, controlplane.ErrInvalidCredentials) {
+				log.Printf("control-plane authentication failed: %v", authErr)
+				writeError(w, 503, "CONTROL_PLANE_UNAVAILABLE", "control plane is temporarily unavailable")
+				return
+			}
 			s.recordAudit(r, webSession{username: strings.TrimSpace(req.Username), role: "anonymous"}, "auth", "auth.login.failed", "", "", false, map[string]any{"reason": "invalid_credentials"})
 			writeError(w, 401, "LOGIN_FAILED", "username or password is incorrect")
 			return
@@ -697,33 +787,30 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		accounts := s.accountsForRole(user.Role, user.Accounts)
 		session = webSession{
 			account: firstAccountID(accounts), userID: user.ID, username: user.Username,
-			displayName: user.DisplayName, role: user.Role, authVersion: user.AuthVersion,
+			displayName: user.DisplayName, role: user.Role, authVersion: user.AuthVersion, accounts: accounts,
 		}
 	} else {
 		if !access.VerifyPassword(s.cfg.OwnerPasswordHash, req.Password) {
 			writeError(w, 401, "LOGIN_FAILED", "owner password is incorrect")
 			return
 		}
-		session = webSession{account: "root", username: "owner", displayName: "Owner", role: controlplane.RoleOwner}
+		accounts := s.accountsForRole(controlplane.RoleOwner, nil)
+		session = webSession{account: firstAccountID(accounts), username: "owner", displayName: "Owner", role: controlplane.RoleOwner, accounts: accounts}
 	}
 	token := randomToken()
 	id := digest(token)
 	now := s.now()
 	s.mu.Lock()
-	for oldID, session := range s.sessions {
-		if now.After(session.expires) || now.Sub(session.lastSeen) > idleTTL {
-			delete(s.sessions, oldID)
-		}
-	}
-	if len(s.sessions) >= maxSessions {
-		s.mu.Unlock()
-		w.Header().Set("Retry-After", "60")
-		writeError(w, 429, "SESSION_LIMIT", "too many active management sessions")
-		return
-	}
 	session.csrf = s.csrfValue(w, r)
 	session.created, session.lastSeen = now, now
 	session.expires, session.remoteIP = now.Add(sessionTTL), s.remoteIP(r)
+	s.pruneSessionsLocked(now)
+	if !s.reserveSessionSlotLocked(session.userID, s.sessionRole(session), now) {
+		s.mu.Unlock()
+		w.Header().Set("Retry-After", "60")
+		writeError(w, 429, "SESSION_LIMIT", "too many active management sessions for this identity")
+		return
+	}
 	s.sessions[id] = session
 	s.mu.Unlock()
 	s.recordAudit(r, session, "auth", "auth.login", "", session.account, true, nil)
@@ -733,6 +820,79 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	payload["csrf"] = session.csrf
 	payload["version"] = s.cfg.Version
 	writeJSON(w, 200, payload)
+}
+
+func (s *Server) pruneSessionsLocked(now time.Time) {
+	for id, session := range s.sessions {
+		if now.After(session.expires) || now.Sub(session.lastSeen) > idleTTL {
+			delete(s.sessions, id)
+		}
+	}
+}
+
+func sessionRoleRank(role string) int {
+	switch role {
+	case controlplane.RoleViewer:
+		return 0
+	case controlplane.RoleOperator:
+		return 1
+	case controlplane.RoleAdmin:
+		return 2
+	case controlplane.RoleOwner:
+		return 3
+	default:
+		return -1
+	}
+}
+
+// reserveSessionSlotLocked protects the owner from a viewer/operator session
+// exhaustion attack. Owners and admins may replace their own oldest session;
+// lower roles are capped per identity.
+func (s *Server) reserveSessionSlotLocked(userID int64, role string, now time.Time) bool {
+	if role == "" {
+		return false
+	}
+	count, oldestID, oldestSeen := 0, "", now
+	if userID != 0 {
+		for id, session := range s.sessions {
+			if session.userID != userID {
+				continue
+			}
+			count++
+			if oldestID == "" || session.lastSeen.Before(oldestSeen) {
+				oldestID, oldestSeen = id, session.lastSeen
+			}
+		}
+	}
+	if count >= maxSessionsPerUser {
+		if role != controlplane.RoleOwner && role != controlplane.RoleAdmin {
+			return false
+		}
+		if oldestID != "" {
+			delete(s.sessions, oldestID)
+		}
+	}
+	if len(s.sessions) < maxSessions {
+		return true
+	}
+	targetRank := sessionRoleRank(role)
+	evictID := ""
+	evictRank := targetRank + 1
+	evictSeen := now
+	for id, session := range s.sessions {
+		rank := sessionRoleRank(s.sessionRole(session))
+		if rank < 0 || rank > targetRank {
+			continue
+		}
+		if rank < evictRank || (rank == evictRank && session.lastSeen.Before(evictSeen)) {
+			evictID, evictRank, evictSeen = id, rank, session.lastSeen
+		}
+	}
+	if evictID == "" {
+		return false
+	}
+	delete(s.sessions, evictID)
+	return true
 }
 
 func (s *Server) sessionPayload(session webSession) map[string]any {
@@ -792,11 +952,12 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) accountInfo(w http.ResponseWriter, r *http.Request) {
-	id, _ := r.Context().Value(sessionIDKey{}).(string)
-	s.mu.Lock()
-	session := s.sessions[id]
-	s.mu.Unlock()
-	accounts, ok := s.accountsForSession(r.Context(), session)
+	id, session, ok := s.authorizedRequestSession(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	accounts, ok := s.accountsForSession(session)
 	if !ok {
 		writeError(w, 401, "UNAUTHENTICATED", "login required")
 		return
@@ -821,11 +982,12 @@ func (s *Server) selectAccount(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	id, _ := r.Context().Value(sessionIDKey{}).(string)
-	s.mu.Lock()
-	session := s.sessions[id]
-	s.mu.Unlock()
-	accounts, ok := s.accountsForSession(r.Context(), session)
+	id, session, ok := s.authorizedRequestSession(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	accounts, ok := s.accountsForSession(session)
 	if !ok {
 		writeError(w, 401, "UNAUTHENTICATED", "login required")
 		return
@@ -845,7 +1007,20 @@ func (s *Server) selectAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.recordAudit(r, session, "security", "account.select.denied", req.Account, session.account, false, map[string]any{"reason": "account_scope_denied"})
 	writeError(w, 403, "ACCOUNT_SCOPE_DENIED", "account is not assigned to this user")
+}
+
+func (s *Server) authorizedRequestSession(r *http.Request) (string, webSession, bool) {
+	id, ok := s.requestSessionID(r)
+	if !ok {
+		return "", webSession{}, false
+	}
+	session, ok := s.requestSession(r)
+	if !ok {
+		return "", webSession{}, false
+	}
+	return id, session, true
 }
 
 func containsAccount(accounts []Account, id string) bool {
@@ -857,22 +1032,33 @@ func containsAccount(accounts []Account, id string) bool {
 	return false
 }
 
-func (s *Server) accountsForSession(ctx context.Context, session webSession) ([]Account, bool) {
-	if s.cfg.Control == nil || session.userID <= 0 {
+func (s *Server) accountsForSession(session webSession) ([]Account, bool) {
+	if s.cfg.Control == nil {
+		if s.sessionRole(session) != controlplane.RoleOwner {
+			return nil, false
+		}
 		return append([]Account(nil), s.cfg.Accounts...), true
 	}
-	user, err := s.cfg.Control.UserByID(ctx, session.userID)
-	if err != nil || !user.Active() || user.AuthVersion != session.authVersion {
+	if session.userID <= 0 || session.authVersion <= 0 {
 		return nil, false
 	}
-	return s.accountsForRole(user.Role, user.Accounts), true
+	return append([]Account{}, session.accounts...), true
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
-	session := s.requestSession(r)
+	session, ok := s.requestSession(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
 	role := s.sessionRole(session)
-	accounts, _ := s.accountsForSession(r.Context(), session)
+	accounts, allowed := s.accountsForSession(session)
+	if !allowed {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
 	value := map[string]any{"version": s.cfg.Version, "accounts": accounts}
+	value["control"] = s.ControlHealth()
 	if role != controlplane.RoleViewer && s.cfg.Status != nil {
 		if raw := s.cfg.Status(); raw != nil {
 			if runtime, ok := raw.(map[string]any); ok {
@@ -906,8 +1092,13 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) captures(w http.ResponseWriter, r *http.Request) {
-	session := s.requestSession(r)
+	session, ok := s.requestSession(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
 	if !capabilitiesForRole(s.sessionRole(session)).SensitiveRead {
+		s.recordAudit(r, session, "security", "captures.denied", "captures", session.account, false, map[string]any{"reason": "permission_denied"})
 		writeError(w, 403, "PERMISSION_DENIED", "capture access is not granted to this role")
 		return
 	}
@@ -944,6 +1135,7 @@ func (s *Server) captures(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if accountFilter != "" && accountFilter != account {
+		s.recordAudit(r, session, "security", "captures.denied", accountFilter, session.account, false, map[string]any{"reason": "account_scope_denied"})
 		writeError(w, 403, "ACCOUNT_SCOPE_DENIED", "captures are scoped to the current account")
 		return
 	}
@@ -978,8 +1170,13 @@ func (s *Server) captures(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) signAudits(w http.ResponseWriter, r *http.Request) {
-	session := s.requestSession(r)
+	session, ok := s.requestSession(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
 	if !capabilitiesForRole(s.sessionRole(session)).SensitiveRead {
+		s.recordAudit(r, session, "security", "sign_audits.denied", "sign-audits", session.account, false, map[string]any{"reason": "permission_denied"})
 		writeError(w, 403, "PERMISSION_DENIED", "sign audit access is not granted to this role")
 		return
 	}
@@ -1010,7 +1207,12 @@ func (s *Server) signAudits(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) tools(w http.ResponseWriter, r *http.Request) {
-	role := s.sessionRole(s.requestSession(r))
+	session, ok := s.requestSession(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	role := s.sessionRole(session)
 	items := []map[string]any{}
 	for _, d := range operation.All() {
 		allowed := true
@@ -1051,7 +1253,11 @@ func (s *Server) call(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "UNKNOWN_TOOL", "operation is not allowlisted")
 		return
 	}
-	session := s.requestSession(r)
+	session, ok := s.requestSession(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
 	role := s.sessionRole(session)
 	for _, scope := range operation.RequiredScopes(definition) {
 		if !roleAllowsScope(role, scope) {
@@ -1060,7 +1266,7 @@ func (s *Server) call(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	accounts, allowed := s.accountsForSession(r.Context(), session)
+	accounts, allowed := s.accountsForSession(session)
 	if !allowed || !containsAccount(accounts, session.account) {
 		s.recordAudit(r, session, "security", "tool.denied", definition.Name, session.account, false, map[string]any{"reason": "account_scope_denied"})
 		writeError(w, 403, "ACCOUNT_SCOPE_DENIED", "the selected account is not assigned to this user")
@@ -1096,7 +1302,15 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request, capability
 		writeError(w, 503, "CONTROL_PLANE_UNAVAILABLE", "control plane is not configured")
 		return webSession{}, false
 	}
-	session := s.requestSession(r)
+	session, ok := s.requestSession(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return webSession{}, false
+	}
+	if _, allowed := s.accountsForSession(session); !allowed {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return webSession{}, false
+	}
 	caps := capabilitiesForRole(s.sessionRole(session))
 	allowed := false
 	switch capability {
@@ -1116,7 +1330,15 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request, capability
 }
 
 func (s *Server) requireCapability(w http.ResponseWriter, r *http.Request, capability string) bool {
-	session := s.requestSession(r)
+	session, ok := s.requestSession(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return false
+	}
+	if _, allowed := s.accountsForSession(session); !allowed {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return false
+	}
 	caps := capabilitiesForRole(s.sessionRole(session))
 	allowed := false
 	switch capability {
@@ -1186,6 +1408,7 @@ func (s *Server) adminCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Role == controlplane.RoleOwner || (req.Role == controlplane.RoleAdmin && s.sessionRole(session) != controlplane.RoleOwner) {
+		s.recordAudit(r, session, "security", "member.create.denied", "", "", false, map[string]any{"reason": "role_escalation", "role": req.Role})
 		writeError(w, 403, "PERMISSION_DENIED", "only the owner can create administrators")
 		return
 	}
@@ -1242,6 +1465,7 @@ func (s *Server) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	actorRole := s.sessionRole(session)
 	if target.Role == controlplane.RoleOwner && actorRole != controlplane.RoleOwner {
+		s.recordAudit(r, session, "security", "member.update.denied", target.Username, "", false, map[string]any{"reason": "owner_protected"})
 		writeError(w, 403, "PERMISSION_DENIED", "only the owner can modify the owner account")
 		return
 	}
@@ -1250,15 +1474,18 @@ func (s *Server) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if target.Role == controlplane.RoleAdmin && actorRole != controlplane.RoleOwner && target.ID != session.userID {
+		s.recordAudit(r, session, "security", "member.update.denied", target.Username, "", false, map[string]any{"reason": "admin_protected"})
 		writeError(w, 403, "PERMISSION_DENIED", "only the owner can modify an administrator")
 		return
 	}
 	if id == session.userID && (req.Role != nil || req.Status != nil) {
+		s.recordAudit(r, session, "security", "member.update.denied", target.Username, "", false, map[string]any{"reason": "self_role_change"})
 		writeError(w, 403, "PERMISSION_DENIED", "you cannot change your own role or status")
 		return
 	}
 	if req.Role != nil {
 		if *req.Role == controlplane.RoleOwner || (*req.Role == controlplane.RoleAdmin && actorRole != controlplane.RoleOwner) {
+			s.recordAudit(r, session, "security", "member.update.denied", target.Username, "", false, map[string]any{"reason": "role_escalation", "role": *req.Role})
 			writeError(w, 403, "PERMISSION_DENIED", "only the owner can grant administrator access")
 			return
 		}
@@ -1281,8 +1508,14 @@ func (s *Server) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.cfg.Control.UpdateUser(r.Context(), id, controlplane.UpdateUserInput{
 		DisplayName: req.DisplayName, Password: req.Password, Role: req.Role, Status: req.Status, Accounts: req.Accounts,
+		ActorID: session.userID,
 	})
 	if err != nil {
+		if errors.Is(err, controlplane.ErrPermission) {
+			s.recordAudit(r, session, "security", "member.update.denied", target.Username, "", false, map[string]any{"reason": "stale_authorization"})
+			writeError(w, 403, "PERMISSION_DENIED", "the member or actor changed during the update; retry from fresh state")
+			return
+		}
 		if errors.Is(err, controlplane.ErrInvalidUser) {
 			writeError(w, 400, "INVALID_MEMBER", "member update is invalid")
 			return
@@ -1420,9 +1653,14 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		status = 500
+		payload = []byte(`{"ok":false,"error":{"code":"ENCODE_FAILED","message":"response could not be encoded"}}`)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_, _ = w.Write(append(payload, '\n'))
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
@@ -1431,7 +1669,9 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 func randomToken() string {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed while generating a management token")
+	}
 	return hex.EncodeToString(b)
 }
 

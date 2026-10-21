@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
 )
@@ -36,6 +37,7 @@ type UpdateUserInput struct {
 	Role        *string
 	Status      *string
 	Accounts    *[]string
+	ActorID     int64
 }
 
 func (s *Store) Authenticate(ctx context.Context, username, password string) (User, error) {
@@ -76,6 +78,26 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (Us
 
 func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 	return s.userBy(ctx, `id=?`, id)
+}
+
+// SessionValid performs the per-request authentication check without loading
+// display fields or account grants. A password, role, status or grant change
+// increments auth_version, so one indexed read invalidates every older session.
+func (s *Store) SessionValid(ctx context.Context, id, authVersion int64) (bool, error) {
+	var (
+		status  string
+		version int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT status, auth_version FROM admin_users WHERE id=?`, id).
+		Scan(&status, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return status == StatusActive && version == authVersion, nil
 }
 
 func (s *Store) userBy(ctx context.Context, where string, value any) (User, error) {
@@ -210,7 +232,7 @@ func (s *Store) CreateUser(ctx context.Context, input CreateUserInput) (User, er
 	if err := tx.Commit(); err != nil {
 		return User{}, err
 	}
-	return s.UserByID(ctx, id)
+	return s.userByCommitted(ctx, id)
 }
 
 func (s *Store) UpdateUser(ctx context.Context, id int64, input UpdateUserInput) (User, error) {
@@ -242,12 +264,64 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, input UpdateUserInput)
 			return User{}, ErrInvalidUser
 		}
 	}
+	var passwordHash string
+	if input.Password != nil {
+		passwordHash, err = access.HashPassword(*input.Password)
+		if err != nil {
+			return User{}, ErrInvalidUser
+		}
+	}
 	now := nowUnix()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return User{}, err
 	}
 	defer tx.Rollback()
+	var lockedTargetRole string
+	if err := tx.QueryRowContext(ctx, `SELECT role FROM admin_users WHERE id=?`, id).Scan(&lockedTargetRole); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, ErrNotFound
+		}
+		return User{}, err
+	}
+	if input.ActorID > 0 {
+		var (
+			actorRole   string
+			actorStatus string
+		)
+		if err := tx.QueryRowContext(ctx, `SELECT role, status FROM admin_users WHERE id=?`, input.ActorID).
+			Scan(&actorRole, &actorStatus); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return User{}, ErrPermission
+			}
+			return User{}, err
+		}
+		if actorStatus != StatusActive || (actorRole != RoleOwner && actorRole != RoleAdmin) {
+			return User{}, ErrPermission
+		}
+		if actorRole != RoleOwner {
+			if lockedTargetRole == RoleOwner {
+				return User{}, ErrPermission
+			}
+			if lockedTargetRole == RoleAdmin && id != input.ActorID {
+				return User{}, ErrPermission
+			}
+			if input.Role != nil && (*input.Role == RoleOwner || *input.Role == RoleAdmin) {
+				return User{}, ErrPermission
+			}
+			if id == input.ActorID && (input.Role != nil || input.Status != nil) {
+				return User{}, ErrPermission
+			}
+		}
+	}
+	if lockedTargetRole == RoleOwner {
+		if input.Role != nil && *input.Role != RoleOwner {
+			return User{}, ErrInvalidUser
+		}
+		if input.Status != nil && *input.Status != StatusActive {
+			return User{}, ErrInvalidUser
+		}
+	}
 	if input.DisplayName != nil {
 		display := strings.TrimSpace(*input.DisplayName)
 		if display == "" || len(display) > 64 {
@@ -258,11 +332,7 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, input UpdateUserInput)
 		}
 	}
 	if input.Password != nil {
-		hash, err := access.HashPassword(*input.Password)
-		if err != nil {
-			return User{}, ErrInvalidUser
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE admin_users SET password_hash=? WHERE id=?`, hash, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE admin_users SET password_hash=? WHERE id=?`, passwordHash, id); err != nil {
 			return User{}, err
 		}
 	}
@@ -298,5 +368,11 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, input UpdateUserInput)
 	if err := tx.Commit(); err != nil {
 		return User{}, err
 	}
-	return s.UserByID(ctx, id)
+	return s.userByCommitted(ctx, id)
+}
+
+func (s *Store) userByCommitted(ctx context.Context, id int64) (User, error) {
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	return s.UserByID(readCtx, id)
 }

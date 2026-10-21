@@ -11,11 +11,13 @@ import { assignableRoles, roleDescriptions, roleLabels } from "../lib/roles";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Alert, AlertDescription } from "../components/ui/alert";
+import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { EmptyState, ErrorBanner, Loading } from "../components/common";
+import { EmptyState, ErrorBanner, Loading, PageHeader } from "../components/common";
 import { formatBeijing } from "../lib/time";
 import { cn } from "../lib/utils";
 
@@ -42,7 +44,7 @@ function statusVariant(status: string) {
 }
 
 export function Members({ session }: { session: SessionInfo }) {
-  const actorRole = session.user?.role ?? "owner";
+  const actorRole = session.user?.role;
   const [users, setUsers] = React.useState<PlatformUser[]>([]);
   const [accounts, setAccounts] = React.useState<AdminAccount[]>([]);
   const [selected, setSelected] = React.useState<PlatformUser | null>(null);
@@ -52,6 +54,8 @@ export function Members({ session }: { session: SessionInfo }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [notice, setNotice] = React.useState("");
+  const formCardRef = React.useRef<HTMLDivElement | null>(null);
+  const formTitleRef = React.useRef<HTMLHeadingElement | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -91,12 +95,13 @@ export function Members({ session }: { session: SessionInfo }) {
   }
 
   const canEdit = React.useCallback((user: PlatformUser) => {
+    if (!actorRole) return false;
     if (actorRole === "owner") return true;
     if (actorRole !== "admin") return false;
     return user.id === session.user?.id || user.role === "operator" || user.role === "viewer";
   }, [actorRole, session.user?.id]);
 
-  const roleOptions = assignableRoles[actorRole];
+  const roleOptions = actorRole ? assignableRoles[actorRole] : [];
   const targetIsSelf = selected?.id === session.user?.id;
   const targetIsOwner = selected?.role === "owner";
   const roleLocked = targetIsSelf || targetIsOwner || Boolean(selected && !roleOptions.includes(form.role));
@@ -104,10 +109,19 @@ export function Members({ session }: { session: SessionInfo }) {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (!creating && selected && !roleLocked && form.role !== selected.role &&
+      !window.confirm(`将 ${selected.username} 的角色从“${roleLabels[selected.role]}”改为“${roleLabels[form.role]}”？该成员的现有会话会立即失效。`)) {
+      return;
+    }
+    if (!creating && selected && !targetIsSelf && !targetIsOwner && form.status !== selected.status &&
+      !window.confirm(`${form.status === "disabled" ? "禁用" : "启用"}成员 ${selected.username}？${form.status === "disabled" ? "其现有会话会立即失效。" : ""}`)) {
+      return;
+    }
     setBusy(true);
     setError("");
     setNotice("");
     try {
+      let saved: PlatformUser | null = null;
       if (creating) {
         await api.createMember({
           username: form.username.trim(),
@@ -131,7 +145,7 @@ export function Members({ session }: { session: SessionInfo }) {
         if (form.password) payload.password = form.password;
         if (!roleLocked && form.role !== selected.role) payload.role = form.role;
         if (!targetIsSelf && !targetIsOwner && form.status !== selected.status) payload.status = form.status;
-        await api.updateMember(selected.id, payload);
+        saved = await api.updateMember(selected.id, payload);
         setNotice(`成员 ${selected.username} 已更新`);
       }
       await load();
@@ -139,6 +153,16 @@ export function Members({ session }: { session: SessionInfo }) {
         setCreating(false);
         setSelected(null);
         setForm(emptyForm);
+      } else if (saved) {
+        setSelected(saved);
+        setForm({
+          username: saved.username,
+          display_name: saved.display_name,
+          password: "",
+          role: saved.role,
+          status: saved.status,
+          accounts: saved.accounts ?? []
+        });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -163,26 +187,45 @@ export function Members({ session }: { session: SessionInfo }) {
 
   const formOpen = creating || Boolean(selected);
 
+  React.useEffect(() => {
+    if (!formOpen) return;
+    if (window.innerWidth < 1536) {
+      formCardRef.current?.scrollIntoView({ block: "start" });
+    }
+    formTitleRef.current?.focus({ preventScroll: true });
+  }, [formOpen, selected?.id, creating]);
+
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold">平台成员</h2>
-          <p className="text-xs text-muted-foreground">角色决定能力，账号授权决定可见范围；上游凭据仍由各 tenant 独立保管。</p>
-        </div>
-        <div className="flex gap-2">
+      <PageHeader
+        title="平台成员"
+        description="角色决定能力，账号授权决定可见范围；上游凭据仍由各 tenant 独立保管。"
+        meta={
+          <>
+            <span>四档角色</span><span>·</span><span>显式账号授权</span><span>·</span><span>认证版本即时失效</span>
+            {!actorRole && <Badge variant="warning">权限未加载，编辑已锁定</Badge>}
+          </>
+        }
+        actions={
+          <>
           <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading || busy}>
             <RefreshCw className="h-4 w-4" /> 刷新
           </Button>
           <Button size="sm" onClick={beginCreate} disabled={!actorRole || roleOptions.length === 0}>
             <Plus className="h-4 w-4" /> 新建成员
           </Button>
-        </div>
-      </div>
+          </>
+        }
+      />
       <ErrorBanner error={error} />
-      {notice && <div className="rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">{notice}</div>}
+      {notice && (
+        <Alert variant="success">
+          <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <AlertDescription>{notice}</AlertDescription>
+        </Alert>
+      )}
 
-      <div className={cn("grid gap-5", formOpen && "xl:grid-cols-[minmax(0,1fr)_390px]")}>
+      <div className={cn("grid gap-5", formOpen && "2xl:grid-cols-[minmax(0,1fr)_390px]")}>
         <Card>
           <CardHeader>
             <CardTitle>成员列表</CardTitle>
@@ -192,8 +235,7 @@ export function Members({ session }: { session: SessionInfo }) {
             {loading ? <Loading label="正在读取成员" /> : users.length === 0 ? (
               <EmptyState title="还没有平台成员" description="创建第一个操作员或只读成员，并为其分配账号。" />
             ) : (
-              <div className="overflow-x-auto">
-                <Table>
+              <Table className="min-w-[640px] md:min-w-[760px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead>成员</TableHead>
@@ -201,21 +243,31 @@ export function Members({ session }: { session: SessionInfo }) {
                       <TableHead>状态</TableHead>
                       <TableHead>账号范围</TableHead>
                       <TableHead>最近登录</TableHead>
-                      <TableHead className="text-right">操作</TableHead>
+                      <TableHead className="hidden text-right md:table-cell">操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {users.map((user) => (
-                      <TableRow key={user.id} className={selected?.id === user.id ? "bg-primary/5" : undefined}>
+                      <TableRow key={user.id} className={selected?.id === user.id ? "bg-accent" : undefined}>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                            <div className="flex h-8 w-8 items-center justify-center rounded-control bg-primary/10 text-primary">
                               {user.role === "owner" ? <ShieldCheck className="h-4 w-4" /> : <UserRound className="h-4 w-4" />}
                             </div>
                             <div className="min-w-0">
                               <div className="truncate text-sm font-medium">{user.display_name || user.username}</div>
                               <div className="font-mono text-[11px] text-muted-foreground">{user.username}</div>
                             </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="ml-auto md:hidden"
+                              onClick={() => beginEdit(user)}
+                              disabled={!canEdit(user)}
+                              title={canEdit(user) ? undefined : "只有 owner 可以修改管理员"}
+                            >
+                              编辑
+                            </Button>
                           </div>
                         </TableCell>
                         <TableCell><Badge variant={user.role === "owner" ? "default" : "secondary"}>{roleLabels[user.role]}</Badge></TableCell>
@@ -232,30 +284,37 @@ export function Members({ session }: { session: SessionInfo }) {
                           )}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">{user.last_login_at ? formatBeijing(user.last_login_at) : "从未登录"}</TableCell>
-                        <TableCell className="text-right">
-                          <Button size="sm" variant="outline" onClick={() => beginEdit(user)} disabled={!canEdit(user)}>编辑</Button>
+                        <TableCell className="hidden text-right md:table-cell">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => beginEdit(user)}
+                            disabled={!canEdit(user)}
+                            title={canEdit(user) ? undefined : "只有 owner 可以修改管理员"}
+                          >
+                            编辑
+                          </Button>
                         </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
-                </Table>
-              </div>
+              </Table>
             )}
           </CardContent>
         </Card>
 
         {formOpen && (
-          <Card className="h-fit">
+          <Card ref={formCardRef} className="h-fit scroll-mt-4">
             <CardHeader>
-              <CardTitle>{creating ? "新建成员" : `编辑 ${selected?.username}`}</CardTitle>
+              <CardTitle ref={formTitleRef} tabIndex={-1} className="focus:outline-none">{creating ? "新建成员" : `编辑 ${selected?.username}`}</CardTitle>
               <CardDescription>{roleDescriptions[form.role]}</CardDescription>
             </CardHeader>
             <CardContent>
               <form className="space-y-4" onSubmit={submit}>
                 <div className="space-y-2">
                   <Label htmlFor="member-username">用户名</Label>
-                  <Input id="member-username" value={form.username} disabled={!creating} onChange={(event) => setForm({ ...form, username: event.target.value })} required minLength={3} maxLength={32} pattern="[a-z0-9][a-z0-9_.-]{2,31}" />
-                  <p className="text-[11px] text-muted-foreground">小写字母/数字开头，3–32 位，可用 _ . -</p>
+                  <Input id="member-username" aria-describedby="member-username-hint" value={form.username} disabled={!creating} onChange={(event) => setForm({ ...form, username: event.target.value })} required minLength={3} maxLength={32} pattern="[a-z0-9][a-z0-9_.-]{2,31}" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+                  <p id="member-username-hint" className="text-[11px] text-muted-foreground">小写字母/数字开头，3–32 位，可用 _ . -</p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="member-display">显示名</Label>
@@ -263,8 +322,8 @@ export function Members({ session }: { session: SessionInfo }) {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="member-password">{creating ? "初始密码" : "重置密码（留空不改）"}</Label>
-                  <Input id="member-password" type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength={12} maxLength={1024} required={creating} autoComplete="new-password" disabled={targetIsOwner} />
-                  {targetIsOwner && <p className="text-[11px] text-muted-foreground">所有者密码由部署配置管理；修改需走 config/重启，避免与 MCP OAuth 密码分叉。</p>}
+                  <Input id="member-password" aria-describedby={targetIsOwner ? "member-password-hint" : undefined} type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength={12} maxLength={1024} required={creating} autoComplete="new-password" disabled={targetIsOwner} />
+                  {targetIsOwner && <p id="member-password-hint" className="text-[11px] text-muted-foreground">所有者密码由部署配置管理；修改需走 config/重启，避免与 MCP OAuth 密码分叉。</p>}
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-2">
@@ -285,14 +344,14 @@ export function Members({ session }: { session: SessionInfo }) {
                 </div>
 
                 {grantsVisible ? (
-                  <div className="space-y-2">
-                    <Label>账号授权</Label>
-                    <div className="space-y-1.5 rounded-xl border border-border/70 bg-muted/25 p-3">
+                  <fieldset className="space-y-2">
+                    <legend className="text-sm font-medium leading-none">账号授权</legend>
+                    <div className="space-y-1 rounded-control border border-border bg-muted/25 p-3">
                       {accounts.map((account) => {
                         const checked = form.accounts.includes(account.id);
                         return (
-                          <label key={account.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/60">
-                            <input type="checkbox" className="h-4 w-4 accent-[var(--color-primary)]" checked={checked} onChange={() => toggleAccount(account.id)} />
+                          <label key={account.id} className="flex cursor-pointer items-center gap-2 rounded-control px-2 py-1.5 text-[13px] hover:bg-muted/60">
+                            <Checkbox checked={checked} onChange={() => toggleAccount(account.id)} />
                             <span className="min-w-0 flex-1 truncate">{account.name}</span>
                             <span className="font-mono text-[11px] text-muted-foreground">{account.id}</span>
                             {checked && <Check className="h-3.5 w-3.5 text-success" />}
@@ -300,9 +359,9 @@ export function Members({ session }: { session: SessionInfo }) {
                         );
                       })}
                     </div>
-                  </div>
+                  </fieldset>
                 ) : (
-                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground">
+                  <div className="rounded-control border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground">
                     管理员隐式拥有全部账号，不需要逐项授权。
                   </div>
                 )}

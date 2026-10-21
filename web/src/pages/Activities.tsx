@@ -6,7 +6,7 @@ import { Badge } from "../components/ui/badge";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
-import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, statusVariant } from "../components/common";
+import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader, statusVariant } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 export function Activities({ tools }: { tools: any[] }) {
@@ -90,15 +90,19 @@ export function Activities({ tools }: { tools: any[] }) {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div className="text-sm text-muted-foreground">课堂活动包含签到、抢答、练习与作业入口；写操作均需显式确认。</div>
-        <Button size="sm" onClick={() => void load()} disabled={busy}>刷新活动</Button>
-      </div>
+      <PageHeader
+        title="课堂活动"
+        description="签到、测验、练习与作业入口统一进入同一条可观测链路；任何写操作都需要显式确认。"
+        meta={<><Badge variant="secondary">{rows.length} 个活动</Badge><span>不抢答</span><span>·</span><span>自动答题默认关闭</span></>}
+        actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新活动</Button>}
+      />
       <ErrorBanner error={error} />
       <Card>
-        <CardHeader><CardTitle>课堂活动</CardTitle><CardDescription>定位、二维码、拍照、人脸等特殊签到需要额外参数，请使用工具面板。</CardDescription></CardHeader>
-        <CardContent className="space-y-4">
+        <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
+          <div><CardTitle>活动流</CardTitle><CardDescription>定位、二维码、拍照、人脸等特殊签到需要额外参数。</CardDescription></div>
           {data && <MetaSummary data={data} />}
+        </CardHeader>
+        <CardContent className="space-y-4">
           {busy && !data ? <Loading /> : rows.length === 0 ? <EmptyState title="当前没有活动" /> : (
             <Table>
               <TableHeader>
@@ -126,7 +130,7 @@ export function Activities({ tools }: { tools: any[] }) {
                     {signTarget?.id === row.id && (
                       <TableRow>
                         <TableCell colSpan={7}>
-                          <div className="grid gap-4 rounded-xl border bg-card/60 p-4 md:grid-cols-3">
+                          <div className="grid gap-4 rounded-control border border-border bg-muted/20 p-4 md:grid-cols-3">
                             {["password", "gesture"].includes(row.sign_type) && (
                               <div className="space-y-2">
                                 <Label>sign_code *</Label>

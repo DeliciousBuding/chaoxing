@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,6 +146,47 @@ func TestControlPlaneMemberLoginAndScope(t *testing.T) {
 	}
 }
 
+func TestControlSessionRequiresPositiveIdentity(t *testing.T) {
+	s, mux, _ := newControlServer(t)
+	now := s.now()
+	token := strings.Repeat("c", 64)
+	id := digest(token)
+	s.sessions[id] = webSession{
+		account: "tenant", role: controlplane.RoleOwner, username: "owner",
+		created: now, lastSeen: now, expires: now.Add(sessionTTL), remoteIP: "192.0.2.0/24",
+	}
+	r := httptest.NewRequest("GET", "https://mcp.example.com/api/status", nil)
+	r = r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, authorizedSession{id: id}))
+	if _, ok := s.requestSession(r); ok {
+		t.Fatal("control session without positive user identity was accepted")
+	}
+
+	w := do(t, mux, "GET", "/api/status", "", &http.Cookie{Name: sessionCookie, Value: token})
+	if w.Code != 401 {
+		t.Fatalf("zero-identity session status=%d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestControlOutagePreservesSessionAndReturns503(t *testing.T) {
+	s, mux, store := newControlServer(t)
+	csrf, session := loginAs(t, mux, "owner", "control-owner-password")
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	id := digest(session.Value)
+
+	w := do(t, mux, "GET", "/api/status", "", csrf, session)
+	if w.Code != 503 {
+		t.Fatalf("control outage status=%d %s", w.Code, w.Body.String())
+	}
+	s.mu.Lock()
+	_, retained := s.sessions[id]
+	s.mu.Unlock()
+	if !retained {
+		t.Fatal("control-plane outage evicted the browser session")
+	}
+}
+
 func TestControlPlaneAuditAndConfigSummary(t *testing.T) {
 	_, mux, _ := newControlServer(t)
 	csrf, session := loginAs(t, mux, "owner", "control-owner-password")
@@ -155,5 +197,103 @@ func TestControlPlaneAuditAndConfigSummary(t *testing.T) {
 	w = do(t, mux, "GET", "/api/admin/audit?category=auth", "", csrf, session)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"auth.login"`) {
 		t.Fatalf("audit list: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMemberWithNoAccountGrantCanSignIn(t *testing.T) {
+	_, mux, _ := newControlServer(t)
+	csrf, session := loginAs(t, mux, "owner", "control-owner-password")
+	w := doCSRF(t, mux, "POST", "/api/admin/users", `{"username":"viewer","display_name":"Viewer","password":"viewer-password-123","role":"viewer","accounts":[]}`, csrf.Value, csrf, session)
+	if w.Code != 201 {
+		t.Fatalf("create viewer: %d %s", w.Code, w.Body.String())
+	}
+	viewerCSRF, viewerSession := loginAs(t, mux, "viewer", "viewer-password-123")
+	w = do(t, mux, "GET", "/api/account", "", viewerCSRF, viewerSession)
+	if w.Code != 200 {
+		t.Fatalf("zero-grant account scope: %d %s", w.Code, w.Body.String())
+	}
+	body := jsonMap(t, w)
+	if accounts, ok := body["accounts"].([]any); !ok || len(accounts) != 0 || body["current"] != "" {
+		t.Fatalf("unexpected zero-grant scope: %v", body)
+	}
+}
+
+func TestLoginFailsClosedWhenControlStoreUnavailable(t *testing.T) {
+	_, mux, store := newControlServer(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w := do(t, mux, "GET", "/api/auth/session", "")
+	csrf := cookieValue(w, csrfCookie)
+	if csrf == "" {
+		t.Fatal("csrf cookie missing")
+	}
+	csrfCookie := &http.Cookie{Name: csrfCookie, Value: csrf}
+	w = doCSRF(t, mux, "POST", "/api/auth/login", `{"username":"owner","password":"control-owner-password"}`, csrf, csrfCookie)
+	if w.Code != 503 {
+		t.Fatalf("login with unavailable store: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAuditWriteFailureIsObservable(t *testing.T) {
+	server, _, store := newControlServer(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/api/admin/users", nil)
+	server.recordAudit(request, webSession{username: "owner", role: controlplane.RoleOwner}, "auth", "auth.login.failed", "", "", false, nil)
+	health := server.ControlHealth()
+	if got, _ := health["audit_write_failures"].(uint64); got != 1 {
+		t.Fatalf("audit failure count=%v", health)
+	}
+	if got, _ := health["audit_consecutive_write_failures"].(uint64); got != 1 {
+		t.Fatalf("audit failure streak=%v", health)
+	}
+	if health["audit_last_write_failure_at"] == "" {
+		t.Fatalf("audit failure timestamp missing: %v", health)
+	}
+}
+
+func TestControlSessionRequiresPositiveUserIdentity(t *testing.T) {
+	server, _, _ := newControlServer(t)
+	if accounts, ok := server.accountsForSession(webSession{}); ok || len(accounts) != 0 {
+		t.Fatalf("zero user session received accounts: %v", accounts)
+	}
+	if role := server.sessionRole(webSession{}); role == controlplane.RoleOwner {
+		t.Fatal("zero role was treated as owner")
+	}
+}
+
+func TestZeroSessionAuditIsAnonymous(t *testing.T) {
+	server, _, store := newControlServer(t)
+	request := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/api/admin/users", nil)
+	server.recordAudit(request, webSession{}, "security", "test.denied", "", "", false, nil)
+	items, _, err := store.ListAudit(context.Background(), controlplane.AuditFilter{Category: "security", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ActorRole != "anonymous" {
+		t.Fatalf("audit actor role=%+v", items)
+	}
+}
+
+func TestOwnerLoginSurvivesViewerSessionExhaustion(t *testing.T) {
+	server, mux, _ := newControlServer(t)
+	now := server.now()
+	server.mu.Lock()
+	for i := 0; i < maxSessions; i++ {
+		server.sessions[fmt.Sprintf("viewer-%064d", i)] = webSession{
+			account: "root", userID: int64(2000 + i), username: fmt.Sprintf("viewer%d", i),
+			role: controlplane.RoleViewer, created: now, lastSeen: now,
+			expires: now.Add(sessionTTL), remoteIP: "192.0.2.0/24",
+		}
+	}
+	server.mu.Unlock()
+	_, session := loginAs(t, mux, "owner", "control-owner-password")
+	if session.Value == "" {
+		t.Fatal("owner session missing")
+	}
+	if got := len(server.sessions); got > maxSessions {
+		t.Fatalf("session bound exceeded: %d", got)
 	}
 }

@@ -195,7 +195,7 @@ func TestWebUILoginSessionAndToolCall(t *testing.T) {
 func TestWebUIServesEmbeddedBundleWithCSP(t *testing.T) {
 	_, mux := newTestServer(t)
 	w := do(t, mux, "GET", "/", "")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "学习通管理平台") {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "学习通控制台") {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	csp := w.Header().Get("Content-Security-Policy")
@@ -319,6 +319,68 @@ func TestWebUISessionLimitIsBounded(t *testing.T) {
 	w = doCSRF(t, mux, "POST", "/api/auth/login", `{"password":"correct horse battery staple"}`, csrf, csrfCookie)
 	if w.Code != 429 {
 		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+func TestZeroSessionNeverBecomesOwner(t *testing.T) {
+	s, _ := newTestServer(t)
+	if role := s.sessionRole(webSession{}); role == "owner" {
+		t.Fatal("zero-value session was treated as owner")
+	}
+	if accounts, ok := s.accountsForSession(webSession{}); ok || len(accounts) != 0 {
+		t.Fatalf("zero-value session received account scope: %v", accounts)
+	}
+	r := httptest.NewRequest("GET", "https://mcp.example.com/api/status", nil)
+	r = r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, authorizedSession{id: "deleted"}))
+	if _, ok := s.requestSession(r); ok {
+		t.Fatal("missing session record was treated as authenticated")
+	}
+}
+
+func TestSessionDeletedAfterAuthenticationFailsClosed(t *testing.T) {
+	s, _ := newTestServer(t)
+	now := s.now()
+	token := strings.Repeat("b", 64)
+	id := digest(token)
+	s.sessions[id] = webSession{
+		account: "root", role: "owner", username: "owner", csrf: "csrf",
+		created: now, lastSeen: now, expires: now.Add(sessionTTL), remoteIP: "192.0.2.0/24",
+	}
+	protected := s.authenticated(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		delete(s.sessions, id)
+		s.mu.Unlock()
+		if _, ok := s.requestSession(r); ok {
+			t.Fatal("handler accepted a session deleted after authentication")
+		}
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+	})
+	r := httptest.NewRequest("GET", "https://mcp.example.com/api/status", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	w := httptest.NewRecorder()
+	protected(w, r)
+	if w.Code != 401 {
+		t.Fatalf("deleted session status=%d", w.Code)
+	}
+}
+
+func TestOwnerLoginEvictsLowestPrivilegeSession(t *testing.T) {
+	s, _ := newTestServer(t)
+	now := s.now()
+	for i := 0; i < maxSessions; i++ {
+		s.sessions[fmt.Sprintf("viewer-%064d", i)] = webSession{
+			account: "root", userID: int64(1000 + i), username: fmt.Sprintf("viewer%d", i),
+			role: "viewer", created: now, lastSeen: now, expires: now.Add(sessionTTL),
+		}
+	}
+	s.mu.Lock()
+	allowed := s.reserveSessionSlotLocked(1, "owner", now)
+	s.mu.Unlock()
+	if !allowed {
+		t.Fatal("owner login was locked out by viewer sessions")
+	}
+	if len(s.sessions) != maxSessions-1 {
+		t.Fatalf("session count=%d", len(s.sessions))
 	}
 }
 

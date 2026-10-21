@@ -3,19 +3,21 @@ import { cn } from "../../lib/utils";
 
 const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
-    <div ref={ref} className={cn("rounded-card border border-border/70 bg-card/85 text-card-foreground shadow-lg shadow-black/5 backdrop-blur-xl", className)} {...props} />
+    <div ref={ref} className={cn("rounded-card border border-border bg-card text-card-foreground", className)} {...props} />
   )
 );
 Card.displayName = "Card";
 
 const CardHeader = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
-  ({ className, ...props }, ref) => <div ref={ref} className={cn("flex flex-col space-y-1.5 p-5", className)} {...props} />
+  ({ className, ...props }, ref) => <div ref={ref} className={cn("flex flex-col gap-1 p-4 sm:p-5", className)} {...props} />
 );
 CardHeader.displayName = "CardHeader";
 
-const CardTitle = React.forwardRef<HTMLHeadingElement, React.HTMLAttributes<HTMLHeadingElement>>(
-  ({ className, ...props }, ref) => (
-    <h3 ref={ref} className={cn("text-base font-semibold leading-tight tracking-tight", className)} {...props} />
+type CardTitleProps = React.HTMLAttributes<HTMLHeadingElement> & { as?: "h1" | "h2" | "h3" | "h4" };
+
+const CardTitle = React.forwardRef<HTMLHeadingElement, CardTitleProps>(
+  ({ className, as: Heading = "h3", ...props }, ref) => (
+    <Heading ref={ref} className={cn("text-[14px] font-medium leading-5 tracking-[-0.01em]", className)} {...props} />
   )
 );
 CardTitle.displayName = "CardTitle";
@@ -26,7 +28,7 @@ const CardDescription = React.forwardRef<HTMLParagraphElement, React.HTMLAttribu
 CardDescription.displayName = "CardDescription";
 
 const CardContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
-  ({ className, ...props }, ref) => <div ref={ref} className={cn("p-5 pt-0", className)} {...props} />
+  ({ className, ...props }, ref) => <div ref={ref} className={cn("p-4 pt-0 sm:p-5 sm:pt-0", className)} {...props} />
 );
 CardContent.displayName = "CardContent";
 

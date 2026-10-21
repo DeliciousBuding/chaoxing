@@ -1,15 +1,21 @@
 import * as React from "react";
 import { div as MotionDiv, span as MotionSpan } from "motion/react-m";
 import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
-import { GraduationCap, LogOut, Palette, RefreshCw } from "lucide-react";
+import {
+  GraduationCap,
+  LogOut,
+  Palette,
+  RefreshCw,
+  ShieldCheck
+} from "lucide-react";
 import { canAccessPage, pageGroups, pages, type PageId } from "../lib/layout";
 import { useUIStore, themeLabels, themes, type Theme } from "../lib/store";
 import { useMediaQuery, useReducedMotion } from "../lib/hooks";
 import type { AccountInfo, SessionInfo } from "../lib/api";
 import { roleLabels } from "../lib/roles";
 import { Button } from "./ui/button";
-import { Badge } from "./ui/badge";
 import { Select } from "./ui/select";
+import { Separator as Divider } from "./ui/separator";
 import { cn } from "../lib/utils";
 
 const SidebarButton = React.memo(function SidebarButton({
@@ -29,66 +35,117 @@ const SidebarButton = React.memo(function SidebarButton({
       onClick={onClick}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "group relative flex h-10 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "group relative flex h-8 w-full items-center gap-2.5 rounded-control px-2.5 text-left text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
         active
-          ? "bg-primary/14 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
-          : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+          ? "bg-accent text-foreground"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground"
       )}
     >
-      {active && <MotionSpan layoutId="sidebar-active" className="absolute left-0 top-2 bottom-2 w-[3px] rounded-full bg-primary" />}
-      <Icon className="h-[17px] w-[17px] shrink-0" />
+      {active && (
+        <MotionSpan
+          layoutId="sidebar-active"
+          className="absolute inset-y-1.5 left-0 w-[2px] rounded-full bg-primary"
+        />
+      )}
+      <Icon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-foreground" : "text-muted-foreground")} />
       <span className="truncate">{title}</span>
     </button>
   );
 });
 
-function Sidebar({ version, capabilities }: { version: string; capabilities?: SessionInfo["capabilities"] }) {
+function SkipLink() {
+  return (
+    <a
+      href="#main-content"
+      className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-control focus:border focus:border-primary focus:bg-background focus:px-3 focus:py-2 focus:text-[12px] focus:text-foreground focus:outline-none focus:ring-2 focus:ring-ring/60"
+    >
+      跳到主要内容
+    </a>
+  );
+}
+
+function Sidebar({ session }: { session: SessionInfo }) {
   const page = useUIStore((state) => state.page);
   const setPage = useUIStore((state) => state.setPage);
+  const role = session.user?.role;
+  const roleLabel = role ? roleLabels[role] : "权限未加载";
+  const displayName = session.user?.display_name || session.user?.username || "未命名成员";
+
   return (
-    <aside className="flex h-full min-h-0 flex-col bg-card/80 p-4">
-      <div className="flex items-center gap-3 px-2 py-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/20">
-          <GraduationCap className="h-5 w-5" />
+    <aside className="flex h-full min-h-0 flex-col bg-sidebar">
+      <div className="flex items-center gap-2.5 px-3 py-3">
+        <div className="flex h-8 w-8 items-center justify-center rounded-control border border-border bg-card text-foreground">
+          <GraduationCap className="h-4 w-4" />
         </div>
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">学习通控制台</div>
-          <div className="truncate text-[11px] text-muted-foreground">Nova 管理平台</div>
+          <div className="truncate text-[12px] font-medium tracking-[-0.01em]">学习通控制台</div>
+          <div className="truncate text-[10px] text-muted-foreground">Classroom control plane</div>
         </div>
       </div>
-      <div role="separator" className="my-3 h-px w-full shrink-0 bg-border" />
-      <nav aria-label="主导航" className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
-        {pageGroups.map((group) => (
-          <div key={group.id} className="space-y-1">
-            <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{group.title}</div>
-            {pages.filter((item) => item.group === group.id && canAccessPage(item.id as PageId, capabilities)).map((item) => (
-              <SidebarButton
-                key={item.id}
-                active={page === item.id}
-                title={item.title}
-                icon={item.icon}
-                onClick={() => setPage(item.id as PageId)}
-              />
-            ))}
-          </div>
-        ))}
+      <Divider />
+      <nav aria-label="主导航" className="min-h-0 flex-1 space-y-3 overflow-y-auto px-2 py-3">
+        {pageGroups.map((group) => {
+          const items = pages.filter(
+            (item) => item.group === group.id && canAccessPage(item.id as PageId, session.capabilities)
+          );
+          if (items.length === 0) return null;
+          return (
+            <div key={group.id} className="space-y-0.5">
+              <div className="px-2.5 pb-1 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                {group.title}
+              </div>
+              {items.map((item) => (
+                <SidebarButton
+                  key={item.id}
+                  active={page === item.id}
+                  title={item.title}
+                  icon={item.icon}
+                  onClick={() => setPage(item.id as PageId)}
+                />
+              ))}
+            </div>
+          );
+        })}
       </nav>
-      <div role="separator" className="my-3 h-px w-full shrink-0 bg-border" />
-      <div className="space-y-1 px-2 text-[11px] text-muted-foreground">
-        <div>版本 {version || "dev"}</div>
-        <div className="opacity-70">私有管理面 · 多租户</div>
-      </div>
+      <footer className="border-t border-border px-3 py-2.5">
+        <div className="flex items-center gap-2">
+          <span className="flex h-5 w-5 items-center justify-center rounded-full border border-border bg-muted text-[9px] font-medium text-muted-foreground">
+            {displayName.slice(0, 1).toUpperCase()}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[11px] font-medium text-foreground">{displayName}</div>
+            <div className="truncate text-[10px] text-muted-foreground">{roleLabel} · 私有管理面</div>
+          </div>
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <ShieldCheck className="h-3 w-3" />
+            数据不出租户
+          </span>
+          <span className="truncate font-mono">{session.version || "dev"}</span>
+        </div>
+      </footer>
     </aside>
   );
 }
 
-function ThemeSelect() {
+export function ThemeSelect({ compact = true }: { compact?: boolean }) {
   const theme = useUIStore((state) => state.theme);
   const setTheme = useUIStore((state) => state.setTheme);
   return (
     <div className="relative">
-      <Palette className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-      <Select aria-label="主题" className="h-9 w-[132px] pl-9" value={theme} onChange={(event) => setTheme(event.target.value as Theme)}>
+      {!compact && (
+        <Palette className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+      )}
+      <Select
+        aria-label="主题"
+        className={cn(
+          "text-[11px]",
+          compact ? "h-7 w-[104px]" : "h-8 w-full pl-8"
+        )}
+        value={theme}
+        onChange={(event) => setTheme(event.target.value as Theme)}
+      >
         {themes.map((item) => (
           <option key={item} value={item}>{themeLabels[item]}</option>
         ))}
@@ -97,45 +154,94 @@ function ThemeSelect() {
   );
 }
 
+function AccountSelect({
+  session,
+  account,
+  switchingAccount,
+  onSwitchAccount,
+  className
+}: {
+  session: SessionInfo;
+  account: AccountInfo | null;
+  switchingAccount: boolean;
+  onSwitchAccount: (id: string) => void;
+  className?: string;
+}) {
+  const accounts = account?.accounts ?? [];
+  const currentAccount = account?.current ?? session.account ?? "";
+  return (
+    <Select
+      aria-label="当前账号"
+      className={cn("h-7 w-[156px] text-[11px]", className)}
+      value={currentAccount}
+      onChange={(event) => onSwitchAccount(event.target.value)}
+      disabled={accounts.length === 0 || switchingAccount}
+    >
+      {accounts.length === 0 ? (
+        <option value="">无账号授权</option>
+      ) : (
+        accounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)
+      )}
+    </Select>
+  );
+}
+
 function Header({
   session,
   account,
+  switchingAccount,
   onSwitchAccount,
   onLogout,
   onRefresh
 }: {
   session: SessionInfo;
   account: AccountInfo | null;
+  switchingAccount: boolean;
   onSwitchAccount: (id: string) => void;
   onLogout: () => void;
   onRefresh: () => void;
 }) {
   const page = useUIStore((state) => state.page);
   const meta = pages.find((item) => item.id === page) ?? pages[0];
-  const accounts = account?.accounts ?? [];
-  const currentAccount = account?.current ?? session.account ?? "";
+  const group = pageGroups.find((item) => item.id === meta.group);
+
   return (
-    <header className="sticky top-0 z-20 border-b border-border/70 bg-background/88 px-5 py-4 backdrop-blur-xl">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="truncate text-lg font-semibold tracking-tight">{meta.title}</h1>
-          <p className="truncate text-xs text-muted-foreground">课程、活动、作业、答题、捕获与位置统一治理</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <ThemeSelect />
-          <Select aria-label="当前账号" className="h-9 w-44" value={currentAccount} onChange={(event) => onSwitchAccount(event.target.value)} disabled={accounts.length === 0}>
-            {accounts.length === 0 ? <option value="">无账号授权</option> : accounts.map((item) => (
-              <option key={item.id} value={item.id}>{item.name}</option>
-            ))}
-          </Select>
-          <Badge variant="secondary">{roleLabels[session.user?.role ?? "owner"]}</Badge>
-          <Button variant="outline" size="sm" onClick={onRefresh}>
-            <RefreshCw className="h-4 w-4" /> 刷新
+    <header className="sticky top-0 z-20 border-b border-border bg-background">
+      <div className="flex min-h-11 items-center gap-2 px-4 sm:px-5">
+        <nav aria-label="面包屑" className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span className="truncate font-medium text-foreground sm:hidden">学习通控制台</span>
+          <span className="hidden shrink-0 sm:inline">{group?.title ?? "控制台"}</span>
+          <span aria-hidden="true" className="hidden sm:inline">/</span>
+          <span className="hidden truncate text-foreground/80 sm:inline">{meta.title}</span>
+        </nav>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <div className="hidden 2xl:block">
+            <ThemeSelect />
+          </div>
+          <div className="hidden sm:block">
+            <AccountSelect
+              session={session}
+              account={account}
+              switchingAccount={switchingAccount}
+              onSwitchAccount={onSwitchAccount}
+            />
+          </div>
+          <Button variant="ghost" size="icon" onClick={onRefresh} aria-label="刷新当前页面" title="刷新">
+            <RefreshCw className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="ghost" size="sm" onClick={onLogout}>
-            <LogOut className="h-4 w-4" /> 退出
+          <Button variant="ghost" size="icon" onClick={onLogout} aria-label="退出登录" title="退出登录">
+            <LogOut className="h-3.5 w-3.5" />
           </Button>
         </div>
+      </div>
+      <div className="px-4 pb-2 sm:hidden">
+        <AccountSelect
+          session={session}
+          account={account}
+          switchingAccount={switchingAccount}
+          onSwitchAccount={onSwitchAccount}
+          className="w-full"
+        />
       </div>
     </header>
   );
@@ -144,31 +250,34 @@ function Header({
 function MobileNav({ capabilities }: { capabilities?: SessionInfo["capabilities"] }) {
   const page = useUIStore((state) => state.page);
   const setPage = useUIStore((state) => state.setPage);
-  const navRef = React.useRef<HTMLDivElement | null>(null);
-  React.useEffect(() => {
-    const active = navRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
-    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [page]);
+  const active = pages.find((item) => item.id === page) ?? pages[0];
+  const ActiveIcon = active.icon;
+
   return (
-    <div ref={navRef} role="navigation" aria-label="页面导航" className="flex gap-2 overflow-x-auto border-b border-border/70 bg-card/60 px-4 py-3 lg:hidden">
-      {pages.filter((item) => canAccessPage(item.id as PageId, capabilities)).map((item) => {
-        const Icon = item.icon;
-        return (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => setPage(item.id as PageId)}
-            aria-current={page === item.id ? "page" : undefined}
-            className={cn(
-              "flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-              page === item.id ? "border-primary/50 bg-primary/15 text-primary" : "border-border bg-background/60 text-muted-foreground"
-            )}
-          >
-            <Icon className="h-3.5 w-3.5" />
-            {item.title}
-          </button>
-        );
-      })}
+    <div className="border-b border-border bg-card px-3 py-2 lg:hidden">
+      <div className="relative">
+        <ActiveIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Select
+          aria-label="切换页面"
+          className="pl-8"
+          value={page}
+          onChange={(event) => setPage(event.target.value as PageId)}
+        >
+          {pageGroups.map((group) => {
+            const items = pages.filter(
+              (item) => item.group === group.id && canAccessPage(item.id as PageId, capabilities)
+            );
+            if (items.length === 0) return null;
+            return (
+              <optgroup key={group.id} label={group.title}>
+                {items.map((item) => (
+                  <option key={item.id} value={item.id}>{item.title}</option>
+                ))}
+              </optgroup>
+            );
+          })}
+        </Select>
+      </div>
     </div>
   );
 }
@@ -176,6 +285,7 @@ function MobileNav({ capabilities }: { capabilities?: SessionInfo["capabilities"
 export function AppShell({
   session,
   account,
+  switchingAccount,
   onSwitchAccount,
   onLogout,
   onRefresh,
@@ -183,6 +293,7 @@ export function AppShell({
 }: {
   session: SessionInfo;
   account: AccountInfo | null;
+  switchingAccount: boolean;
   onSwitchAccount: (id: string) => void;
   onLogout: () => void;
   onRefresh: () => void;
@@ -192,8 +303,8 @@ export function AppShell({
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const reducedMotion = useReducedMotion();
   const [sidebarSize, setSidebarSize] = React.useState(() => {
-    const saved = Number(window.localStorage.getItem("chaoxing-nova-layout:sidebar"));
-    return Number.isFinite(saved) && saved >= 15 && saved <= 27 ? saved : 18;
+    const saved = Number(window.localStorage.getItem("chaoxing-linear-layout:sidebar"));
+    return Number.isFinite(saved) && saved >= 14 && saved <= 24 ? saved : 18;
   });
   const mainRef = React.useRef<HTMLElement | null>(null);
 
@@ -206,25 +317,36 @@ export function AppShell({
     const next = layout.sidebar;
     if (!meta.isUserInteraction || !Number.isFinite(next)) return;
     setSidebarSize(next);
-    window.localStorage.setItem("chaoxing-nova-layout:sidebar", String(next));
+    window.localStorage.setItem("chaoxing-linear-layout:sidebar", String(next));
   }, []);
 
   const transition = reducedMotion
     ? { initial: { opacity: 1 }, animate: { opacity: 1 }, exit: { opacity: 1 } }
-    : { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: -6 } };
+    : { initial: { opacity: 0, y: 3 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: -2 } };
 
   const content = (
     <>
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-xl focus:bg-primary focus:px-4 focus:py-2 focus:text-primary-foreground"
-      >
-        跳到主要内容
-      </a>
-      <Header session={session} account={account} onSwitchAccount={onSwitchAccount} onLogout={onLogout} onRefresh={onRefresh} />
+      <Header
+        session={session}
+        account={account}
+        switchingAccount={switchingAccount}
+        onSwitchAccount={onSwitchAccount}
+        onLogout={onLogout}
+        onRefresh={onRefresh}
+      />
       {!isDesktop && <MobileNav capabilities={session.capabilities} />}
-      <main ref={mainRef} id="main-content" tabIndex={-1} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-12 sm:p-5 lg:p-6 focus:outline-none">
-        <MotionDiv key={page} {...transition} transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}>
+      <main
+        ref={mainRef}
+        id="main-content"
+        tabIndex={-1}
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 pb-14 sm:px-5 lg:px-6 lg:py-6 focus:outline-none"
+      >
+        <MotionDiv
+          key={page}
+          {...transition}
+          transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
+          className="mx-auto w-full max-w-[1480px]"
+        >
           {children}
         </MotionDiv>
       </main>
@@ -232,23 +354,31 @@ export function AppShell({
   );
 
   if (!isDesktop) {
-    return <div className="flex min-h-screen flex-col bg-background">{content}</div>;
+    return (
+      <div className="flex min-h-screen flex-col bg-background">
+        <SkipLink />
+        {content}
+      </div>
+    );
   }
 
   return (
-    <Group
-      orientation="horizontal"
-      className="h-screen min-h-screen bg-background"
-      defaultLayout={{ sidebar: sidebarSize, main: 100 - sidebarSize }}
-      onLayoutChanged={saveLayout}
-    >
-      <Panel id="sidebar" defaultSize={`${sidebarSize}%`} minSize="15%" maxSize="27%" className="min-w-0 border-r border-border/70">
-        <Sidebar version={session.version} capabilities={session.capabilities} />
-      </Panel>
-      <Separator className="group relative w-[7px] bg-border/35 transition-colors hover:bg-primary/35 data-[separator-state=drag]:bg-primary/70">
-        <div className="absolute left-1/2 top-1/2 h-10 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted-foreground/25 transition-colors group-hover:bg-primary/70" />
-      </Separator>
-      <Panel id="main" className="flex min-w-0 flex-col">{content}</Panel>
-    </Group>
+    <div className="h-screen min-h-screen bg-background">
+      <SkipLink />
+      <Group
+        orientation="horizontal"
+        className="h-full"
+        defaultLayout={{ sidebar: sidebarSize, main: 100 - sidebarSize }}
+        onLayoutChanged={saveLayout}
+      >
+        <Panel id="sidebar" defaultSize={`${sidebarSize}%`} minSize="14%" maxSize="24%" className="min-w-0 border-r border-border">
+          <Sidebar session={session} />
+        </Panel>
+        <Separator className="group relative w-[5px] bg-border/50 transition-colors hover:bg-primary/35 data-[separator-state=drag]:bg-primary/60">
+          <div className="absolute left-1/2 top-1/2 h-8 w-px -translate-x-1/2 -translate-y-1/2 bg-border-strong transition-colors group-hover:bg-primary/60" />
+        </Separator>
+        <Panel id="main" className="flex min-w-0 flex-col">{content}</Panel>
+      </Group>
+    </div>
   );
 }

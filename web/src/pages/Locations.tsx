@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
-import { EmptyState, ErrorBanner, Loading } from "../components/common";
+import { EmptyState, ErrorBanner, Loading, PageHeader } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 type CourseRow = {
@@ -265,12 +265,12 @@ export function Locations() {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm text-muted-foreground">
-          位置预设只保存在生产 SQLite；百度地图在隔离沙箱 iframe 中加载，不能读取登录 Cookie 或 CSRF token。
-        </div>
-        <Button size="sm" onClick={() => void reload()} disabled={busy}>刷新</Button>
-      </div>
+      <PageHeader
+        title="位置预设"
+        description="位置预设只保存在生产 SQLite；百度地图在隔离沙箱 iframe 中加载，不能读取登录 Cookie 或 CSRF token。"
+        meta={<><Badge variant="secondary">{presets.length} 个位置</Badge><Badge variant="secondary">{bindings.length} 个课程/时段绑定</Badge><span>坐标不出浏览器凭据范围</span></>}
+        actions={<Button size="sm" variant="outline" onClick={() => void reload()} disabled={busy}>刷新</Button>}
+      />
       <ErrorBanner error={error} />
       <div className="grid gap-4 xl:grid-cols-[380px_1fr]">
         <div className="space-y-4">
@@ -296,7 +296,7 @@ export function Locations() {
                     sandbox="allow-scripts"
                     referrerPolicy="origin"
                     onLoad={() => { frameReadyRef.current = true; mapInitializedRef.current = false; sendMapInit(); }}
-                    className="h-[360px] w-full overflow-hidden rounded-xl border bg-muted"
+                    className="h-[360px] w-full overflow-hidden rounded-control border border-border bg-muted"
                   />
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-2">
@@ -406,7 +406,7 @@ export function Locations() {
                   每个时段可以绑定不同位置。例如体系结构周二普通课用复临舍，第 7/13 周指导课独立绑定中楼 303。
                 </div>
                 {selectedSchedule && (
-                  <div className="rounded-xl border bg-muted/40 p-3 text-xs text-muted-foreground">
+                  <div className="rounded-control border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
                     稳定 key：<span className="font-mono text-foreground">{selectedSchedule.key}</span>
                     {selectedSchedule.room ? ` · 教室 ${selectedSchedule.room}` : ""}
                     {selectedSchedule.weeks ? ` · 第 ${selectedSchedule.weeks} 周` : " · 每周"}

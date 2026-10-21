@@ -5,6 +5,7 @@ package authz
 import "context"
 
 type scopeKey struct{}
+type principalKey struct{}
 
 // WithScopes returns a request context carrying a space-separated OAuth scope
 // string. An empty value means no scope is granted.
@@ -24,6 +25,19 @@ func Has(ctx context.Context, scope string) bool {
 		}
 	}
 	return false
+}
+
+// WithPrincipal records the authenticated transport identity for audit
+// attribution. It is not an authorization decision and carries no secret.
+func WithPrincipal(ctx context.Context, principal string) context.Context {
+	return context.WithValue(ctx, principalKey{}, principal)
+}
+
+// Principal returns the transport identity recorded by the authentication
+// middleware, or an empty string when the caller is unauthenticated.
+func Principal(ctx context.Context) string {
+	value, _ := ctx.Value(principalKey{}).(string)
+	return value
 }
 
 func splitScopes(scopes string) []string {

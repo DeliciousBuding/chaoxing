@@ -3,8 +3,9 @@ import { api } from "../lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
+import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
-import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary } from "../components/common";
+import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 export function Work({ tools }: { tools: any[] }) {
@@ -79,25 +80,31 @@ export function Work({ tools }: { tools: any[] }) {
 
   return (
     <div className="space-y-5">
+      <PageHeader
+        title="作业答题"
+        description="读取题目 → AI 生成草稿 → 显式保存 / 最终提交。默认不自动提交，所有写操作均可追溯。"
+        meta={<><Badge variant="secondary">{jobs.length} 个作业</Badge><span>草稿优先</span><span>·</span><span>人工确认</span></>}
+        actions={<Badge variant="warning">最终提交需二次确认</Badge>}
+      />
       <ErrorBanner error={error} />
       <Card>
-        <CardHeader><CardTitle>作业答题闭环</CardTitle><CardDescription>读取题目 → AI 生成草稿 → 显式保存 / 最终提交。默认不自动提交。</CardDescription></CardHeader>
-        <CardContent className="grid gap-4 lg:grid-cols-[1fr_1fr_auto]">
+        <CardHeader><CardTitle>选择作业</CardTitle><CardDescription>课程、作业和题目范围均来自后端 allowlist。</CardDescription></CardHeader>
+        <CardContent className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           <div className="space-y-2">
-            <label className="text-sm text-muted-foreground">课程</label>
+            <Label>课程</Label>
             <Select value={courseKey} onChange={(event) => { setCourseKey(event.target.value); void loadJobs(event.target.value); }}>
               <option value="">选择课程</option>
               {courses.map((course) => <option key={courseKeyFor(course)} value={courseKeyFor(course)}>{course.name} / {course.class}</option>)}
             </Select>
           </div>
           <div className="space-y-2">
-            <label className="text-sm text-muted-foreground">作业 / 知识点</label>
+            <Label>作业 / 知识点</Label>
             <Select value={jobID} onChange={(event) => { setJobID(event.target.value); void loadQuestions(event.target.value); }} disabled={!selectedCourse}>
               <option value="">选择作业</option>
               {jobs.map((job) => <option key={job.id} value={job.id}>{job.title}</option>)}
             </Select>
           </div>
-          <div className="flex items-end gap-2">
+          <div className="flex flex-wrap items-center gap-2 xl:col-span-2">
             <Button variant="outline" disabled={!jobID || busy} onClick={() => void loadQuestions()}>读取</Button>
             <Button disabled={!jobID || busy} onClick={() => void generate()}>AI 草稿</Button>
             <Button variant="secondary" disabled={!jobID || busy} onClick={() => void submit("save_work")}>暂存</Button>

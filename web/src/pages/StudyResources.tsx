@@ -7,7 +7,7 @@ import { Badge } from "../components/ui/badge";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
-import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, statusVariant } from "../components/common";
+import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader, statusVariant } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 export function StudyResources() {
@@ -70,10 +70,17 @@ export function StudyResources() {
 
   return (
     <div className="space-y-5">
+      <PageHeader
+        title="课表与资料"
+        description="读取章节完成度、课程顶层资料文本和指定教学周课表；不做学习页任务点写入。"
+        meta={<><Badge variant="secondary">{courses.length} 门课程</Badge><span>北京时间</span><span>·</span><span>只读</span></>}
+        actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={!selectedCourse || busy}><CalendarDays className="h-3.5 w-3.5" /> 读取当前范围</Button>}
+      />
+      <ErrorBanner error={error} />
       <Card>
         <CardHeader>
-          <CardTitle>课表、章节与资料</CardTitle>
-          <CardDescription>读取章节完成度、课程顶层资料文本和指定教学周课表；不做学习页任务点写入。</CardDescription>
+          <CardTitle>读取范围</CardTitle>
+          <CardDescription>课程与教学周共同决定章节、资料和课表查询。</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 lg:grid-cols-[1fr_180px_auto]">
           <div className="space-y-2">
@@ -98,8 +105,6 @@ export function StudyResources() {
           </div>
         </CardContent>
       </Card>
-
-      <ErrorBanner error={error} />
 
       <Card>
         <CardHeader>
@@ -138,7 +143,7 @@ export function StudyResources() {
           </CardHeader>
           <CardContent>
             {materials ? (
-              <pre className="max-h-96 overflow-auto rounded-xl border bg-black/40 p-4 text-xs leading-relaxed">
+              <pre className="max-h-96 overflow-auto rounded-control border border-border bg-muted/30 p-4 text-xs leading-relaxed">
                 {materials.text || "暂无资料文本"}
               </pre>
             ) : (

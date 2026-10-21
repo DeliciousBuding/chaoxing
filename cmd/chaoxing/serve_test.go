@@ -1,19 +1,53 @@
 package main
 
 import (
+	"context"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
+	"github.com/DeliciousBuding/chaoxing/internal/authz"
+	"github.com/DeliciousBuding/chaoxing/internal/controlplane"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
 	"github.com/DeliciousBuding/chaoxing/internal/watch"
 )
+
+func TestToolAuditRecorderAttributesMcpClient(t *testing.T) {
+	hash, err := access.HashPassword("synthetic-owner-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "control")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := controlplane.Open(filepath.Join(dir, "control.db"), hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	call := auditedToolExecute("tenant-a", func(context.Context, string, map[string]any) (any, error) {
+		return map[string]any{"ok": true}, nil
+	}, toolAuditRecorder(store))
+	ctx := authz.WithPrincipal(context.Background(), "mcp:test-client")
+	if _, err := call(ctx, "list_courses", nil); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := store.ListAudit(context.Background(), controlplane.AuditFilter{Category: "tool", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ActorRole != "mcp" || items[0].AccountKey != "tenant-a" || items[0].Target != "list_courses" || !items[0].Success {
+		t.Fatalf("tool audit=%+v", items)
+	}
+}
 
 func TestValidateTenants(t *testing.T) {
 	base := config{StateDir: "/s", KeyPath: "/k"}
@@ -147,7 +181,7 @@ func TestTenantIsolationAndDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux, ids, _, err := publicMux(c, x, a, pool, nil, nil, nil, execute)
+	mux, ids, _, err := publicMux(c, x, a, pool, nil, nil, nil, execute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,19 +240,22 @@ func TestTenantIsolationAndDiscovery(t *testing.T) {
 
 func TestWatcherStaleBoundaries(t *testing.T) {
 	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-	if watcherStale(now, now.Add(-time.Minute), time.Time{}) {
+	if watcherStale(now, now.Add(-time.Minute), time.Time{}, 0) {
 		t.Fatal("fresh process flagged stale before its first tick")
 	}
-	if watcherStale(now, now.Add(-time.Hour), now.Add(-19*time.Minute)) {
+	if watcherStale(now, now.Add(-time.Hour), now.Add(-14*time.Minute), 10) {
 		t.Fatal("recent tick flagged stale")
 	}
-	if !watcherStale(now, now.Add(-time.Hour), now.Add(-21*time.Minute)) {
+	if !watcherStale(now, now.Add(-time.Hour), now.Add(-16*time.Minute), 10) {
 		t.Fatal("wedged loop not flagged stale")
 	}
-	if !watcherStale(now, now.Add(-time.Hour), time.Time{}) {
+	if !watcherStale(now, now.Add(-time.Hour), time.Time{}, 0) {
 		t.Fatal("watcher that never ticked not flagged stale")
 	}
-	if watcherStale(now, now.Add(time.Minute), now.Add(time.Minute)) {
+	if !watcherStale(now, now.Add(-time.Hour), now.Add(-time.Hour), 1) {
+		t.Fatal("watcher with only a started tick not flagged stale")
+	}
+	if watcherStale(now, now.Add(time.Minute), now.Add(time.Minute), 1) {
 		t.Fatal("clock skew flagged stale")
 	}
 }

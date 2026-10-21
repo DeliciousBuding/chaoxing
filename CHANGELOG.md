@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0-rc.23 — 2026-10-21
+
+- Close the control-plane session fail-open: authenticated requests now carry an explicit server session record, every handler re-checks that the record still exists, and a missing/deleted session can never become `owner` or receive all account grants. Zero-value roles are audited as `anonymous`, never as the owner.
+- Bound session abuse per identity. Each member has at most six live sessions; owner/admin logins may replace their own oldest session, and an owner login can evict the lowest-privilege session instead of being locked out by 32 viewer sessions. Lower roles still receive `429 SESSION_LIMIT` at their own cap.
+- Add security audit for previously silent denials: account-selection scope, capture/sign-audit permission, owner/admin protection, self role/status changes and administrator escalation attempts now produce bounded `security` events.
+- Attribute MCP and loopback tool execution to the control-plane audit. OAuth calls record the requesting client fingerprint, local `/call` records `local`, and every allowed tool call records account, tool, success/failure, safe error code and duration without arguments or response bodies.
+- Require a 32-character minimum local management bearer token at startup, so an empty token cannot authenticate `Bearer `.
+- Move member password hashing outside the SQLite write transaction, read committed member rows with a detached short context, marshal JSON before writing response headers, and make random-token generation fail closed.
+- Use `synchronous=FULL` for the authorization-bearing `control.db`; reconstructible tenant health/capture state keeps its existing policy.
+- Make session validation fail closed at the shared exit: control-plane sessions must carry a positive user ID and auth version, admin/capability checks revalidate account scope, and a transient `control.db` outage preserves the browser session and returns `503` instead of logging the operator out.
+- Re-check member authorization inside the SQLite write transaction. An administrator can no longer modify a target that was promoted to administrator between the handler read and the update, and own-role/self-status changes are rejected at the store boundary as well as in the HTTP handler.
+- Rebuild the management UI around a Linear-style, dark-first component system: semantic surface/token ladder, one indigo accent, compact controls, hairline borders, no backdrop blur, no decorative shadows and no color gradients. Theme variables now live on `<html>`, avoid a body/root fork and preserve `color-scheme`.
+- Refactor every page to a shared `PageHeader` with a single `h1`, add `Alert`/`Checkbox` primitives and use the same card, table, input and focus treatment throughout. The shell now has a compact breadcrumb header, desktop-only theme control, mobile account selector, mobile page selector instead of a 14-item horizontal strip, a first-focus skip link and a hidden-by-default edit panel below 1536px.
+- Finish the login and shell accessibility pass: no hard-coded owner username, no login password-policy hint that only applies to member creation, one page heading, explicit permission-unloaded states instead of an owner fallback, and visible keyboard focus targets on all controls.
+
 ## 0.5.0-rc.22 — 2026-10-21
 
 - Add a minimal multi-member control plane without changing tenant state schema. `StateDir/control.db` stores platform users, explicit account grants and control-plane audit events; upstream credentials, cookies, coordinates and sign-in evidence remain in each tenant's private state store.

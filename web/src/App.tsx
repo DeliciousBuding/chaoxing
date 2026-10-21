@@ -1,9 +1,9 @@
 import * as React from "react";
-import { api } from "./lib/api";
+import { api, SESSION_EXPIRED_EVENT } from "./lib/api";
 import { pageFromURL, useUIStore, writePageURL } from "./lib/store";
 import { canAccessPage, pageMeta } from "./lib/layout";
 import { AppShell } from "./components/app-shell";
-import { ErrorBanner, PageErrorBoundary, PageSkeleton } from "./components/common";
+import { EmptyState, ErrorBanner, PageErrorBoundary, PageSkeleton } from "./components/common";
 
 const Login = React.lazy(() => import("./pages/Login").then((m) => ({ default: m.Login })));
 const Dashboard = React.lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
@@ -25,10 +25,10 @@ function Booting() {
   return (
     <div className="flex min-h-screen items-center justify-center p-6">
       <div className="w-full max-w-5xl space-y-4">
-        <div className="h-10 w-56 animate-pulse rounded-xl bg-muted" />
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="h-8 w-48 animate-pulse rounded-control bg-muted" />
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {[0, 1, 2, 3].map((item) => (
-            <div key={item} className="h-32 animate-pulse rounded-2xl bg-muted/70" />
+            <div key={item} className="h-24 animate-pulse rounded-card bg-muted/70" />
           ))}
         </div>
       </div>
@@ -50,9 +50,13 @@ export default function App() {
   const setGlobalError = useUIStore((state) => state.setGlobalError);
   const resetIdentity = useUIStore((state) => state.resetIdentity);
   const refresh = useUIStore((state) => state.refresh);
+  const effectivePage = canAccessPage(page, session?.capabilities) ? page : "dashboard";
   const [initializing, setInitializing] = React.useState(true);
   const [accountEpoch, setAccountEpoch] = React.useState(0);
-  const activeAccount = account?.current ?? session?.account ?? "root";
+  const [switchingAccount, setSwitchingAccount] = React.useState(false);
+  const switchingAccountRef = React.useRef(false);
+  const activeAccount = account?.current ?? session?.account ?? "";
+  const hasNoAccountScope = Boolean(session?.authenticated && account && account.accounts.length === 0);
 
   React.useEffect(() => {
     const fromURL = pageFromURL();
@@ -67,20 +71,29 @@ export default function App() {
   }, []);
 
   React.useEffect(() => {
-    document.title = `${pageMeta(page).title} · 学习通控制台`;
-  }, [page]);
-
-  React.useEffect(() => {
-    if (session?.authenticated && !canAccessPage(page, session.capabilities)) {
-      useUIStore.getState().setPage("dashboard");
-    }
-  }, [page, session?.authenticated, session?.capabilities]);
-
-  React.useEffect(() => {
-    document.body.dataset.theme = theme;
-    return () => {
-      delete document.body.dataset.theme;
+    const onExpired = () => {
+      resetIdentity();
     };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, [resetIdentity]);
+
+  React.useEffect(() => {
+    document.title = `${pageMeta(effectivePage).title} · 学习通控制台`;
+  }, [effectivePage]);
+
+  React.useEffect(() => {
+    if (session?.authenticated && page !== effectivePage) {
+      useUIStore.getState().setPage(effectivePage);
+    }
+  }, [effectivePage, page, session?.authenticated]);
+
+  React.useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = theme;
+    root.classList.toggle("light", theme === "nova-light");
+    root.classList.toggle("dark", theme !== "nova-light");
+    root.style.colorScheme = theme === "nova-light" ? "light" : "dark";
   }, [theme]);
 
   React.useEffect(() => {
@@ -89,10 +102,9 @@ export default function App() {
       .then((value) => {
         if (active) setSession(value);
       })
-      .catch((err) => {
+      .catch(() => {
         if (!active) return;
         setSession({ authenticated: false, csrf: "", version: "" });
-        setGlobalError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
         if (active) setInitializing(false);
@@ -100,25 +112,42 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [setGlobalError, setSession]);
+  }, [setSession]);
 
   React.useEffect(() => {
     if (!session?.authenticated) return;
     let active = true;
-    Promise.all([api.account(), api.tools()])
-      .then(([nextAccount, nextTools]) => {
-        if (!active) return;
-        setAccount(nextAccount);
-        setTools(nextTools.items);
+    api.account()
+      .then((nextAccount) => {
+        if (active) setAccount(nextAccount);
       })
-      .catch((err) => setGlobalError(err instanceof Error ? err.message : String(err)));
+      .catch((err) => {
+        if (active) setGlobalError(`账号范围加载失败：${err instanceof Error ? err.message : String(err)}`);
+      });
     return () => {
       active = false;
     };
-  }, [session?.authenticated, session?.account, setAccount, setGlobalError, setTools]);
+  }, [session?.authenticated, setAccount, setGlobalError]);
+
+  React.useEffect(() => {
+    if (!session?.authenticated) return;
+    let active = true;
+    api.tools()
+      .then((nextTools) => {
+        if (active) setTools(nextTools.items);
+      })
+      .catch((err) => {
+        if (active) setGlobalError(`工具能力加载失败：${err instanceof Error ? err.message : String(err)}`);
+      });
+    return () => {
+      active = false;
+    };
+  }, [session?.authenticated, setGlobalError, setTools]);
 
   async function switchAccount(id: string) {
-    if (id === activeAccount) return;
+    if (id === activeAccount || switchingAccountRef.current) return;
+    switchingAccountRef.current = true;
+    setSwitchingAccount(true);
     setGlobalError("");
     // Remount account-scoped pages before the network round trip so stale
     // audit rows and dashboard values cannot remain visible under the new
@@ -133,51 +162,68 @@ export default function App() {
       setGlobalError(err instanceof Error ? err.message : String(err));
       const restored = await api.account().catch(() => null);
       if (restored) setAccount(restored);
+    } finally {
+      switchingAccountRef.current = false;
+      setSwitchingAccount(false);
     }
   }
 
   async function logout() {
-    await api.logout().catch(() => undefined);
-    resetIdentity();
+    try {
+      await api.logout();
+      resetIdentity();
+    } catch (err) {
+      if (useUIStore.getState().session?.authenticated) {
+        setGlobalError(`退出失败，服务端会话可能仍然有效：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   let content: React.ReactNode;
-  if (page === "dashboard") content = <Dashboard tools={tools} />;
-  else if (page === "courses") content = <Courses />;
-  else if (page === "todo") content = <Assignments />;
-  else if (page === "study") content = <StudyResources />;
-  else if (page === "activities") content = <Activities tools={tools} />;
-  else if (page === "work") content = <Work tools={tools} />;
-  else if (page === "notices") content = <Notices />;
-  else if (page === "exams") content = <Exams />;
-  else if (page === "captures") content = <Captures />;
-  else if (page === "locations") content = <Locations />;
-  else if (page === "tools") content = <Tools tools={tools} />;
-  else if (page === "members") content = <Members session={session!} />;
-  else if (page === "audit") content = <Audit />;
+  if (effectivePage === "dashboard") content = <Dashboard tools={tools} />;
+  else if (effectivePage === "courses") content = <Courses />;
+  else if (effectivePage === "todo") content = <Assignments />;
+  else if (effectivePage === "study") content = <StudyResources />;
+  else if (effectivePage === "activities") content = <Activities tools={tools} />;
+  else if (effectivePage === "work") content = <Work tools={tools} />;
+  else if (effectivePage === "notices") content = <Notices />;
+  else if (effectivePage === "exams") content = <Exams />;
+  else if (effectivePage === "captures") content = <Captures />;
+  else if (effectivePage === "locations") content = <Locations />;
+  else if (effectivePage === "tools") content = <Tools tools={tools} />;
+  else if (effectivePage === "members") content = <Members session={session!} />;
+  else if (effectivePage === "audit") content = <Audit />;
   else content = <Settings account={account} session={session!} />;
 
   return (
-    <div data-theme={theme} className="min-h-screen bg-background text-foreground">
+    <div className="min-h-screen bg-background text-foreground">
       <React.Suspense fallback={<Booting />}>
         {initializing ? (
           <Booting />
         ) : !session?.authenticated ? (
-          <Login onLogin={setSession} />
+          <Login onLogin={(value) => { setGlobalError(""); setSession(value); }} />
         ) : (
           <AppShell
             session={session}
             account={account}
+            switchingAccount={switchingAccount}
             onSwitchAccount={(id) => void switchAccount(id)}
             onLogout={() => void logout()}
             onRefresh={refresh}
           >
             <div className="space-y-4">
               <ErrorBanner error={globalError} />
-              <PageErrorBoundary resetKey={`${page}:${refreshToken}:${accountEpoch}:${activeAccount}`}>
-                <React.Suspense fallback={<PageSkeleton />}>
-                  <React.Fragment key={`${refreshToken}:${accountEpoch}:${activeAccount}`}>{content}</React.Fragment>
-                </React.Suspense>
+              <PageErrorBoundary resetKey={`${effectivePage}:${refreshToken}:${accountEpoch}:${activeAccount}`}>
+                {hasNoAccountScope && effectivePage !== "settings" ? (
+                  <EmptyState
+                    title="尚未授权学习通账号"
+                    description="管理员需要在“成员与权限”中为当前成员分配至少一个上游账号；在此之前，业务数据和工具调用不会发起。"
+                  />
+                ) : (
+                  <React.Suspense fallback={<PageSkeleton />}>
+                    <React.Fragment key={`${refreshToken}:${accountEpoch}:${activeAccount}`}>{content}</React.Fragment>
+                  </React.Suspense>
+                )}
               </PageErrorBoundary>
             </div>
           </AppShell>

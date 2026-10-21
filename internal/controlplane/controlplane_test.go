@@ -88,7 +88,7 @@ func TestCreateUpdateAndAccountGrants(t *testing.T) {
 	role := RoleViewer
 	password := "alice-password-456"
 	accounts := []string{"tenant-b"}
-	updated, err := store.UpdateUser(ctx, user.ID, UpdateUserInput{Role: &role, Password: &password, Accounts: &accounts})
+	updated, err := store.UpdateUser(ctx, user.ID, UpdateUserInput{Role: &role, Password: &password, Accounts: &accounts, ActorID: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,12 +113,37 @@ func TestDisplayNameUpdateKeepsSessionVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	display := "Alice Chen"
-	updated, err := store.UpdateUser(ctx, user.ID, UpdateUserInput{DisplayName: &display})
+	updated, err := store.UpdateUser(ctx, user.ID, UpdateUserInput{DisplayName: &display, ActorID: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.AuthVersion != user.AuthVersion {
 		t.Fatalf("display-name-only update incremented auth version: %d -> %d", user.AuthVersion, updated.AuthVersion)
+	}
+}
+
+func TestSessionValidTracksVersionAndStatus(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	user, err := store.CreateUser(ctx, CreateUserInput{
+		Username: "alice", DisplayName: "Alice", Password: "alice-password-123", Role: RoleOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valid, err := store.SessionValid(ctx, user.ID, user.AuthVersion); err != nil || !valid {
+		t.Fatalf("fresh session valid=%v err=%v", valid, err)
+	}
+	status := StatusDisabled
+	updated, err := store.UpdateUser(ctx, user.ID, UpdateUserInput{Status: &status, ActorID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valid, err := store.SessionValid(ctx, user.ID, user.AuthVersion); err != nil || valid {
+		t.Fatalf("old session survived valid=%v err=%v", valid, err)
+	}
+	if valid, err := store.SessionValid(ctx, user.ID, updated.AuthVersion); err != nil || valid {
+		t.Fatalf("disabled user session valid=%v err=%v", valid, err)
 	}
 }
 
@@ -130,12 +155,49 @@ func TestOwnerCannotBeDemotedOrDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	role, status := RoleAdmin, StatusDisabled
-	if _, err := store.UpdateUser(ctx, owner.ID, UpdateUserInput{Role: &role}); !errors.Is(err, ErrInvalidUser) {
+	if _, err := store.UpdateUser(ctx, owner.ID, UpdateUserInput{Role: &role, ActorID: 1}); !errors.Is(err, ErrInvalidUser) {
 		t.Fatal("owner demotion accepted")
 	}
-	if _, err := store.UpdateUser(ctx, owner.ID, UpdateUserInput{Status: &status}); !errors.Is(err, ErrInvalidUser) {
+	if _, err := store.UpdateUser(ctx, owner.ID, UpdateUserInput{Status: &status, ActorID: 1}); !errors.Is(err, ErrInvalidUser) {
 		t.Fatal("owner disable accepted")
 	}
+}
+
+func TestUpdateUserRechecksActorPermission(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	admin, err := store.CreateUser(ctx, CreateUserInput{
+		Username: "admin1", DisplayName: "Admin", Password: "admin-password-123", Role: RoleAdmin,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAdmin, err := store.CreateUser(ctx, CreateUserInput{
+		Username: "admin2", DisplayName: "Admin Two", Password: "admin-password-456", Role: RoleAdmin,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator, err := store.CreateUser(ctx, CreateUserInput{
+		Username: "operator1", DisplayName: "Operator", Password: "operator-password-123", Role: RoleOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer := RoleViewer
+	if _, err := store.UpdateUser(ctx, operator.ID, UpdateUserInput{Role: &viewer, ActorID: admin.ID}); err != nil {
+		t.Fatalf("admin could not modify operator: %v", err)
+	}
+	if _, err := store.UpdateUser(ctx, otherAdmin.ID, UpdateUserInput{DisplayName: ptr("blocked"), ActorID: admin.ID}); !errors.Is(err, ErrPermission) {
+		t.Fatalf("admin modified another admin: %v", err)
+	}
+	if _, err := store.UpdateUser(ctx, admin.ID, UpdateUserInput{Role: ptr(RoleOperator), ActorID: admin.ID}); !errors.Is(err, ErrPermission) {
+		t.Fatalf("admin changed own role: %v", err)
+	}
+}
+
+func ptr[T any](value T) *T {
+	return &value
 }
 
 func TestRejectsUnsafeAccountKeysAndOwnerCreation(t *testing.T) {

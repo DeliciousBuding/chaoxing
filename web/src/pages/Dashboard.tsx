@@ -23,7 +23,7 @@ import { api, type SignAudit, type ToolDefinition } from "../lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { ErrorBanner, JsonBlock, Loading, MetaSummary } from "../components/common";
+import { ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { useUIStore, type DashboardCardId } from "../lib/store";
 import { cn } from "../lib/utils";
@@ -42,9 +42,9 @@ const MetricCard = React.memo(function MetricCard({ metric }: { metric: Metric }
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id: metric.id });
   const Icon = metric.icon;
   const toneClass = {
-    primary: "bg-primary/12 text-primary ring-primary/20",
-    success: "bg-success/12 text-success ring-success/25",
-    warning: "bg-warning/12 text-warning ring-warning/25"
+    primary: "bg-muted text-foreground",
+    success: "bg-success/10 text-success",
+    warning: "bg-warning/10 text-warning"
   }[metric.tone];
 
   return (
@@ -52,18 +52,18 @@ const MetricCard = React.memo(function MetricCard({ metric }: { metric: Metric }
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
       className={cn(
-        "group relative rounded-card border border-border/70 bg-card/85 shadow-lg shadow-black/5 backdrop-blur-xl transition-shadow",
-        isDragging && "z-10 shadow-2xl ring-2 ring-primary/40"
+        "group relative rounded-card border border-border bg-card transition-colors",
+        isDragging && "z-10 ring-2 ring-primary/45"
       )}
     >
-      <div className="flex flex-col p-5">
+      <div className="flex flex-col p-4">
         <div className="flex items-start justify-between gap-3">
-          <div className={cn("flex h-9 w-9 items-center justify-center rounded-xl ring-1", toneClass)}>
+          <div className={cn("flex h-8 w-8 items-center justify-center rounded-control", toneClass)}>
             <Icon className="h-4 w-4" />
           </div>
           <button
             type="button"
-            className="cursor-grab touch-none rounded-lg p-1.5 text-muted-foreground opacity-0 transition focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 active:cursor-grabbing"
+            className="cursor-grab touch-none rounded-control p-1.5 text-muted-foreground opacity-60 transition focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 active:cursor-grabbing sm:opacity-0 sm:group-hover:opacity-100"
             aria-label={`调整 ${metric.title} 顺序`}
             {...attributes}
             {...listeners}
@@ -71,9 +71,9 @@ const MetricCard = React.memo(function MetricCard({ metric }: { metric: Metric }
             <GripVertical className="h-4 w-4" />
           </button>
         </div>
-        <div className="mt-4 text-2xl font-semibold tracking-tight">{metric.value}</div>
-        <div className="text-sm font-medium">{metric.title}</div>
-        <div className="mt-1 text-xs leading-relaxed text-muted-foreground">{metric.description}</div>
+        <div className="mt-3 text-[23px] font-medium leading-8 tracking-[-0.03em] tabular-nums">{metric.value}</div>
+        <div className="text-[13px] font-medium">{metric.title}</div>
+        <div className="mt-1 text-[11px] leading-5 text-muted-foreground">{metric.description}</div>
       </div>
     </div>
   );
@@ -213,14 +213,18 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
-          <Badge variant="success">Web UI 已启用</Badge>
-          <Badge>{tools.length} 个受控工具</Badge>
-          <Badge variant="secondary">{accounts.length} 个租户上下文</Badge>
-        </div>
-        <Button size="sm" onClick={() => void load()} disabled={busy}>刷新状态</Button>
-      </div>
+      <PageHeader
+        title="运行总览"
+        description="把上游连接、watcher、出口与安全会话放在同一视线内；所有状态均为新鲜读取。"
+        meta={
+          <>
+            <Badge variant="success">Web UI 已启用</Badge>
+            <Badge variant="secondary">{tools.length} 个受控工具</Badge>
+            <Badge variant="secondary">{accounts.length} 个租户上下文</Badge>
+          </>
+        }
+        actions={<Button size="sm" onClick={() => void load()} disabled={busy}>刷新状态</Button>}
+      />
       <ErrorBanner error={error} />
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
@@ -321,7 +325,7 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
           {auditsLoading ? (
             <Loading label="正在读取签到审计" />
           ) : auditsError ? (
-            <div role="alert" className="space-y-3 rounded-xl border border-destructive/35 bg-destructive/5 p-3 text-sm text-destructive">
+            <div role="alert" className="space-y-3 rounded-control border border-destructive/35 bg-destructive/5 p-3 text-sm text-destructive">
               <div className="break-all">签到审计读取失败：{auditsError}</div>
               <Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>重试</Button>
             </div>

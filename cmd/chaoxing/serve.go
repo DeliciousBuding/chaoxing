@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
+	"github.com/DeliciousBuding/chaoxing/internal/authz"
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
 	"github.com/DeliciousBuding/chaoxing/internal/classroomagent"
 	"github.com/DeliciousBuding/chaoxing/internal/controlplane"
@@ -245,12 +246,57 @@ func validateTenants(c config) error {
 	return validateTenantPaths(states, keys)
 }
 
+type toolAuditFunc func(context.Context, string, string, error, time.Duration)
+
+func auditedToolExecute(account string, execute func(context.Context, string, map[string]any) (any, error), audit toolAuditFunc) func(context.Context, string, map[string]any) (any, error) {
+	if audit == nil {
+		return execute
+	}
+	return func(ctx context.Context, name string, args map[string]any) (any, error) {
+		started := time.Now()
+		value, err := execute(ctx, name, args)
+		audit(ctx, account, name, err, time.Since(started))
+		return value, err
+	}
+}
+
+func toolAuditRecorder(store *controlplane.Store) toolAuditFunc {
+	return func(ctx context.Context, account, tool string, callErr error, elapsed time.Duration) {
+		if store == nil {
+			return
+		}
+		actor := authz.Principal(ctx)
+		role := "mcp"
+		if actor == "local" {
+			role = "local"
+		} else if actor == "" {
+			actor = "mcp"
+		}
+		code := ""
+		if callErr != nil {
+			code = upstream.SafeFault(callErr).Code
+		}
+		details, _ := json.Marshal(map[string]any{
+			"tool": tool, "duration_ms": elapsed.Milliseconds(), "error": code,
+		})
+		auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		if err := store.RecordAudit(auditCtx, controlplane.AuditEvent{
+			ActorUsername: actor, ActorRole: role, AccountKey: account,
+			Category: "tool", Action: "tool.call", Target: tool,
+			Success: callErr == nil, Details: details,
+		}); err != nil {
+			log.Printf("tool audit write failed: %v", err)
+		}
+	}
+}
+
 // publicMux mounts the root account and all configured tenants. It returns the
 // mux and the ordered tenant ids for the management status endpoint.
-func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool, captures capture.Store, signAudits signaudit.Store, locations location.Service, rootExecute func(context.Context, string, map[string]any) (any, error)) (*http.ServeMux, []string, []*tenantRuntime, error) {
+func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool, captures capture.Store, signAudits signaudit.Store, locations location.Service, rootExecute func(context.Context, string, map[string]any) (any, error), audit toolAuditFunc) (*http.ServeMux, []string, []*tenantRuntime, error) {
 	mux := http.NewServeMux()
 	a.Register(mux)
-	mux.Handle("/mcp", a.ProtectMCP(mcphttp.NewWithVersion(rootExecute, version)))
+	mux.Handle("/mcp", a.ProtectMCP(mcphttp.NewWithVersion(auditedToolExecute("root", rootExecute, audit), version)))
 	// Additional tenants mount a complete isolated OAuth + MCP stack under
 	// /t/<id>/. Discovery metadata lives at /t/<id>/.well-known/...; clients
 	// requiring RFC 8414 path-insertion discovery must configure endpoints
@@ -274,7 +320,7 @@ func publicMux(c config, x *upstream.Client, a *access.Server, pool *egress.Pool
 			}
 			return exec(ctx, name, args)
 		}
-		tm.Handle("/mcp", ta.ProtectMCP(mcphttp.NewWithVersion(texec, version)))
+		tm.Handle("/mcp", ta.ProtectMCP(mcphttp.NewWithVersion(auditedToolExecute(tc.ID, texec, audit), version)))
 		mux.Handle("/t/"+tc.ID+"/", http.StripPrefix("/t/"+tc.ID, tm))
 		if tc.Watch != nil && tc.Watch.Enabled {
 			cl, e := tr.upstreamClient()
@@ -392,15 +438,22 @@ func parseWatchTermStart(raw string) (time.Time, error) {
 }
 
 // watcherStale flags a live process whose polling loop has not completed a
-// cycle for three times the idle sleep cap. Idle deployments still tick at
-// least every five minutes, so this only fires when the loop is wedged or the
-// watcher failed to start; a freshly started process is measured from its
-// start time rather than the zero last-tick value.
-const watchStaleAfter = 20 * time.Minute
+// cycle for three times the idle sleep cap. The first tick runs immediately,
+// so a missing completion after the short startup grace is already a failure.
+const (
+	watchStaleAfter    = 15 * time.Minute
+	watchFirstTickWait = 2 * time.Minute
+)
 
-func watcherStale(now, startedAt, lastTick time.Time) bool {
+func watcherStale(now, startedAt, lastTick time.Time, ticks uint64) bool {
+	if ticks == 0 || lastTick.IsZero() {
+		if startedAt.IsZero() || now.Before(startedAt) {
+			return false
+		}
+		return now.Sub(startedAt) > watchFirstTickWait
+	}
 	reference := lastTick
-	if reference.IsZero() || startedAt.After(reference) {
+	if startedAt.After(reference) {
 		reference = startedAt
 	}
 	if reference.IsZero() || now.Before(reference) {
@@ -459,6 +512,9 @@ func serve() error {
 	}
 	if !loopback(c.Listen) || !loopback(c.LocalListen) || c.Listen == c.LocalListen {
 		return errors.New("public and management listeners must be distinct loopback addresses")
+	}
+	if len(strings.TrimSpace(c.LocalToken)) < 32 {
+		return errors.New("local management token must be at least 32 characters")
 	}
 	if e = validateTenants(c); e != nil {
 		return e
@@ -542,6 +598,7 @@ func serve() error {
 	if e != nil {
 		return e
 	}
+	auditTool := toolAuditRecorder(controlStore)
 	var locations location.Service
 	var mapConfig *location.MapConfig
 	var geocoder location.Geocoder
@@ -571,7 +628,7 @@ func serve() error {
 	if e != nil {
 		return e
 	}
-	mux, tenantIDs, tenants, e := publicMux(c, x, a, pool, captures, signAudits, locations, rootExecute)
+	mux, tenantIDs, tenants, e := publicMux(c, x, a, pool, captures, signAudits, locations, rootExecute, auditTool)
 	if e != nil {
 		return e
 	}
@@ -613,7 +670,7 @@ func serve() error {
 			if m.LastPanicAt.After(lastPanic) {
 				lastPanic = m.LastPanicAt
 			}
-			if watcherStale(now, m.StartedAt, m.LastTickAt) {
+			if watcherStale(now, m.StartedAt, m.LastTickAt, m.Ticks) {
 				stale = true
 			}
 			stateDegraded = stateDegraded || m.StateDegraded
@@ -713,9 +770,7 @@ func serve() error {
 		return err
 	}
 	ui.Register(mux)
-	execute := func(ctx context.Context, name string, args map[string]any) (any, error) {
-		return rootExecute(ctx, name, args)
-	}
+	execute := auditedToolExecute("root", rootExecute, auditTool)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version})
@@ -726,13 +781,25 @@ func serve() error {
 		panics, _ := health["consecutive_panics"].(int)
 		stateDegraded, _ := health["state_degraded"].(bool)
 		degraded := sup.Metrics().Degraded
-		ok := !stale && panics < 3 && !degraded && !stateDegraded
+		control := ui.ControlHealth()
+		auditConsecutive, _ := control["audit_consecutive_write_failures"].(uint64)
+		ok := !stale && panics < 3 && !degraded && !stateDegraded && auditConsecutive < 3
+		watcherCount, _ := health["count"].(int)
+		ticks, _ := health["ticks"].(int)
+		lastTick, _ := health["last_tick_at"].(time.Time)
+		lastTickText := ""
+		if !lastTick.IsZero() {
+			lastTickText = lastTick.UTC().Format(time.RFC3339)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if !ok {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok": ok, "stale": stale, "consecutive_panics": panics, "degraded": degraded, "state_degraded": stateDegraded,
+			"ok": ok, "stale": stale, "consecutive_panics": panics, "degraded": degraded,
+			"state_degraded": stateDegraded, "watcher_count": watcherCount, "ticks": ticks,
+			"last_tick_at": lastTickText, "audit_write_failures": control["audit_write_failures"],
+			"audit_consecutive_write_failures": auditConsecutive,
 		})
 	})
 	local := http.NewServeMux()
@@ -769,7 +836,7 @@ func serve() error {
 			w.WriteHeader(400)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+		ctx, cancel := context.WithTimeout(authz.WithPrincipal(r.Context(), "local"), 90*time.Second)
 		defer cancel()
 		v, e := execute(ctx, in.Tool, in.Arguments)
 		if e != nil {

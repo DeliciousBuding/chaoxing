@@ -35,6 +35,7 @@ var (
 	ErrNotFound           = errors.New("control-plane record not found")
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrInvalidUser        = errors.New("invalid user")
+	ErrPermission         = errors.New("control-plane permission denied")
 )
 
 type User struct {
@@ -117,7 +118,7 @@ func Open(path, bootstrapOwnerHash string) (*Store, error) {
 	}
 	u := url.URL{Scheme: "file", Path: "/" + strings.TrimPrefix(filepath.ToSlash(path), "/")}
 	u.RawQuery = url.Values{"_pragma": {
-		"busy_timeout(1500)", "journal_mode(WAL)", "synchronous(NORMAL)",
+		"busy_timeout(1500)", "journal_mode(WAL)", "synchronous(FULL)",
 		"foreign_keys(1)", "secure_delete(ON)", "cache_size(-1024)", "journal_size_limit(2097152)",
 	}}.Encode()
 	db, err := sql.Open("sqlite", u.String())
