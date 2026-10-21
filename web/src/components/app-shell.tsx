@@ -16,6 +16,7 @@ import { roleLabels } from "../lib/roles";
 import { Button } from "./ui/button";
 import { Select } from "./ui/select";
 import { Separator as Divider } from "./ui/separator";
+import { MobileBottomNav } from "./mobile-nav";
 import { cn } from "../lib/utils";
 
 const SidebarButton = React.memo(function SidebarButton({
@@ -29,6 +30,7 @@ const SidebarButton = React.memo(function SidebarButton({
   icon: React.ComponentType<{ className?: string }>;
   onClick: () => void;
 }) {
+  const reducedMotion = useReducedMotion();
   return (
     <button
       type="button"
@@ -43,7 +45,8 @@ const SidebarButton = React.memo(function SidebarButton({
     >
       {active && (
         <MotionSpan
-          layoutId="sidebar-active"
+          layoutId={reducedMotion ? undefined : "sidebar-active"}
+          transition={reducedMotion ? { duration: 0 } : undefined}
           className="absolute inset-y-1.5 left-0 w-[2px] rounded-full bg-primary"
         />
       )}
@@ -172,7 +175,7 @@ function AccountSelect({
   return (
     <Select
       aria-label="当前账号"
-      className={cn("h-7 w-[156px] text-[11px]", className)}
+      className={cn("h-11 w-[156px] text-[13px] sm:h-7 sm:text-[11px]", className)}
       value={currentAccount}
       onChange={(event) => onSwitchAccount(event.target.value)}
       disabled={accounts.length === 0 || switchingAccount}
@@ -206,10 +209,10 @@ function Header({
   const group = pageGroups.find((item) => item.id === meta.group);
 
   return (
-    <header className="sticky top-0 z-20 border-b border-border bg-background">
-      <div className="flex min-h-11 items-center gap-2 px-4 sm:px-5">
+    <header className="sticky top-0 z-20 border-b border-border bg-background pt-[env(safe-area-inset-top)]">
+      <div className="flex min-h-12 items-center gap-2 px-3 sm:min-h-11 sm:px-5">
         <nav aria-label="面包屑" className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-muted-foreground">
-          <span className="truncate font-medium text-foreground sm:hidden">学习通控制台</span>
+          <span className="truncate font-medium text-foreground sm:hidden">{meta.title}</span>
           <span className="hidden shrink-0 sm:inline">{group?.title ?? "控制台"}</span>
           <span aria-hidden="true" className="hidden sm:inline">/</span>
           <span className="hidden truncate text-foreground/80 sm:inline">{meta.title}</span>
@@ -234,7 +237,7 @@ function Header({
           </Button>
         </div>
       </div>
-      <div className="px-4 pb-2 sm:hidden">
+      <div className="px-3 pb-2 sm:hidden">
         <AccountSelect
           session={session}
           account={account}
@@ -244,41 +247,6 @@ function Header({
         />
       </div>
     </header>
-  );
-}
-
-function MobileNav({ capabilities }: { capabilities?: SessionInfo["capabilities"] }) {
-  const page = useUIStore((state) => state.page);
-  const setPage = useUIStore((state) => state.setPage);
-  const active = pages.find((item) => item.id === page) ?? pages[0];
-  const ActiveIcon = active.icon;
-
-  return (
-    <div className="border-b border-border bg-card px-3 py-2 lg:hidden">
-      <div className="relative">
-        <ActiveIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Select
-          aria-label="切换页面"
-          className="pl-8"
-          value={page}
-          onChange={(event) => setPage(event.target.value as PageId)}
-        >
-          {pageGroups.map((group) => {
-            const items = pages.filter(
-              (item) => item.group === group.id && canAccessPage(item.id as PageId, capabilities)
-            );
-            if (items.length === 0) return null;
-            return (
-              <optgroup key={group.id} label={group.title}>
-                {items.map((item) => (
-                  <option key={item.id} value={item.id}>{item.title}</option>
-                ))}
-              </optgroup>
-            );
-          })}
-        </Select>
-      </div>
-    </div>
   );
 }
 
@@ -334,17 +302,16 @@ export function AppShell({
         onLogout={onLogout}
         onRefresh={onRefresh}
       />
-      {!isDesktop && <MobileNav capabilities={session.capabilities} />}
       <main
         ref={mainRef}
         id="main-content"
         tabIndex={-1}
-        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 pb-14 sm:px-5 lg:px-6 lg:py-6 focus:outline-none"
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-3 py-4 pb-[calc(5.75rem+env(safe-area-inset-bottom))] focus:outline-none sm:px-5 lg:px-6 lg:py-6 lg:pb-6"
       >
         <MotionDiv
           key={page}
           {...transition}
-          transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
+          transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
           className="mx-auto w-full max-w-[1480px]"
         >
           {children}
@@ -355,15 +322,16 @@ export function AppShell({
 
   if (!isDesktop) {
     return (
-      <div className="flex min-h-screen flex-col bg-background">
+      <div className="app-viewport flex flex-col bg-background pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
         <SkipLink />
         {content}
+        <MobileBottomNav capabilities={session.capabilities} />
       </div>
     );
   }
 
   return (
-    <div className="h-screen min-h-screen bg-background">
+    <div className="app-viewport bg-background pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
       <SkipLink />
       <Group
         orientation="horizontal"

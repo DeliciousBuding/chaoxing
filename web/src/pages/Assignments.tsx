@@ -114,7 +114,28 @@ export function Assignments() {
         <CardContent>
           {assignments && <MetaSummary data={assignments} />}
           {busy && !assignments ? <Loading /> : rows.length === 0 ? <EmptyState title="没有作业数据" /> : (
-            <Table>
+            <>
+            <div className="space-y-3 lg:hidden">
+              {rows.map((row, index) => (
+                <article key={row.id ?? index} className="rounded-card border border-border bg-card p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-[11px] text-muted-foreground">{row.course}</div>
+                      <h2 className="mt-1 text-[14px] font-medium leading-5">{row.title}</h2>
+                    </div>
+                    <Badge variant={row.submission_state === "pending" ? "warning" : row.submission_state === "submitted" ? "success" : "secondary"}>{row.submission_state}</Badge>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <Badge>{row.status ?? "unknown"}</Badge>
+                    <Badge variant={row.availability_state === "open" ? "success" : "secondary"}>{row.availability_state}</Badge>
+                  </div>
+                  <div className="mt-2 break-all font-mono text-[11px] text-muted-foreground">{row.id}</div>
+                  <Button size="sm" variant="outline" className="mt-3 w-full" onClick={() => void loadQuestions(row)} disabled={busy}>读取题目</Button>
+                </article>
+              ))}
+            </div>
+            <div className="hidden lg:block">
+            <Table label="全部作业">
               <TableHeader>
                 <TableRow><TableHead>作业</TableHead><TableHead>课程</TableHead><TableHead>状态</TableHead><TableHead>提交</TableHead><TableHead>可用性</TableHead><TableHead>ID</TableHead><TableHead>操作</TableHead></TableRow>
               </TableHeader>
@@ -127,11 +148,13 @@ export function Assignments() {
                     <TableCell><Badge variant={row.submission_state === "pending" ? "warning" : row.submission_state === "submitted" ? "success" : "secondary"}>{row.submission_state}</Badge></TableCell>
                     <TableCell><Badge variant={row.availability_state === "open" ? "success" : "secondary"}>{row.availability_state}</Badge></TableCell>
                     <TableCell className="font-mono text-xs">{row.id}</TableCell>
-                  <TableCell><Button size="sm" variant="outline" onClick={() => void loadQuestions(row)} disabled={busy}>读取题目</Button></TableCell>
+                  <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent"><Button size="sm" variant="outline" onClick={() => void loadQuestions(row)} disabled={busy}>读取题目</Button></TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
+            </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -149,7 +172,20 @@ export function Assignments() {
           </CardHeader>
           <CardContent className="space-y-4">
             <MetaSummary data={detail} />
-            <Table>
+            <div className="space-y-2 lg:hidden">
+              {(detail.questions ?? []).map((question: any, index: number) => (
+                <article key={question.id ?? index} className="rounded-control border border-border bg-muted/15 p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="font-mono text-[11px] text-muted-foreground">{question.id}</span>
+                    <Badge>{question.type}</Badge>
+                  </div>
+                  <div className="mt-2 whitespace-pre-wrap text-[13px] leading-5">{question.title}</div>
+                  <div className="mt-2 whitespace-pre-wrap text-[11px] leading-5 text-muted-foreground">{(question.options ?? []).join(" / ") || "—"}</div>
+                </article>
+              ))}
+            </div>
+            <div className="hidden lg:block">
+            <Table label="作业题目">
               <TableHeader><TableRow><TableHead>题号</TableHead><TableHead>题目</TableHead><TableHead>类型</TableHead><TableHead>选项</TableHead></TableRow></TableHeader>
               <TableBody>
                 {(detail.questions ?? []).map((question: any, index: number) => (
@@ -162,6 +198,7 @@ export function Assignments() {
                 ))}
               </TableBody>
             </Table>
+            </div>
             {drafts && (
               <div className="space-y-2">
                 <div className="text-sm font-medium">本地草稿</div>

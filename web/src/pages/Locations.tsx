@@ -25,6 +25,45 @@ const emptyPreset = (): LocationPreset => ({
   coordinate_system: "bd09"
 });
 
+const formatCoordinate = (value: number) =>
+  Number.isFinite(value) && value !== 0 ? String(value) : "";
+
+function parseCoordinate(text: string, min: number, max: number): number | null {
+  if (!text.trim()) return null;
+  const value = Number(text);
+  return Number.isFinite(value) && value >= min && value <= max ? value : null;
+}
+
+function CoordinateField({
+  id,
+  label,
+  value,
+  onChange,
+  onBlur
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  onBlur: (value: string) => void;
+}) {
+  return (
+    <div className="min-w-0 space-y-2">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={() => onBlur(value)}
+      />
+    </div>
+  );
+}
+
 export function Locations() {
   const [config, setConfig] = React.useState<MapConfig>({ enabled: false });
   const [presets, setPresets] = React.useState<LocationPreset[]>([]);
@@ -32,6 +71,7 @@ export function Locations() {
   const [courses, setCourses] = React.useState<CourseRow[]>([]);
   const [schedules, setSchedules] = React.useState<WatchSchedule[]>([]);
   const [form, setForm] = React.useState<LocationPreset>(emptyPreset);
+  const [coordinateText, setCoordinateText] = React.useState({ latitude: "", longitude: "" });
   const [editingId, setEditingId] = React.useState<number | null>(null);
   const [selectedPreset, setSelectedPreset] = React.useState<LocationPreset | null>(null);
   const [selectedCourse, setSelectedCourse] = React.useState<CourseRow | null>(null);
@@ -62,6 +102,32 @@ export function Locations() {
     });
     mapInitializedRef.current = true;
   }, [config.ak, config.center_latitude, config.center_longitude, config.enabled, config.zoom, form.latitude, form.longitude, postMap]);
+
+  const updateCoordinates = React.useCallback((
+    latitude: number,
+    longitude: number,
+    extra: Partial<LocationPreset> = {}
+  ) => {
+    setForm((current) => ({ ...current, ...extra, latitude, longitude }));
+    setCoordinateText({
+      latitude: formatCoordinate(latitude),
+      longitude: formatCoordinate(longitude)
+    });
+  }, []);
+
+  const commitCoordinate = React.useCallback((axis: "latitude" | "longitude", text: string) => {
+    const parsed = axis === "latitude"
+      ? parseCoordinate(text, -90, 90)
+      : parseCoordinate(text, -180, 180);
+    if (parsed === null) {
+      setCoordinateText((current) => ({
+        ...current,
+        [axis]: formatCoordinate(form[axis])
+      }));
+      return;
+    }
+    setForm((current) => ({ ...current, [axis]: parsed }));
+  }, [form.latitude, form.longitude]);
 
   async function reload() {
     setBusy(true);
@@ -103,7 +169,7 @@ export function Locations() {
         const latitude = Number(message.latitude);
         const longitude = Number(message.longitude);
         if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
-        setForm((current) => ({ ...current, latitude, longitude, coordinate_system: "bd09" }));
+        updateCoordinates(latitude, longitude, { coordinate_system: "bd09" });
         return;
       }
       if (message.type === "error") {
@@ -112,7 +178,7 @@ export function Locations() {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [sendMapInit]);
+  }, [sendMapInit, updateCoordinates]);
 
   React.useEffect(() => {
     if (!frameReadyRef.current) return;
@@ -126,15 +192,17 @@ export function Locations() {
   }, [form.latitude, form.longitude, postMap]);
 
   async function reverseGeocode() {
-    if (!Number.isFinite(form.latitude) || !Number.isFinite(form.longitude)) {
+    const latitude = parseCoordinate(coordinateText.latitude, -90, 90);
+    const longitude = parseCoordinate(coordinateText.longitude, -180, 180);
+    if (latitude === null || longitude === null) {
       setError("请先选择或输入有效经纬度");
       return;
     }
     setBusy(true);
     setError("");
     try {
-      const result = await api.reverseGeocode(form.latitude, form.longitude, form.coordinate_system ?? "bd09");
-      setForm((current) => ({ ...current, address: result.address }));
+      const result = await api.reverseGeocode(latitude, longitude, form.coordinate_system ?? "bd09");
+      updateCoordinates(latitude, longitude, { address: result.address });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally { setBusy(false); }
@@ -150,7 +218,7 @@ export function Locations() {
     setError("");
     try {
       const result = await api.geocode(address);
-      setForm((current) => ({ ...current, latitude: result.latitude, longitude: result.longitude, address, coordinate_system: "bd09" }));
+      updateCoordinates(result.latitude, result.longitude, { address, coordinate_system: "bd09" });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally { setBusy(false); }
@@ -161,19 +229,25 @@ export function Locations() {
       setError("位置名称不能为空");
       return;
     }
-    if (!Number.isFinite(form.latitude) || !Number.isFinite(form.longitude)) {
-      setError("经纬度无效");
+    const latitude = parseCoordinate(coordinateText.latitude, -90, 90);
+    const longitude = parseCoordinate(coordinateText.longitude, -180, 180);
+    if (latitude === null || longitude === null) {
+      setError("纬度需在 -90..90、经度需在 -180..180，且不能为空");
       return;
     }
-    if (form.latitude === 0 && form.longitude === 0) {
+    if (latitude === 0 && longitude === 0) {
       setError("请选择有效坐标，不能保存 0,0");
       return;
     }
     setBusy(true);
     setError("");
     try {
-      const saved = await api.saveLocation({ ...form, id: editingId ?? undefined });
+      const saved = await api.saveLocation({ ...form, latitude, longitude, id: editingId ?? undefined });
       setForm({ ...saved });
+      setCoordinateText({
+        latitude: formatCoordinate(saved.latitude),
+        longitude: formatCoordinate(saved.longitude)
+      });
       setEditingId(saved.id ?? null);
       setSelectedPreset(saved);
       await reload();
@@ -199,6 +273,7 @@ export function Locations() {
 
   function startNewPreset() {
     setForm(emptyPreset());
+    setCoordinateText({ latitude: "", longitude: "" });
     setEditingId(null);
     setSelectedPreset(null);
     setError("");
@@ -206,6 +281,10 @@ export function Locations() {
 
   function editPreset(preset: LocationPreset) {
     setForm({ ...preset });
+    setCoordinateText({
+      latitude: formatCoordinate(preset.latitude),
+      longitude: formatCoordinate(preset.longitude)
+    });
     setEditingId(preset.id ?? null);
     setSelectedPreset(preset);
     setError("");
@@ -272,9 +351,9 @@ export function Locations() {
         actions={<Button size="sm" variant="outline" onClick={() => void reload()} disabled={busy}>刷新</Button>}
       />
       <ErrorBanner error={error} />
-      <div className="grid gap-4 xl:grid-cols-[380px_1fr]">
-        <div className="space-y-4">
-          <Card>
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[380px_1fr]">
+        <div className="min-w-0 space-y-4">
+          <Card className="min-w-0">
             <CardHeader>
               <CardTitle>地图选点</CardTitle>
               <CardDescription>地图点击与拖拽使用 BD-09；手输支持 BD-09 / GCJ-02 / WGS-84，保存时统一归一化为 BD-09。</CardDescription>
@@ -286,7 +365,7 @@ export function Locations() {
               {config.enabled ? (
                 <div className="space-y-3">
                   <div className="flex gap-2">
-                    <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="输入地址搜索" />
+                    <Input aria-label="地址搜索" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="输入地址搜索" />
                     <Button size="sm" onClick={() => void geocode()} disabled={busy}>搜索</Button>
                   </div>
                   <iframe
@@ -299,30 +378,36 @@ export function Locations() {
                     className="h-[360px] w-full overflow-hidden rounded-control border border-border bg-muted"
                   />
                   <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-2">
-                      <Label>纬度</Label>
-                      <Input type="number" inputMode="decimal" min={-90} max={90} step="any" value={form.latitude} onChange={(event) => setForm({ ...form, latitude: Number(event.target.value) })} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>经度</Label>
-                      <Input type="number" inputMode="decimal" min={-180} max={180} step="any" value={form.longitude} onChange={(event) => setForm({ ...form, longitude: Number(event.target.value) })} />
-                    </div>
+                    <CoordinateField
+                      id="location-latitude"
+                      label="纬度"
+                      value={coordinateText.latitude}
+                      onChange={(value) => setCoordinateText((current) => ({ ...current, latitude: value }))}
+                      onBlur={(value) => commitCoordinate("latitude", value)}
+                    />
+                    <CoordinateField
+                      id="location-longitude"
+                      label="经度"
+                      value={coordinateText.longitude}
+                      onChange={(value) => setCoordinateText((current) => ({ ...current, longitude: value }))}
+                      onBlur={(value) => commitCoordinate("longitude", value)}
+                    />
                   </div>
                   <div className="space-y-2">
-                    <Label>输入坐标系</Label>
-                    <Select value={form.coordinate_system ?? "bd09"} onChange={(event) => setForm({ ...form, coordinate_system: event.target.value })}>
+                    <Label htmlFor="location-coordinate-system">输入坐标系</Label>
+                    <Select id="location-coordinate-system" value={form.coordinate_system ?? "bd09"} onChange={(event) => setForm({ ...form, coordinate_system: event.target.value })}>
                       <option value="bd09">BD-09（百度地图）</option>
                       <option value="gcj02">GCJ-02（高德/火星）</option>
                       <option value="wgs84">WGS-84（GPS）</option>
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>位置名称</Label>
-                    <Input value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} />
+                    <Label htmlFor="location-label">位置名称</Label>
+                    <Input id="location-label" value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} />
                   </div>
                   <div className="space-y-2">
-                    <Label>地址</Label>
-                    <Input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} />
+                    <Label htmlFor="location-address">地址</Label>
+                    <Input id="location-address" value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} />
                   </div>
                   <div className="flex gap-2">
                     <Button size="sm" onClick={() => void reverseGeocode()} disabled={busy}>反查地址</Button>
@@ -333,30 +418,36 @@ export function Locations() {
                 <div className="space-y-3">
                   <EmptyState title="地图未启用" description="在私有配置里启用 location 并填入百度 AK 后可使用地图选点。" />
                   <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-2">
-                      <Label>纬度</Label>
-                      <Input type="number" inputMode="decimal" min={-90} max={90} step="any" value={form.latitude} onChange={(event) => setForm({ ...form, latitude: Number(event.target.value) })} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>经度</Label>
-                      <Input type="number" inputMode="decimal" min={-180} max={180} step="any" value={form.longitude} onChange={(event) => setForm({ ...form, longitude: Number(event.target.value) })} />
-                    </div>
+                    <CoordinateField
+                      id="location-latitude"
+                      label="纬度"
+                      value={coordinateText.latitude}
+                      onChange={(value) => setCoordinateText((current) => ({ ...current, latitude: value }))}
+                      onBlur={(value) => commitCoordinate("latitude", value)}
+                    />
+                    <CoordinateField
+                      id="location-longitude"
+                      label="经度"
+                      value={coordinateText.longitude}
+                      onChange={(value) => setCoordinateText((current) => ({ ...current, longitude: value }))}
+                      onBlur={(value) => commitCoordinate("longitude", value)}
+                    />
                   </div>
                   <div className="space-y-2">
-                    <Label>输入坐标系</Label>
-                    <Select value={form.coordinate_system ?? "bd09"} onChange={(event) => setForm({ ...form, coordinate_system: event.target.value })}>
+                    <Label htmlFor="location-coordinate-system">输入坐标系</Label>
+                    <Select id="location-coordinate-system" value={form.coordinate_system ?? "bd09"} onChange={(event) => setForm({ ...form, coordinate_system: event.target.value })}>
                       <option value="bd09">BD-09（百度地图）</option>
                       <option value="gcj02">GCJ-02（高德/火星）</option>
                       <option value="wgs84">WGS-84（GPS）</option>
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>位置名称</Label>
-                    <Input value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} />
+                    <Label htmlFor="location-label">位置名称</Label>
+                    <Input id="location-label" value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} />
                   </div>
                   <div className="space-y-2">
-                    <Label>地址</Label>
-                    <Input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} />
+                    <Label htmlFor="location-address">地址</Label>
+                    <Input id="location-address" value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} />
                   </div>
                   <Button size="sm" onClick={() => void savePreset()} disabled={busy}>{editingId ? "更新位置" : "保存位置"}</Button>
                 </div>
@@ -364,15 +455,15 @@ export function Locations() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="min-w-0">
             <CardHeader>
               <CardTitle>绑定课程</CardTitle>
               <CardDescription>选中的位置会用于该课程的定位签到；可选时段绑定优先于课程级绑定。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="space-y-2">
-                <Label>当前位置</Label>
-                <Select value={selectedPreset?.id ? String(selectedPreset.id) : ""} onChange={(event) => {
+                <Label htmlFor="location-bind-preset">当前位置</Label>
+                <Select id="location-bind-preset" value={selectedPreset?.id ? String(selectedPreset.id) : ""} onChange={(event) => {
                   const preset = presets.find((item) => item.id === Number(event.target.value)) ?? null;
                   setSelectedPreset(preset);
                 }}>
@@ -381,8 +472,8 @@ export function Locations() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>课程</Label>
-                <Select value={selectedCourse ? String(courses.findIndex((item) => item.course_id === selectedCourse.course_id && item.class_id === selectedCourse.class_id)) : ""} onChange={(event) => {
+                <Label htmlFor="location-bind-course">课程</Label>
+                <Select id="location-bind-course" value={selectedCourse ? String(courses.findIndex((item) => item.course_id === selectedCourse.course_id && item.class_id === selectedCourse.class_id)) : ""} onChange={(event) => {
                   const index = Number(event.target.value);
                   setSelectedCourse(Number.isInteger(index) && index >= 0 ? courses[index] ?? null : null);
                   setScheduleKey("");
@@ -392,15 +483,15 @@ export function Locations() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>独立时段（可选）</Label>
+                <Label htmlFor="location-bind-schedule">独立时段（可选）</Label>
                 {availableSchedules.length > 0 ? (
-                  <Select value={scheduleKey} onChange={(event) => setScheduleKey(event.target.value)}>
+                  <Select id="location-bind-schedule" value={scheduleKey} onChange={(event) => setScheduleKey(event.target.value)}>
                     <option value="">课程默认（未单独绑定的时段）</option>
                     {availableSchedules.map((item) => <option key={item.key} value={item.key}>{scheduleLabel(item)}</option>)}
                     {scheduleKey && !selectedSchedule ? <option value={scheduleKey}>{scheduleKey}（历史配置）</option> : null}
                   </Select>
                 ) : (
-                  <Input value={scheduleKey} onChange={(event) => setScheduleKey(event.target.value)} placeholder="例如 arch-tue-guidance" />
+                  <Input id="location-bind-schedule" value={scheduleKey} onChange={(event) => setScheduleKey(event.target.value)} placeholder="例如 arch-tue-guidance" />
                 )}
                 <div className="text-xs text-muted-foreground">
                   每个时段可以绑定不同位置。例如体系结构周二普通课用复临舍，第 7/13 周指导课独立绑定中楼 303。
@@ -418,8 +509,8 @@ export function Locations() {
           </Card>
         </div>
 
-        <div className="space-y-4">
-          <Card>
+        <div className="min-w-0 space-y-4">
+          <Card className="min-w-0">
             <CardHeader>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <CardTitle>位置预设</CardTitle>
@@ -429,7 +520,7 @@ export function Locations() {
             </CardHeader>
             <CardContent>
               {busy && presets.length === 0 ? <Loading /> : presets.length === 0 ? <EmptyState title="暂无位置" /> : (
-                <Table>
+                <Table label="位置预设">
                   <TableHeader>
                     <TableRow><TableHead>名称</TableHead><TableHead>地址</TableHead><TableHead>纬度</TableHead><TableHead>经度</TableHead><TableHead>坐标系</TableHead><TableHead>操作</TableHead></TableRow>
                   </TableHeader>
@@ -441,7 +532,7 @@ export function Locations() {
                         <TableCell className="font-mono text-xs">{preset.latitude.toFixed(6)}</TableCell>
                         <TableCell className="font-mono text-xs">{preset.longitude.toFixed(6)}</TableCell>
                           <TableCell><Badge variant="secondary">{preset.coordinate_system === "bd09" ? "BD-09" : preset.coordinate_system ?? "BD-09"}</Badge></TableCell>
-                        <TableCell>
+                        <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent">
                           <div className="flex gap-2">
                             <Button size="sm" variant="outline" onClick={() => editPreset(preset)}>编辑</Button>
                             <Button size="sm" variant="outline" onClick={() => void removePreset(preset)}>删除</Button>
@@ -455,14 +546,14 @@ export function Locations() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="min-w-0">
             <CardHeader>
               <CardTitle>课程绑定</CardTitle>
               <CardDescription>自动签到时按课程解析位置。</CardDescription>
             </CardHeader>
             <CardContent>
               {busy && bindingRows.length === 0 ? <Loading /> : bindingRows.length === 0 ? <EmptyState title="暂无绑定" /> : (
-                <Table>
+                <Table label="课程位置绑定">
                   <TableHeader>
                     <TableRow><TableHead>课程</TableHead><TableHead>班级</TableHead><TableHead>时段</TableHead><TableHead>位置</TableHead><TableHead>操作</TableHead></TableRow>
                   </TableHeader>
@@ -476,7 +567,7 @@ export function Locations() {
                           {schedule && <div className="mt-1 text-muted-foreground">{scheduleLabel(schedule)}</div>}
                         </TableCell>
                         <TableCell><Badge>{preset?.label ?? "已删除"}</Badge></TableCell>
-                        <TableCell><Button size="sm" variant="outline" onClick={() => void unbind(binding)}>解除</Button></TableCell>
+                        <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent"><Button size="sm" variant="outline" onClick={() => void unbind(binding)}>解除</Button></TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

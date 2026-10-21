@@ -84,8 +84,8 @@ export function StudyResources() {
         </CardHeader>
         <CardContent className="grid gap-4 lg:grid-cols-[1fr_180px_auto]">
           <div className="space-y-2">
-            <Label>课程</Label>
-            <Select value={courseKey} onChange={(event) => setCourseKey(event.target.value)}>
+            <Label htmlFor="study-course">课程</Label>
+            <Select id="study-course" value={courseKey} onChange={(event) => setCourseKey(event.target.value)}>
               <option value="">选择课程</option>
               {courses.map((course) => (
                 <option key={courseKeyFor(course)} value={courseKeyFor(course)}>
@@ -95,8 +95,8 @@ export function StudyResources() {
             </Select>
           </div>
           <div className="space-y-2">
-            <Label>教学周</Label>
-            <Input type="number" min={1} max={30} value={week} onChange={(event) => setWeek(event.target.value)} />
+            <Label htmlFor="study-week">教学周</Label>
+            <Input id="study-week" type="number" min={1} max={30} value={week} onChange={(event) => setWeek(event.target.value)} />
           </div>
           <div className="flex items-end">
             <Button disabled={!selectedCourse || busy} onClick={() => void load()}>
@@ -116,7 +116,7 @@ export function StudyResources() {
           {busy && !chapters ? <Loading /> : !chapters ? <EmptyState title="选择课程后读取章节" /> : chapterRows.length === 0 ? (
             <EmptyState title="没有章节数据" />
           ) : (
-            <Table>
+            <Table label="章节任务">
               <TableHeader>
                 <TableRow><TableHead>章节</TableHead><TableHead>标题</TableHead><TableHead>状态</TableHead><TableHead>待做任务点</TableHead></TableRow>
               </TableHeader>

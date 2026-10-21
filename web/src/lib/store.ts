@@ -13,9 +13,6 @@ export const themeLabels: Record<Theme, string> = {
   contrast: "高对比"
 };
 
-const defaultDashboardOrder = ["security", "egress", "upstream", "watchers", "supervisor", "capabilities"] as const;
-export type DashboardCardId = (typeof defaultDashboardOrder)[number];
-
 export function pageFromURL(): PageId | null {
   if (typeof window === "undefined") return null;
   const value = new URL(window.location.href).searchParams.get("page");
@@ -36,7 +33,6 @@ interface UIState {
   tools: ToolDefinition[];
   page: PageId;
   theme: Theme;
-  dashboardOrder: DashboardCardId[];
   refreshToken: number;
   globalError: string;
   setSession: (session: SessionInfo) => void;
@@ -44,7 +40,6 @@ interface UIState {
   setTools: (tools: ToolDefinition[]) => void;
   setPage: (page: PageId) => void;
   setTheme: (theme: Theme) => void;
-  setDashboardOrder: (order: DashboardCardId[]) => void;
   refresh: () => void;
   setGlobalError: (error: string) => void;
   resetIdentity: () => void;
@@ -58,7 +53,6 @@ export const useUIStore = create<UIState>()(
       tools: [],
       page: "dashboard",
       theme: "nova-dark",
-      dashboardOrder: [...defaultDashboardOrder],
       refreshToken: 0,
       globalError: "",
       setSession: (session) => set({ session }),
@@ -69,7 +63,6 @@ export const useUIStore = create<UIState>()(
         writePageURL(page);
       },
       setTheme: (theme) => set({ theme }),
-      setDashboardOrder: (dashboardOrder) => set({ dashboardOrder }),
       refresh: () => set((state) => ({ refreshToken: state.refreshToken + 1, globalError: "" })),
       setGlobalError: (globalError) => set({ globalError }),
       resetIdentity: () => {
@@ -80,7 +73,7 @@ export const useUIStore = create<UIState>()(
     {
       name: "chaoxing-ui-preferences",
       version: 1,
-      partialize: (state) => ({ page: state.page, theme: state.theme, dashboardOrder: state.dashboardOrder })
+      partialize: (state) => ({ page: state.page, theme: state.theme })
     }
   )
 );

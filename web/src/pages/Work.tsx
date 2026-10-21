@@ -91,15 +91,15 @@ export function Work({ tools }: { tools: any[] }) {
         <CardHeader><CardTitle>选择作业</CardTitle><CardDescription>课程、作业和题目范围均来自后端 allowlist。</CardDescription></CardHeader>
         <CardContent className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           <div className="space-y-2">
-            <Label>课程</Label>
-            <Select value={courseKey} onChange={(event) => { setCourseKey(event.target.value); void loadJobs(event.target.value); }}>
+            <Label htmlFor="work-course">课程</Label>
+            <Select id="work-course" value={courseKey} onChange={(event) => { setCourseKey(event.target.value); void loadJobs(event.target.value); }}>
               <option value="">选择课程</option>
               {courses.map((course) => <option key={courseKeyFor(course)} value={courseKeyFor(course)}>{course.name} / {course.class}</option>)}
             </Select>
           </div>
           <div className="space-y-2">
-            <Label>作业 / 知识点</Label>
-            <Select value={jobID} onChange={(event) => { setJobID(event.target.value); void loadQuestions(event.target.value); }} disabled={!selectedCourse}>
+            <Label htmlFor="work-job">作业 / 知识点</Label>
+            <Select id="work-job" value={jobID} onChange={(event) => { setJobID(event.target.value); void loadQuestions(event.target.value); }} disabled={!selectedCourse}>
               <option value="">选择作业</option>
               {jobs.map((job) => <option key={job.id} value={job.id}>{job.title}</option>)}
             </Select>
@@ -118,7 +118,7 @@ export function Work({ tools }: { tools: any[] }) {
         <CardContent className="space-y-4">
           {questions && <MetaSummary data={questions} />}
           {busy && !questions ? <Loading /> : !questions ? <EmptyState title="选择作业后读取题目" /> : (
-            <Table>
+            <Table label="作业题目">
               <TableHeader><TableRow><TableHead>题号</TableHead><TableHead>题目</TableHead><TableHead>类型</TableHead><TableHead>选项</TableHead></TableRow></TableHeader>
               <TableBody>
                 {(questions.questions ?? []).map((question: any, index: number) => (

@@ -144,6 +144,11 @@ body,
 }
 
 html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html {
   background: var(--color-background);
 }
 
@@ -151,6 +156,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
@@ -171,11 +177,36 @@ textarea {
 
 button {
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 button:not(:disabled),
 [role="button"]:not([aria-disabled="true"]) {
   cursor: pointer;
+}
+
+[data-slot="scroll-area"] {
+  scrollbar-width: thin;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.touch-scroll-y {
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.app-viewport {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.min-app-viewport {
+  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 ::selection {
@@ -203,6 +234,34 @@ button:not(:disabled),
   background-position: right 0.625rem center;
   background-repeat: no-repeat;
   background-size: 0.875rem 0.875rem;
+}
+
+@media (max-width: 767px) {
+  /*
+   * iOS Safari zooms the whole page when a focused form control is smaller
+   * than 16px. Keep desktop density, but never trigger a viewport jump on
+   * the login form, sign dialog, location editor, or account switcher.
+   */
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+@media (max-width: 767px), (pointer: coarse) {
+  button,
+  [role="button"],
+  input:not([type="checkbox"]),
+  select,
+  textarea {
+    min-height: 44px;
+  }
+
+  button[aria-label],
+  button[title] {
+    min-width: 44px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

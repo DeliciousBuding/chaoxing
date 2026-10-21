@@ -1,0 +1,1 @@
+import{r,j as t}from"./vendor-react-BZ4jmf_O.js";import{g as s}from"./index-DFkltLrw.js";const m=r.forwardRef(({className:e,...a},o)=>t.jsx("label",{ref:o,className:s("text-[12px] font-medium leading-none text-foreground",e),...a}));m.displayName="Label";export{m as L};

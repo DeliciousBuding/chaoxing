@@ -121,6 +121,24 @@ export interface WatchSchedule {
   room?: string;
 }
 
+export interface Course {
+  course_id: string;
+  class_id: string;
+  cpi: string;
+  name: string;
+  teacher?: string;
+  class?: string;
+  schools?: string;
+  cover_available?: boolean;
+  retired?: boolean;
+}
+
+export interface Profile {
+  display_name: string;
+  avatar_available: boolean;
+  avatar_url?: string;
+}
+
 export interface ToolDefinition {
   id: string;
   name: string;
@@ -193,6 +211,9 @@ export const api = {
     body: JSON.stringify({ account })
   }),
   status: () => request<JsonObject>("/api/status"),
+  profile: () => request<Profile>("/api/profile"),
+  courseCoverUrl: (courseID: string, classID: string) =>
+    `/api/media/course-cover?${new URLSearchParams({ course_id: courseID, class_id: classID }).toString()}`,
   captures: (limit = 100, options: { includePage?: boolean; account?: string; activityKey?: string } = {}) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (options.includePage) query.set("include_page", "true");

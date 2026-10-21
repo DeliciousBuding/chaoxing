@@ -89,7 +89,7 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
           <CardDescription>按标题、名称和描述过滤。</CardDescription>
           <div className="relative pt-2">
             <Search className="absolute left-3 top-5 h-4 w-4 text-muted-foreground" />
-            <Input className="pl-9" placeholder="搜索工具" value={query} onChange={(event) => setQuery(event.target.value)} />
+            <Input aria-label="搜索工具" className="pl-9" placeholder="搜索工具" value={query} onChange={(event) => setQuery(event.target.value)} />
           </div>
         </CardHeader>
         <CardContent className="max-h-[70vh] space-y-2 overflow-auto">
@@ -119,26 +119,33 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
             <CardContent>
               <form className="space-y-4" onSubmit={run}>
                 <div className="grid gap-4 md:grid-cols-2">
-                  {Object.entries(selected.fields).map(([name, field]) => (
-                    <div key={name} className="space-y-2">
-                      <Label>
+                  {Object.entries(selected.fields).map(([name, field]) => {
+                    const fieldId = `tool-${selected.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${name.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+                    return (
+                    <div key={name} className="min-w-0 space-y-2">
+                      <Label htmlFor={fieldId}>
                         {name}
                         {field.required && <span className="ml-1 text-destructive">*</span>}
                       </Label>
                       {field.enum ? (
-                        <Select value={values[name] ?? ""} onChange={(event) => setValues({ ...values, [name]: event.target.value })}>
+                        <Select id={fieldId} value={values[name] ?? ""} onChange={(event) => setValues({ ...values, [name]: event.target.value })}>
                           <option value="">请选择</option>
                           {field.enum.map((item) => <option key={item} value={item}>{item}</option>)}
                         </Select>
                       ) : field.type === "boolean" ? (
-                        <Checkbox
-                          checked={Boolean(values[name])}
-                          onChange={(event) => setValues({ ...values, [name]: event.target.checked })}
-                        />
+                        <label htmlFor={fieldId} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-control border border-border bg-muted/20 px-3 text-[12px] text-muted-foreground transition-colors hover:bg-muted/45">
+                          <Checkbox
+                            id={fieldId}
+                            checked={Boolean(values[name])}
+                            onChange={(event) => setValues({ ...values, [name]: event.target.checked })}
+                          />
+                          <span>{Boolean(values[name]) ? "已启用" : "未启用"}</span>
+                        </label>
                       ) : (field.max_length ?? 0) > 256 ? (
-                        <Textarea value={values[name] ?? ""} onChange={(event) => setValues({ ...values, [name]: event.target.value })} />
+                        <Textarea id={fieldId} value={values[name] ?? ""} onChange={(event) => setValues({ ...values, [name]: event.target.value })} />
                       ) : (
                         <Input
+                          id={fieldId}
                           type={field.type === "integer" || field.type === "number" ? "number" : field.type}
                           step={field.type === "number" ? "any" : undefined}
                           value={values[name] ?? ""}
@@ -147,7 +154,8 @@ export function Tools({ tools }: { tools: ToolDefinition[] }) {
                       )}
                       <div className="text-xs text-muted-foreground">{field.description}</div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
                 <Button type="submit" disabled={busy}>{busy ? "执行中…" : "执行工具"}</Button>
               </form>

@@ -7,6 +7,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { ErrorBanner } from "../components/common";
+import { useMediaQuery } from "../lib/hooks";
 
 const capabilities = [
   { icon: Activity, title: "课堂活动", description: "签到、测验、作业与通知统一进入一条可观测链路。" },
@@ -15,6 +16,7 @@ const capabilities = [
 ];
 
 export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) {
+  const desktop = useMediaQuery("(min-width: 1024px)");
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -41,8 +43,8 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
   }
 
   return (
-    <div className="grid min-h-screen bg-background lg:grid-cols-[minmax(0,1.08fr)_minmax(420px,0.92fr)]">
-      <section className="hidden min-h-screen flex-col justify-between border-r border-border bg-card p-10 lg:flex xl:p-14">
+    <div className="min-app-viewport grid bg-background pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] lg:grid-cols-[minmax(0,1.08fr)_minmax(420px,0.92fr)]">
+      <section className="hidden min-app-viewport flex-col justify-between border-r border-border bg-card p-10 lg:flex xl:p-14">
         <div>
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-control border border-border bg-muted">
@@ -83,7 +85,7 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
         </div>
       </section>
 
-      <section className="flex min-h-screen items-center justify-center p-5 sm:p-8">
+      <section className="flex min-app-viewport items-start justify-center px-5 py-8 pb-[calc(2rem+env(safe-area-inset-bottom))] sm:items-center sm:p-8">
         <div className="w-full max-w-[390px]">
           <div className="mb-8 flex items-center gap-2.5 lg:hidden">
             <div className="flex h-8 w-8 items-center justify-center rounded-control border border-border bg-card">
@@ -113,7 +115,7 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
                     autoCapitalize="none"
                     autoCorrect="off"
                     spellCheck={false}
-                    autoFocus
+                    autoFocus={desktop}
                     required
                     maxLength={32}
                   />

@@ -38,7 +38,7 @@ export function Exams() {
         </CardHeader>
         <CardContent>
           {busy && !data ? <Loading /> : rows.length === 0 ? <EmptyState title="没有考试数据" /> : (
-            <Table>
+            <Table label="考试清单">
               <TableHeader><TableRow><TableHead>考试</TableHead><TableHead>课程</TableHead><TableHead>提交状态</TableHead><TableHead>可用状态</TableHead><TableHead>原始状态</TableHead></TableRow></TableHeader>
               <TableBody>
                 {rows.map((row, index) => (

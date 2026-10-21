@@ -225,8 +225,8 @@ export function Members({ session }: { session: SessionInfo }) {
         </Alert>
       )}
 
-      <div className={cn("grid gap-5", formOpen && "2xl:grid-cols-[minmax(0,1fr)_390px]")}>
-        <Card>
+      <div className={cn("grid min-w-0 gap-5", formOpen && "2xl:grid-cols-[minmax(0,1fr)_390px]")}>
+        <Card className="min-w-0">
           <CardHeader>
             <CardTitle>成员列表</CardTitle>
             <CardDescription>禁用成员会立即递增认证版本，使其现有会话失效。不会删除历史审计。</CardDescription>
@@ -235,7 +235,58 @@ export function Members({ session }: { session: SessionInfo }) {
             {loading ? <Loading label="正在读取成员" /> : users.length === 0 ? (
               <EmptyState title="还没有平台成员" description="创建第一个操作员或只读成员，并为其分配账号。" />
             ) : (
-              <Table className="min-w-[640px] md:min-w-[760px]">
+              <>
+              <div className="space-y-2 lg:hidden">
+                {users.map((user) => (
+                  <article
+                    key={user.id}
+                    className={cn(
+                      "rounded-control border border-border bg-card p-3",
+                      selected?.id === user.id && "border-primary/45 bg-accent/70"
+                    )}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-control bg-primary/10 text-primary">
+                        {user.role === "owner" ? <ShieldCheck className="h-4 w-4" /> : <UserRound className="h-4 w-4" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[13px] font-medium">{user.display_name || user.username}</div>
+                        <div className="truncate font-mono text-[11px] text-muted-foreground">{user.username}</div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => beginEdit(user)}
+                        disabled={!canEdit(user)}
+                        title={canEdit(user) ? undefined : "只有 owner 可以修改管理员"}
+                      >
+                        编辑
+                      </Button>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      <Badge variant={user.role === "owner" ? "default" : "secondary"}>{roleLabels[user.role]}</Badge>
+                      <Badge variant={statusVariant(user.status)}>{user.status === "active" ? "启用" : "禁用"}</Badge>
+                    </div>
+                    <div className="mt-3 space-y-1.5 text-[11px] text-muted-foreground">
+                      <div>
+                        <span className="text-foreground/75">账号范围：</span>
+                        {user.role === "owner" || user.role === "admin" ? (
+                          <span>全部账号</span>
+                        ) : (user.accounts?.length ?? 0) === 0 ? (
+                          <span className="text-warning">未授权</span>
+                        ) : (
+                          <span className="inline-flex flex-wrap gap-1 align-middle">
+                            {(user.accounts ?? []).map((key) => <Badge key={key} variant="secondary">{accountName(key)}</Badge>)}
+                          </span>
+                        )}
+                      </div>
+                      <div>最近登录：{user.last_login_at ? formatBeijing(user.last_login_at) : "从未登录"}</div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <div className="hidden min-w-0 lg:block">
+              <Table label="平台成员" className="min-w-[760px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead>成员</TableHead>
@@ -243,7 +294,7 @@ export function Members({ session }: { session: SessionInfo }) {
                       <TableHead>状态</TableHead>
                       <TableHead>账号范围</TableHead>
                       <TableHead>最近登录</TableHead>
-                      <TableHead className="hidden text-right md:table-cell">操作</TableHead>
+                      <TableHead className="text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -258,16 +309,6 @@ export function Members({ session }: { session: SessionInfo }) {
                               <div className="truncate text-sm font-medium">{user.display_name || user.username}</div>
                               <div className="font-mono text-[11px] text-muted-foreground">{user.username}</div>
                             </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="ml-auto md:hidden"
-                              onClick={() => beginEdit(user)}
-                              disabled={!canEdit(user)}
-                              title={canEdit(user) ? undefined : "只有 owner 可以修改管理员"}
-                            >
-                              编辑
-                            </Button>
                           </div>
                         </TableCell>
                         <TableCell><Badge variant={user.role === "owner" ? "default" : "secondary"}>{roleLabels[user.role]}</Badge></TableCell>
@@ -284,7 +325,7 @@ export function Members({ session }: { session: SessionInfo }) {
                           )}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">{user.last_login_at ? formatBeijing(user.last_login_at) : "从未登录"}</TableCell>
-                        <TableCell className="hidden text-right md:table-cell">
+                        <TableCell className="text-right">
                           <Button
                             size="sm"
                             variant="outline"
@@ -299,12 +340,14 @@ export function Members({ session }: { session: SessionInfo }) {
                     ))}
                   </TableBody>
               </Table>
+              </div>
+              </>
             )}
           </CardContent>
         </Card>
 
         {formOpen && (
-          <Card ref={formCardRef} className="h-fit scroll-mt-4">
+          <Card ref={formCardRef} className="h-fit min-w-0 scroll-mt-24 sm:scroll-mt-16">
             <CardHeader>
               <CardTitle ref={formTitleRef} tabIndex={-1} className="focus:outline-none">{creating ? "新建成员" : `编辑 ${selected?.username}`}</CardTitle>
               <CardDescription>{roleDescriptions[form.role]}</CardDescription>

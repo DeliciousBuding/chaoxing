@@ -46,6 +46,7 @@ type deviceState struct {
 
 type signIdentity struct {
 	UID        string
+	PUID       string
 	FID        string
 	Name       string
 	IMPassword string
@@ -323,7 +324,7 @@ func (c *Client) fetchSignIdentity(ctx context.Context) (signIdentity, error) {
 	}
 	clientID := strings.TrimSpace(payload.Msg.ClientID)
 	identity := signIdentity{
-		UID: uid, FID: fid, Name: strings.TrimSpace(payload.Msg.Name),
+		UID: uid, PUID: puid, FID: fid, Name: strings.TrimSpace(payload.Msg.Name),
 		IMPassword: strings.TrimSpace(payload.Msg.AccountInfo.IMAccount.Password), ClientID: clientID,
 	}
 	if clientID != "" {

@@ -156,7 +156,7 @@ export function PageSkeleton() {
   );
 }
 
-export function MetaSummary({ data }: { data: any }) {
+export function MetaSummary({ data, compact = false }: { data: any; compact?: boolean }) {
   const meta = data?.meta;
   if (!meta) return null;
   return (
@@ -165,16 +165,16 @@ export function MetaSummary({ data }: { data: any }) {
         {meta.status === "complete" ? <CheckCircle2 className="mr-1 h-3 w-3" /> : null}
         {meta.status === "complete" ? "完整覆盖" : "部分覆盖"}
       </Badge>
-      <span>范围：{meta.coverage?.scope ?? "unknown"}</span>
+      {!compact && <span>范围：{meta.coverage?.scope ?? "unknown"}</span>}
       {meta.freshness?.fetched_at && <span>抓取：{formatBeijing(meta.freshness.fetched_at)}（北京时间）</span>}
-      {meta.trace_id && <span>Trace：{meta.trace_id}</span>}
+      {!compact && meta.trace_id && <span>Trace：{meta.trace_id}</span>}
     </div>
   );
 }
 
 export function JsonBlock({ value, className }: { value: any; className?: string }) {
   return (
-    <div className={cn("overflow-hidden rounded-control border border-border bg-muted/30", className)}>
+    <div className={cn("min-w-0 max-w-full overflow-hidden rounded-control border border-border bg-muted/30", className)}>
       <div className="flex items-center gap-2 border-b border-border px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         <Database className="h-3.5 w-3.5" />
         JSON

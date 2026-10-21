@@ -1,12 +1,71 @@
 import * as React from "react";
 import { cn } from "../../lib/utils";
 
-const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(
-  ({ className, ...props }, ref) => (
-    <div className="w-full overflow-x-auto">
-      <table ref={ref} className={cn("w-full caption-bottom border-collapse text-[13px]", className)} {...props} />
-    </div>
-  )
+type TableProps = React.HTMLAttributes<HTMLTableElement> & {
+  label?: string;
+};
+
+const Table = React.forwardRef<HTMLTableElement, TableProps>(
+  ({ className, label = "数据表格", ...props }, forwardedRef) => {
+    const scrollerRef = React.useRef<HTMLDivElement | null>(null);
+    const tableRef = React.useRef<HTMLTableElement | null>(null);
+    const [overflowing, setOverflowing] = React.useState(false);
+
+    const setRefs = React.useCallback(
+      (node: HTMLTableElement | null) => {
+        tableRef.current = node;
+        if (typeof forwardedRef === "function") forwardedRef(node);
+        else if (forwardedRef) forwardedRef.current = node;
+      },
+      [forwardedRef]
+    );
+
+    React.useEffect(() => {
+      const scroller = scrollerRef.current;
+      const table = tableRef.current;
+      if (!scroller || !table) return;
+
+      const measure = () => {
+        setOverflowing(scroller.scrollWidth > scroller.clientWidth + 1);
+      };
+      measure();
+
+      const observer = typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(measure);
+      observer?.observe(scroller);
+      observer?.observe(table);
+      window.addEventListener("resize", measure);
+      return () => {
+        observer?.disconnect();
+        window.removeEventListener("resize", measure);
+      };
+    }, []);
+
+    return (
+      <div className="min-w-0 max-w-full space-y-1">
+        <div
+          ref={scrollerRef}
+          data-slot="scroll-area"
+          role={overflowing ? "region" : undefined}
+          aria-label={overflowing ? `${label}，可横向滚动` : undefined}
+          tabIndex={overflowing ? 0 : undefined}
+          className="w-full max-w-full overflow-x-auto rounded-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        >
+          <table
+            ref={setRefs}
+            className={cn("w-full max-md:min-w-[720px] caption-bottom border-collapse text-[13px]", className)}
+            {...props}
+          />
+        </div>
+        {overflowing && (
+          <p className="text-[10px] leading-4 text-muted-foreground lg:hidden" aria-hidden="true">
+            左右滑动查看全部列
+          </p>
+        )}
+      </div>
+    );
+  }
 );
 Table.displayName = "Table";
 

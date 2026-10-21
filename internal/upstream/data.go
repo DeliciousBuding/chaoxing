@@ -17,13 +17,19 @@ import (
 )
 
 type Course struct {
-	ID      string `json:"course_id"`
-	ClassID string `json:"class_id"`
-	CPI     string `json:"cpi"`
-	Name    string `json:"name"`
-	Teacher string `json:"teacher"`
-	Class   string `json:"class"`
-	Retired bool   `json:"retired"`
+	ID             string `json:"course_id"`
+	ClassID        string `json:"class_id"`
+	CPI            string `json:"cpi"`
+	Name           string `json:"name"`
+	Teacher        string `json:"teacher"`
+	Class          string `json:"class"`
+	Schools        string `json:"schools,omitempty"`
+	CoverAvailable bool   `json:"cover_available"`
+	Retired        bool   `json:"retired"`
+
+	// ImageURL is kept out of tool responses. Media is only fetched through
+	// the authenticated, host-allowlisted /api/media/course-cover proxy.
+	ImageURL string `json:"-"`
 }
 type Assignment struct {
 	ID                string `json:"id"`
@@ -136,9 +142,11 @@ func (c *Client) fetchCourses(ctx context.Context) ([]Course, error) {
 				Retired int    `json:"isretire"`
 				Course  struct {
 					Data []struct {
-						ID      any    `json:"id"`
-						Name    string `json:"name"`
-						Teacher string `json:"teacherfactor"`
+						ID       any    `json:"id"`
+						Name     string `json:"name"`
+						Teacher  string `json:"teacherfactor"`
+						ImageURL string `json:"imageurl"`
+						Schools  string `json:"schools"`
 					} `json:"data"`
 				} `json:"course"`
 			} `json:"content"`
@@ -156,7 +164,13 @@ func (c *Client) fetchCourses(ctx context.Context) ([]Course, error) {
 			if p == "" {
 				p = id(ch.CPI)
 			}
-			rows = append(rows, Course{id(d.ID), id(ch.Content.ID), p, d.Name, d.Teacher, ch.Content.Name, ch.Content.Retired == 1})
+			imageURL := allowedCourseImageURL(d.ImageURL)
+			rows = append(rows, Course{
+				ID: id(d.ID), ClassID: id(ch.Content.ID), CPI: p,
+				Name: d.Name, Teacher: d.Teacher, Class: ch.Content.Name,
+				Schools: strings.TrimSpace(d.Schools), CoverAvailable: imageURL != "",
+				Retired: ch.Content.Retired == 1, ImageURL: imageURL,
+			})
 		}
 	}
 	c.courses = rows

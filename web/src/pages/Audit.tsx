@@ -85,13 +85,13 @@ export function Audit() {
         <form className="flex flex-wrap items-end gap-2" onSubmit={applyFilters}>
           <div className="space-y-1">
             <Label htmlFor="audit-category" className="text-[11px]">类别</Label>
-            <Select id="audit-category" className="h-9 w-32" value={category} onChange={(event) => setCategory(event.target.value)}>
+            <Select id="audit-category" className="w-32" value={category} onChange={(event) => setCategory(event.target.value)}>
               {categories.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </Select>
           </div>
           <div className="space-y-1">
             <Label htmlFor="audit-actor" className="text-[11px]">操作者</Label>
-            <Input id="audit-actor" className="h-9 w-36" value={actor} onChange={(event) => setActor(event.target.value)} placeholder="username" maxLength={32} />
+            <Input id="audit-actor" className="w-36" value={actor} onChange={(event) => setActor(event.target.value)} placeholder="username" maxLength={32} />
           </div>
           <Button size="sm" type="submit" variant="outline" disabled={loading}><RefreshCw className="h-4 w-4" /> 查询</Button>
         </form>
@@ -108,7 +108,7 @@ export function Audit() {
           {loading ? <Loading label="正在读取审计日志" /> : items.length === 0 ? (
             <EmptyState title="没有匹配的审计事件" description="调整类别或操作者过滤条件后重试。" />
           ) : (
-            <Table className="min-w-[760px]">
+            <Table label="控制面审计" className="min-w-[760px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>时间</TableHead>

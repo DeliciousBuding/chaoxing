@@ -132,7 +132,7 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
             ) : accountConfigs.length === 0 ? (
               <div className="text-sm text-muted-foreground">暂无账号策略摘要。</div>
             ) : (
-              <Table className="min-w-[820px]">
+              <Table label="账号运行策略" className="min-w-[820px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead>账号</TableHead>

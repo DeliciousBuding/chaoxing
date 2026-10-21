@@ -681,6 +681,17 @@ func serve() error {
 			"stale": stale, "state_degraded": stateDegraded, "now": now,
 		}
 	}
+	upstreamClientForAccount := func(account string) (*upstream.Client, error) {
+		if account == "root" {
+			return x, nil
+		}
+		for _, tenant := range tenants {
+			if tenant.cfg.ID == account {
+				return tenant.upstreamClient()
+			}
+		}
+		return nil, errors.New("unknown management account")
+	}
 	accountExecute := func(ctx context.Context, account, tool string, arguments map[string]any) (any, error) {
 		if account == "root" {
 			return rootExecute(ctx, tool, arguments)
@@ -761,6 +772,31 @@ func serve() error {
 				}
 			}
 			return webuiScheduleViews(classes)
+		},
+		Profile: func(ctx context.Context, account string) (webui.ProfileView, error) {
+			client, err := upstreamClientForAccount(account)
+			if err != nil {
+				return webui.ProfileView{}, err
+			}
+			profile, err := client.Profile(ctx)
+			if err != nil {
+				return webui.ProfileView{}, err
+			}
+			return webui.ProfileView{DisplayName: profile.DisplayName, AvatarAvailable: profile.AvatarAvailable}, nil
+		},
+		Avatar: func(ctx context.Context, account string) ([]byte, string, error) {
+			client, err := upstreamClientForAccount(account)
+			if err != nil {
+				return nil, "", err
+			}
+			return client.Avatar(ctx)
+		},
+		CourseCover: func(ctx context.Context, account, courseID, classID string) ([]byte, string, error) {
+			client, err := upstreamClientForAccount(account)
+			if err != nil {
+				return nil, "", err
+			}
+			return client.CourseCover(ctx, courseID, classID)
 		},
 		Location: locations,
 		Map:      mapConfig,

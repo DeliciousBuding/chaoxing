@@ -88,6 +88,16 @@ type Status func() any
 type CaptureList func(ctx context.Context, account, activityKey string, limit int, includePage bool) ([]capture.Activity, error)
 type SignAuditList func(ctx context.Context, account string, limit int) ([]signaudit.Record, error)
 type ScheduleList func(account string) []ScheduleView
+type ProfileSource func(ctx context.Context, account string) (ProfileView, error)
+type AvatarSource func(ctx context.Context, account string) ([]byte, string, error)
+type CourseCoverSource func(ctx context.Context, account, courseID, classID string) ([]byte, string, error)
+
+// ProfileView is intentionally limited to display identity. Upstream UID,
+// PUID, FID, cookies and device identity stay inside the upstream client.
+type ProfileView struct {
+	DisplayName     string `json:"display_name"`
+	AvatarAvailable bool   `json:"avatar_available"`
+}
 
 // ScheduleView is the authenticated, read-only projection used by the
 // location-binding editor. It never contains coordinates or credentials.
@@ -136,6 +146,9 @@ type Config struct {
 	Captures          CaptureList
 	SignAudits        SignAuditList
 	Schedules         ScheduleList
+	Profile           ProfileSource
+	Avatar            AvatarSource
+	CourseCover       CourseCoverSource
 	Location          location.Service
 	Map               *location.MapConfig
 	Geocoder          location.Geocoder
@@ -365,6 +378,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/status", s.bounded(s.authenticated(s.status)))
 	mux.Handle("GET /api/captures", s.heavyBounded(s.authenticated(s.captures)))
 	mux.Handle("GET /api/sign-audits", s.heavyBounded(s.authenticated(s.signAudits)))
+	mux.Handle("GET /api/profile", s.bounded(s.authenticated(s.profile)))
+	mux.Handle("GET /api/media/avatar", s.heavyBounded(s.authenticated(s.avatar)))
+	mux.Handle("GET /api/media/course-cover", s.heavyBounded(s.authenticated(s.courseCover)))
 	mux.Handle("GET /api/tools", s.bounded(s.authenticated(s.tools)))
 	mux.Handle("POST /api/tools/call", s.heavyBounded(s.authenticated(s.call)))
 	mux.Handle("GET /api/admin/users", s.bounded(s.authenticated(s.adminUsers)))
@@ -1204,6 +1220,115 @@ func (s *Server) signAudits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": rows})
+}
+
+func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.sessionAccount(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	view := ProfileView{DisplayName: account}
+	for _, item := range s.cfg.Accounts {
+		if item.ID == account {
+			view.DisplayName = item.Name
+			break
+		}
+	}
+	if s.cfg.Profile != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		if value, err := s.cfg.Profile(ctx, account); err == nil {
+			if name := strings.TrimSpace(value.DisplayName); name != "" {
+				view.DisplayName = name
+			}
+			view.AvatarAvailable = value.AvatarAvailable
+		}
+	}
+	payload := map[string]any{
+		"display_name":     view.DisplayName,
+		"avatar_available": view.AvatarAvailable,
+	}
+	if view.AvatarAvailable {
+		payload["avatar_url"] = "/api/media/avatar"
+	}
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	writeJSON(w, 200, payload)
+}
+
+func (s *Server) avatar(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.sessionAccount(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	if s.cfg.Avatar == nil {
+		http.NotFound(w, r)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	body, contentType, err := s.cfg.Avatar(ctx, account)
+	s.writeMedia(w, r, body, contentType, err)
+}
+
+func (s *Server) courseCover(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.sessionAccount(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	courseID := strings.TrimSpace(r.URL.Query().Get("course_id"))
+	classID := strings.TrimSpace(r.URL.Query().Get("class_id"))
+	if courseID == "" || classID == "" || len(courseID) > 128 || len(classID) > 128 {
+		writeError(w, 400, "INVALID_ARGUMENT", "course_id and class_id are required")
+		return
+	}
+	if s.cfg.CourseCover == nil {
+		http.NotFound(w, r)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	body, contentType, err := s.cfg.CourseCover(ctx, account, courseID, classID)
+	s.writeMedia(w, r, body, contentType, err)
+}
+
+func (s *Server) writeMedia(w http.ResponseWriter, r *http.Request, body []byte, contentType string, err error) {
+	if err != nil || len(body) == 0 || len(body) > 2<<20 {
+		// Images are secondary UI. A missing cover must never disclose upstream
+		// account state or turn a dashboard load into an error page.
+		http.NotFound(w, r)
+		return
+	}
+	detected := strings.ToLower(strings.TrimSpace(strings.SplitN(http.DetectContentType(body), ";", 2)[0]))
+	switch detected {
+	case "image/jpeg", "image/png", "image/webp":
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if contentType == "" {
+		contentType = detected
+	}
+	sum := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(sum[:]) + `"`
+	if etagMatch(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", detected)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("Cache-Control", "private, max-age=21600")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(body)
 }
 
 func (s *Server) tools(w http.ResponseWriter, r *http.Request) {

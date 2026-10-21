@@ -23,7 +23,7 @@ const Settings = React.lazy(() => import("./pages/Settings").then((m) => ({ defa
 
 function Booting() {
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
+    <div className="flex min-app-viewport items-center justify-center p-6">
       <div className="w-full max-w-5xl space-y-4">
         <div className="h-8 w-48 animate-pulse rounded-control bg-muted" />
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -94,6 +94,19 @@ export default function App() {
     root.classList.toggle("light", theme === "nova-light");
     root.classList.toggle("dark", theme !== "nova-light");
     root.style.colorScheme = theme === "nova-light" ? "light" : "dark";
+    const themeColors: Record<typeof theme, string> = {
+      "nova-dark": "#08090a",
+      "nova-light": "#fcfcfc",
+      midnight: "#0a0b0d",
+      contrast: "#000000"
+    };
+    let themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if (!themeColor) {
+      themeColor = document.createElement("meta");
+      themeColor.name = "theme-color";
+      document.head.appendChild(themeColor);
+    }
+    themeColor.content = themeColors[theme];
   }, [theme]);
 
   React.useEffect(() => {
@@ -196,7 +209,7 @@ export default function App() {
   else content = <Settings account={account} session={session!} />;
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="min-app-viewport bg-background text-foreground">
       <React.Suspense fallback={<Booting />}>
         {initializing ? (
           <Booting />
