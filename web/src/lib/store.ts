@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { AccountInfo, SessionInfo, ToolDefinition } from "./api";
-import type { PageId } from "./layout";
+import { isPageId, type PageId } from "./layout";
 
 export const themes = ["nova-dark", "nova-light", "midnight", "contrast"] as const;
 export type Theme = (typeof themes)[number];
@@ -15,6 +15,20 @@ export const themeLabels: Record<Theme, string> = {
 
 const defaultDashboardOrder = ["security", "egress", "upstream", "watchers", "supervisor", "capabilities"] as const;
 export type DashboardCardId = (typeof defaultDashboardOrder)[number];
+
+export function pageFromURL(): PageId | null {
+  if (typeof window === "undefined") return null;
+  const value = new URL(window.location.href).searchParams.get("page");
+  return isPageId(value) ? value : null;
+}
+
+export function writePageURL(page: PageId, mode: "push" | "replace" = "push") {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("page") === page) return;
+  url.searchParams.set("page", page);
+  window.history[mode === "replace" ? "replaceState" : "pushState"](null, "", url);
+}
 
 interface UIState {
   session: SessionInfo | null;
@@ -50,7 +64,10 @@ export const useUIStore = create<UIState>()(
       setSession: (session) => set({ session }),
       setAccount: (account) => set({ account }),
       setTools: (tools) => set({ tools }),
-      setPage: (page) => set({ page }),
+      setPage: (page) => {
+        set({ page });
+        writePageURL(page);
+      },
       setTheme: (theme) => set({ theme }),
       setDashboardOrder: (dashboardOrder) => set({ dashboardOrder }),
       refresh: () => set((state) => ({ refreshToken: state.refreshToken + 1, globalError: "" })),

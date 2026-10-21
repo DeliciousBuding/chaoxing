@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0-rc.21 — 2026-10-21
+
+- Fix the ordinary-sign-in regression that survived rc.20: a disabled location service now produces a nil resolver instead of a non-nil wrapper, so overlapping timetable rows no longer suppress automatic sign-in when no per-schedule location binding exists. Add a watcher regression test for the exact assembled-service shape.
+- Keep DCR from monopolising owner authentication. Public registration now has its own concurrency and burst budget, plus an in-memory per-network pending and request ceiling; `/oauth/authorize`, `/oauth/login` and `/oauth/consent` retain their independent interactive budget.
+- Show the complete callback URI, not only its origin, on the OAuth consent page and mark write/biometric scopes as high risk so the owner can recognise consent phishing.
+- Reject direct `chaoxing query` submissions of `sign_activity` and `sign_activity_with_face`; sign-in must go through the daemon, where every attempt is written to `sign_audits`.
+- Fix a dashboard privacy bug where switching accounts could leave the previous account's sign-audit rows and status visible. Account-scoped pages now remount before the switch request, stale responses are ignored, and the audit request has independent loading/error states instead of treating failure as an empty history.
+- Add shareable `?page=` navigation with browser back/forward support, keep the active mobile navigation item in view, and raise Nova light-theme primary/success/warning/destructive contrast to WCAG AA for normal text.
+
 ## 0.5.0-rc.20 — 2026-10-21
 
 - Make the sign-in audit operational end to end: successful and failed manual/CLI/MCP and watcher attempts persist the submitted address and jittered coordinates in `sign_audits`, probe the same account-sticky egress path for the observed public IP, return those fields on the sign result, and include the address/IP in success and failure notifications. The private state store is now opened even when watcher, capture and proxy features are disabled so manual sign-ins cannot bypass the audit.

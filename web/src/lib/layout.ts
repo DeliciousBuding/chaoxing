@@ -31,6 +31,10 @@ export const pages = [
 export type PageId = (typeof pages)[number]["id"];
 export type PageGroup = (typeof pages)[number]["group"];
 
+export function isPageId(value: string | null | undefined): value is PageId {
+  return pages.some((page) => page.id === value);
+}
+
 export const pageGroups: Array<{ id: PageGroup; title: string }> = [
   { id: "core", title: "核心" },
   { id: "study", title: "学业" },

@@ -67,6 +67,41 @@ func TestPendingDCRReclaimsOldestNotApproved(t *testing.T) {
 	s.mu.Unlock()
 }
 
+func TestRegisterAdmissionDoesNotStarveAuthorize(t *testing.T) {
+	s, h := setup(t, config(t))
+	s.registerSem <- struct{}{}
+	s.registerSem <- struct{}{}
+	defer func() {
+		<-s.registerSem
+		<-s.registerSem
+	}()
+
+	w := request(h, "POST", "/oauth/register", `{"redirect_uris":["https://client.example.com/cb"]}`, "application/json")
+	if w.Code != 503 {
+		t.Fatalf("register admission status=%d", w.Code)
+	}
+	// Authorization still reaches its own validation instead of sharing the
+	// saturated registration bucket.
+	w = request(h, "GET", "/oauth/authorize", "", "")
+	if w.Code != 400 {
+		t.Fatalf("authorize admission status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDCRPendingClientsAreBoundedPerNetwork(t *testing.T) {
+	_, h := setup(t, config(t))
+	for index := 0; index < 4; index++ {
+		w := request(h, "POST", "/oauth/register", `{"redirect_uris":["https://client.example.com/cb"]}`, "application/json")
+		if w.Code != 201 {
+			t.Fatalf("registration %d status=%d body=%s", index, w.Code, w.Body.String())
+		}
+	}
+	w := request(h, "POST", "/oauth/register", `{"redirect_uris":["https://client.example.com/cb"]}`, "application/json")
+	if w.Code != 429 {
+		t.Fatalf("per-network pending cap status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestConsentPromotesAndRefreshRenewsDCR(t *testing.T) {
 	s, h := setup(t, config(t))
 	f := authorizeFlow(t, h)
@@ -157,7 +192,7 @@ func TestRefreshHundredsConstantStateAndProofReplay(t *testing.T) {
 	}
 }
 
-func TestConsentShowsReceivingOriginAndClientID(t *testing.T) {
+func TestConsentShowsReceivingCallbackAndClientID(t *testing.T) {
 	s, h := setup(t, config(t))
 	w := request(h, "POST", "/oauth/register", `{"client_name":"Trusted reader <script>fake</script>","redirect_uris":["https://receiver.example.com/callback"]}`, "application/json")
 	id := bodyMap(t, w)["client_id"].(string)
@@ -172,7 +207,7 @@ func TestConsentShowsReceivingOriginAndClientID(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, visible := range []string{"Self-reported client name (not verified)", "Client ID: " + id, "Callback origin (receives authorization): https://receiver.example.com"} {
+	for _, visible := range []string{"Self-reported client name (not verified)", "Client ID: " + id, "Callback (receives authorization): https://receiver.example.com/callback"} {
 		if !strings.Contains(body, visible) {
 			t.Fatal("missing visible identity", visible)
 		}

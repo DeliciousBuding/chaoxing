@@ -57,15 +57,21 @@ type Server struct {
 	cimd           map[string]client
 	fetch          func(context.Context, string) (client, error)
 	sem            chan struct{}
+	registerSem    chan struct{}
 	tokenSem       chan struct{}
 	loginSem       chan struct{}
 	budget         float64
 	budgetAt       time.Time
+	registerBudget float64
+	registerAt     time.Time
 	tokenBudget    float64
 	tokenAt        time.Time
 	loginCount     int
 	loginWindow    time.Time
 	loginAttempts  map[string][]int64
+	clientNetworks map[string]string
+	pendingByNet   map[string]int
+	registerTries  map[string][]int64
 }
 
 func New(cfg Config) (*Server, error) {
@@ -90,7 +96,7 @@ func New(cfg Config) (*Server, error) {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 		return nil, errors.New("state directory must have mode 0700")
 	}
-	s := &Server{cfg: cfg, path: filepath.Join(cfg.StateDir, "oauth-state.json"), sessions: map[string]session{}, logins: map[string]loginNonce{}, pending: map[string]grant{}, codes: map[string]grant{}, cimd: map[string]client{}, fetch: fetchCIMD, sem: make(chan struct{}, 4), tokenSem: make(chan struct{}, 4), loginSem: make(chan struct{}, 1), budget: 60, budgetAt: time.Now(), tokenBudget: 30, tokenAt: time.Now(), loginAttempts: map[string][]int64{}}
+	s := &Server{cfg: cfg, path: filepath.Join(cfg.StateDir, "oauth-state.json"), sessions: map[string]session{}, logins: map[string]loginNonce{}, pending: map[string]grant{}, codes: map[string]grant{}, cimd: map[string]client{}, fetch: fetchCIMD, sem: make(chan struct{}, 4), registerSem: make(chan struct{}, 2), tokenSem: make(chan struct{}, 4), loginSem: make(chan struct{}, 1), budget: 60, budgetAt: time.Now(), registerBudget: 10, registerAt: time.Now(), tokenBudget: 30, tokenAt: time.Now(), loginAttempts: map[string][]int64{}, clientNetworks: map[string]string{}, pendingByNet: map[string]int{}, registerTries: map[string][]int64{}}
 	s.state, err = loadState(s.path)
 	if err != nil {
 		return nil, err
@@ -150,9 +156,10 @@ func (s *Server) Register(mux *http.ServeMux) {
 	for _, p := range []string{"/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp", "/.well-known/openid-configuration", "/.well-known/openid-configuration/mcp"} {
 		mux.HandleFunc("GET "+p, s.serverMetadata)
 	}
-	for _, p := range []string{"GET /oauth/authorize", "GET /oauth/login", "POST /oauth/login", "POST /oauth/consent", "POST /oauth/register"} {
+	for _, p := range []string{"GET /oauth/authorize", "GET /oauth/login", "POST /oauth/login", "POST /oauth/consent"} {
 		mux.Handle(p, s.bounded(http.HandlerFunc(s.route)))
 	}
+	mux.Handle("POST /oauth/register", s.registerBounded(http.HandlerFunc(s.route)))
 	for _, p := range []string{"POST /oauth/token", "POST /oauth/revoke"} {
 		mux.Handle(p, s.tokenBounded(http.HandlerFunc(s.route)))
 	}
@@ -176,6 +183,10 @@ func (s *Server) bounded(next http.Handler) http.Handler {
 
 func (s *Server) tokenBounded(next http.Handler) http.Handler {
 	return s.boundedWith(next, s.tokenSem, &s.tokenBudget, &s.tokenAt, 30)
+}
+
+func (s *Server) registerBounded(next http.Handler) http.Handler {
+	return s.boundedWith(next, s.registerSem, &s.registerBudget, &s.registerAt, 10)
 }
 
 func (s *Server) boundedWith(next http.Handler, sem chan struct{}, budget *float64, budgetAt *time.Time, max float64) http.Handler {
@@ -265,6 +276,7 @@ func decodeJSON(r *http.Request, v any) error {
 	return nil
 }
 func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
+	network := oauthClientNetwork(r)
 	var req struct {
 		Name      string   `json:"client_name"`
 		Redirects []string `json:"redirect_uris"`
@@ -303,6 +315,12 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked()
+	now := time.Now()
+	if !s.registerAllowedLocked(network, now) {
+		w.Header().Set("Retry-After", "60")
+		oauthError(w, 429, "temporarily_unavailable")
+		return
+	}
 	if len(s.state.Clients) >= maxClients {
 		oldest := ""
 		var created int64
@@ -317,12 +335,14 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		delete(s.state.Clients, oldest)
+		s.forgetClientNetworkLocked(oldest)
 	}
 	// A connector caches its public registration before the owner logs in.
 	// Registration is not authorization: keep it usable across setup retries;
 	// the bounded pool reclaims unapproved entries first when capacity is full.
-	c := client{ID: randomToken(), Name: req.Name, Redirects: req.Redirects, Scope: scope, Expires: time.Now().Add(clientTTL).Unix(), Created: time.Now().Unix()}
+	c := client{ID: randomToken(), Name: req.Name, Redirects: req.Redirects, Scope: scope, Expires: now.Add(clientTTL).Unix(), Created: now.Unix()}
 	s.state.Clients[c.ID] = c
+	s.rememberClientNetworkLocked(c.ID, network)
 	if s.saveLocked() != nil {
 		oauthError(w, 503, "server_error")
 		return
@@ -442,17 +462,27 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	s.pending[digest(nonce)] = grant{client: c.ID, redirect: redirect, challenge: q.Get("code_challenge"), state: q.Get("state"), session: sid, resource: resource, scope: scope, expires: time.Now().Add(10 * time.Minute).Unix()}
 	s.mu.Unlock()
 	// Always ask: no approval memory or silent first-client authorization.
-	u, _ := url.Parse(redirect)
-	s.page(w, pageData{Consent: true, Name: c.Name, ClientID: c.ID, Nonce: nonce, CallbackOrigin: u.Scheme + "://" + u.Host, Scopes: scope})
+	s.page(w, pageData{Consent: true, Name: c.Name, ClientID: c.ID, Nonce: nonce, Callback: redirect, Scopes: scope, HighRisk: highRiskScope(scope)})
 }
 
 type pageData struct {
-	Consent                                     bool
-	Name, ClientID, Nonce, Next, CallbackOrigin string
-	Scopes                                      string
+	Consent                               bool
+	HighRisk                              bool
+	Name, ClientID, Nonce, Next, Callback string
+	Scopes                                string
 }
 
-var pageTemplate = template.Must(template.New("owner").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><title>MCP authorization</title><h1>{{if .Consent}}Authorize access{{else}}Owner login{{end}}</h1>{{if .Consent}}<p>Self-reported client name (not verified): {{.Name}}</p><p>Client ID: {{.ClientID}}</p><p>Callback origin (receives authorization): {{.CallbackOrigin}}</p><p>Permissions: {{.Scopes}}. chaoxing.sign can submit class sign-in; chaoxing.work can edit local answer drafts; chaoxing.answer can generate answers; chaoxing.work.submit can save or submit coursework; chaoxing.upload can upload files; chaoxing.face can enroll and use a face template.</p><form method="post" action="/oauth/consent"><input type="hidden" name="consent_token" value="{{.Nonce}}"><button name="decision" value="approve">Approve</button><button name="decision" value="deny">Deny</button></form>{{else}}<form method="post" action="/oauth/login"><input type="hidden" name="csrf" value="{{.Nonce}}"><input type="hidden" name="next" value="{{.Next}}"><label>Owner password <input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button>Log in</button></form>{{end}}</html>`))
+var pageTemplate = template.Must(template.New("owner").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><title>MCP authorization</title><h1>{{if .Consent}}Authorize access{{else}}Owner login{{end}}</h1>{{if .Consent}}<p>Self-reported client name (not verified): {{.Name}}</p><p>Client ID: {{.ClientID}}</p><p>Callback (receives authorization): {{.Callback}}</p><p>Permissions: {{.Scopes}}. chaoxing.sign can submit class sign-in; chaoxing.work can edit local answer drafts; chaoxing.answer can generate answers; chaoxing.work.submit can save or submit coursework; chaoxing.upload can upload files; chaoxing.face can enroll and use a face template.</p>{{if .HighRisk}}<p><strong>High-risk permissions requested.</strong> Only approve if you recognize this exact callback URL and intend to grant write or biometric access.</p>{{end}}<form method="post" action="/oauth/consent"><input type="hidden" name="consent_token" value="{{.Nonce}}"><button name="decision" value="approve">Approve</button><button name="decision" value="deny">Deny</button></form>{{else}}<form method="post" action="/oauth/login"><input type="hidden" name="csrf" value="{{.Nonce}}"><input type="hidden" name="next" value="{{.Next}}"><label>Owner password <input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button>Log in</button></form>{{end}}</html>`))
+
+func highRiskScope(scope string) bool {
+	for _, item := range strings.Fields(scope) {
+		switch item {
+		case scopeSign, scopeWork, scopeAnswer, scopeWorkSubmit, scopeUpload, scopeFace:
+			return true
+		}
+	}
+	return false
+}
 
 func (s *Server) page(w http.ResponseWriter, d pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -553,6 +583,53 @@ func (s *Server) recordLoginFailureLocked(ip string, now time.Time) {
 
 func (s *Server) clearLoginFailuresLocked(ip string) {
 	delete(s.loginAttempts, ip)
+}
+
+func (s *Server) registerAllowedLocked(network string, now time.Time) bool {
+	cutoff := now.Add(-time.Hour).Unix()
+	kept := s.registerTries[network][:0]
+	perMinute := 0
+	for _, at := range s.registerTries[network] {
+		if at <= cutoff {
+			continue
+		}
+		kept = append(kept, at)
+		if at > now.Add(-time.Minute).Unix() {
+			perMinute++
+		}
+	}
+	if perMinute >= 4 || len(kept) >= 20 || s.pendingByNet[network] >= 4 {
+		s.registerTries[network] = kept
+		return false
+	}
+	s.registerTries[network] = append(kept, now.Unix())
+	if len(s.registerTries) > 4096 {
+		for key := range s.registerTries {
+			if key != network {
+				delete(s.registerTries, key)
+				break
+			}
+		}
+	}
+	return true
+}
+
+func (s *Server) rememberClientNetworkLocked(clientID, network string) {
+	s.clientNetworks[clientID] = network
+	s.pendingByNet[network]++
+}
+
+func (s *Server) forgetClientNetworkLocked(clientID string) {
+	network, ok := s.clientNetworks[clientID]
+	if !ok {
+		return
+	}
+	delete(s.clientNetworks, clientID)
+	if s.pendingByNet[network] <= 1 {
+		delete(s.pendingByNet, network)
+		return
+	}
+	s.pendingByNet[network]--
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -702,6 +779,7 @@ func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 503, "server_error")
 			return
 		}
+		s.forgetClientNetworkLocked(c.ID)
 	} else if !validCIMD(g.client) {
 		oauthError(w, 400, "invalid_client")
 		return

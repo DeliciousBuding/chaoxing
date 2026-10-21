@@ -2,6 +2,12 @@ package location
 
 import "testing"
 
+func TestNewResolverNilServiceReturnsNil(t *testing.T) {
+	if got := NewResolver(nil, "root"); got != nil {
+		t.Fatalf("nil service produced a non-nil resolver: %#v", got)
+	}
+}
+
 func TestValidateAndNormalizeRejectsNullIsland(t *testing.T) {
 	if _, err := ValidateAndNormalize(Preset{Label: "synthetic", Latitude: 0, Longitude: 0}); err == nil {
 		t.Fatal("0,0 was accepted as a location")

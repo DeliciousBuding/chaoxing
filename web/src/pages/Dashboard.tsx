@@ -86,6 +86,9 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
   const [signAudits, setSignAudits] = React.useState<SignAudit[]>([]);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [auditsLoading, setAuditsLoading] = React.useState(true);
+  const [auditsError, setAuditsError] = React.useState("");
+  const requestEpoch = React.useRef(0);
   const dashboardOrder = useUIStore((state) => state.dashboardOrder);
   const setDashboardOrder = useUIStore((state) => state.setDashboardOrder);
   const sensors = useSensors(
@@ -94,23 +97,34 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
   );
 
   const load = React.useCallback(async () => {
+    const epoch = ++requestEpoch.current;
     setBusy(true);
     setError("");
-    try {
-      const [nextStatus, nextConnection, nextCapabilities] = await Promise.all([
-        api.status(),
-        api.call("get_connection_status"),
-        api.call("get_capabilities")
-      ]);
-      setStatus(nextStatus);
-      setConnection(nextConnection.data);
-      setCapabilities(nextCapabilities.data);
-      void api.signAudits(20).then((value) => setSignAudits(value.items)).catch(() => setSignAudits([]));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
+    setAuditsLoading(true);
+    setAuditsError("");
+    const [statusResult, connectionResult, capabilitiesResult, auditsResult] = await Promise.allSettled([
+      api.status(),
+      api.call("get_connection_status"),
+      api.call("get_capabilities"),
+      api.signAudits(20)
+    ]);
+    if (epoch !== requestEpoch.current) return;
+    const failures: string[] = [];
+    if (statusResult.status === "fulfilled") setStatus(statusResult.value);
+    else failures.push(`状态：${errorMessage(statusResult.reason)}`);
+    if (connectionResult.status === "fulfilled") setConnection(connectionResult.value.data);
+    else failures.push(`连接：${errorMessage(connectionResult.reason)}`);
+    if (capabilitiesResult.status === "fulfilled") setCapabilities(capabilitiesResult.value.data);
+    else failures.push(`能力：${errorMessage(capabilitiesResult.reason)}`);
+    if (auditsResult.status === "fulfilled") {
+      setSignAudits(auditsResult.value.items ?? []);
+    } else {
+      setSignAudits([]);
+      setAuditsError(errorMessage(auditsResult.reason));
     }
+    setError(failures.join("；"));
+    setAuditsLoading(false);
+    setBusy(false);
   }, []);
 
   React.useEffect(() => {
@@ -304,7 +318,14 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
           <CardDescription>最近 20 次签到尝试的出口 IP、签到地址与结果；仅当前账号可见。</CardDescription>
         </CardHeader>
         <CardContent>
-          {signAudits.length === 0 ? (
+          {auditsLoading ? (
+            <Loading label="正在读取签到审计" />
+          ) : auditsError ? (
+            <div role="alert" className="space-y-3 rounded-xl border border-destructive/35 bg-destructive/5 p-3 text-sm text-destructive">
+              <div className="break-all">签到审计读取失败：{auditsError}</div>
+              <Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>重试</Button>
+            </div>
+          ) : signAudits.length === 0 ? (
             <p className="text-sm text-muted-foreground">暂无签到审计记录。</p>
           ) : (
             <Table>
@@ -353,4 +374,8 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
       </div>
     </div>
   );
+}
+
+function errorMessage(value: unknown) {
+  return value instanceof Error ? value.message : String(value);
 }

@@ -1,6 +1,7 @@
 import * as React from "react";
 import { api } from "./lib/api";
-import { useUIStore } from "./lib/store";
+import { pageFromURL, useUIStore, writePageURL } from "./lib/store";
+import { pageMeta } from "./lib/layout";
 import { AppShell } from "./components/app-shell";
 import { ErrorBanner, PageErrorBoundary, PageSkeleton } from "./components/common";
 
@@ -48,6 +49,24 @@ export default function App() {
   const resetIdentity = useUIStore((state) => state.resetIdentity);
   const refresh = useUIStore((state) => state.refresh);
   const [initializing, setInitializing] = React.useState(true);
+  const [accountEpoch, setAccountEpoch] = React.useState(0);
+  const activeAccount = account?.current ?? session?.account ?? "root";
+
+  React.useEffect(() => {
+    const fromURL = pageFromURL();
+    if (fromURL) useUIStore.setState({ page: fromURL });
+    else writePageURL(useUIStore.getState().page, "replace");
+    const onPopState = () => {
+      const next = pageFromURL();
+      if (next) useUIStore.setState({ page: next });
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  React.useEffect(() => {
+    document.title = `${pageMeta(page).title} · 学习通控制台`;
+  }, [page]);
 
   React.useEffect(() => {
     document.body.dataset.theme = theme;
@@ -91,7 +110,12 @@ export default function App() {
   }, [session?.authenticated, session?.account, setAccount, setGlobalError, setTools]);
 
   async function switchAccount(id: string) {
+    if (id === activeAccount) return;
     setGlobalError("");
+    // Remount account-scoped pages before the network round trip so stale
+    // audit rows and dashboard values cannot remain visible under the new
+    // account while the switch is in flight.
+    setAccountEpoch((value) => value + 1);
     try {
       await api.selectAccount(id);
       const next = await api.account();
@@ -99,6 +123,8 @@ export default function App() {
       if (session) setSession({ ...session, account: id });
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : String(err));
+      const restored = await api.account().catch(() => null);
+      if (restored) setAccount(restored);
     }
   }
 
@@ -138,9 +164,9 @@ export default function App() {
           >
             <div className="space-y-4">
               <ErrorBanner error={globalError} />
-              <PageErrorBoundary resetKey={`${page}:${refreshToken}`}>
+              <PageErrorBoundary resetKey={`${page}:${refreshToken}:${accountEpoch}:${activeAccount}`}>
                 <React.Suspense fallback={<PageSkeleton />}>
-                  <React.Fragment key={refreshToken}>{content}</React.Fragment>
+                  <React.Fragment key={`${refreshToken}:${accountEpoch}:${activeAccount}`}>{content}</React.Fragment>
                 </React.Suspense>
               </PageErrorBoundary>
             </div>

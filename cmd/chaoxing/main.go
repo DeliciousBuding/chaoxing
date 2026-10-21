@@ -574,15 +574,18 @@ func run() error {
 		if e != nil {
 			return e
 		}
+		r, e := readRequest()
+		if e != nil {
+			return e
+		}
+		if requiresAuditedDaemon(r.Tool) {
+			return errors.New("sign-in operations require the daemon so every attempt is audited; use `chaoxing call`")
+		}
 		x, e := c.client()
 		if e != nil {
 			return e
 		}
 		execute, e := operationExecutor(x, c.StateDir, c.Answer)
-		if e != nil {
-			return e
-		}
-		r, e := readRequest()
 		if e != nil {
 			return e
 		}
@@ -618,6 +621,10 @@ func run() error {
 	default:
 		return errors.New("unknown command")
 	}
+}
+
+func requiresAuditedDaemon(tool string) bool {
+	return tool == "sign_activity" || tool == "sign_activity_with_face"
 }
 func configure() error {
 	fs := flag.NewFlagSet("configure", flag.ContinueOnError)

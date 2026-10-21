@@ -130,6 +130,7 @@ func (s *Server) pruneLocked() {
 	for k, v := range s.state.Clients {
 		if v.Expires <= now {
 			delete(s.state.Clients, k)
+			s.forgetClientNetworkLocked(k)
 		}
 	}
 	for k, v := range s.state.Access {

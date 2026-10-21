@@ -83,6 +83,9 @@ type Resolver struct {
 }
 
 func NewResolver(service Service, account string) *Resolver {
+	if service == nil {
+		return nil
+	}
 	return &Resolver{service: service, account: account}
 }
 

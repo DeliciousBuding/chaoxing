@@ -39,21 +39,21 @@
   --color-card-foreground: #0b1220;
   --color-popover: #ffffff;
   --color-popover-foreground: #0b1220;
-  --color-primary: #0284c7;
+  --color-primary: #0369a1;
   --color-primary-foreground: #ffffff;
   --color-secondary: #e8eef8;
   --color-secondary-foreground: #17223a;
   --color-muted: #edf2f9;
   --color-muted-foreground: #5a6a83;
-  --color-accent: #0284c7;
+  --color-accent: #0369a1;
   --color-accent-foreground: #ffffff;
-  --color-destructive: #dc2626;
+  --color-destructive: #b91c1c;
   --color-destructive-foreground: #ffffff;
-  --color-success: #16a34a;
-  --color-warning: #d97706;
+  --color-success: #166534;
+  --color-warning: #92400e;
   --color-border: #d8e0ed;
   --color-input: #cbd5e3;
-  --color-ring: #0284c7;
+  --color-ring: #0369a1;
 }
 
 [data-theme="midnight"] {

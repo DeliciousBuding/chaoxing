@@ -58,7 +58,7 @@ function Sidebar({ version }: { version: string }) {
       <nav aria-label="主导航" className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
         {pageGroups.map((group) => (
           <div key={group.id} className="space-y-1">
-            <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">{group.title}</div>
+            <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{group.title}</div>
             {pages.filter((item) => item.group === group.id).map((item) => (
               <SidebarButton
                 key={item.id}
@@ -140,8 +140,13 @@ function Header({
 function MobileNav() {
   const page = useUIStore((state) => state.page);
   const setPage = useUIStore((state) => state.setPage);
+  const navRef = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    const active = navRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
+    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [page]);
   return (
-    <div role="navigation" aria-label="页面导航" className="flex gap-2 overflow-x-auto border-b border-border/70 bg-card/60 px-4 py-3 lg:hidden">
+    <div ref={navRef} role="navigation" aria-label="页面导航" className="flex gap-2 overflow-x-auto border-b border-border/70 bg-card/60 px-4 py-3 lg:hidden">
       {pages.map((item) => {
         const Icon = item.icon;
         return (

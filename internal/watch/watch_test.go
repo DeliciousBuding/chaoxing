@@ -558,6 +558,31 @@ func TestWatchAutoSignOverlapWithoutLocationResolverStillSigns(t *testing.T) {
 	}
 }
 
+func TestWatchAutoSignOverlapWithDisabledLocationServiceStillSigns(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "normal", State: "signed", Verified: true}}
+	r, err := New(Config{
+		Interval: time.Minute, AutoSign: true, PollBefore: 20 * time.Minute, PollAfter: 20 * time.Minute,
+		LocationResolver: location.NewResolver(nil, "root"),
+		Classes: []Class{{
+			CourseID: "c", ClassID: "k",
+			Schedule: []Schedule{
+				{Days: []string{"Tue"}, Start: "08:00", End: "09:40", Key: "first"},
+				{Days: []string{"Tue"}, Start: "10:00", End: "11:40", Key: "second"},
+			},
+		}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, &fakeSender{}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return time.Date(2026, 10, 20, 9, 50, 0, 0, shanghai) }
+	r.Tick(context.Background())
+	if len(signer.requests) != 1 {
+		t.Fatalf("sign requests=%d", len(signer.requests))
+	}
+}
+
 func TestWatchAutoSignFailureUsesHighNotificationPriority(t *testing.T) {
 	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
 	snd := &fakeSender{}
