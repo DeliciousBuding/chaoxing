@@ -2,11 +2,13 @@ import * as React from "react";
 import { div as MotionDiv, span as MotionSpan } from "motion/react-m";
 import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
 import { GraduationCap, LogOut, Palette, RefreshCw } from "lucide-react";
-import { pageGroups, pages, type PageId } from "../lib/layout";
+import { canAccessPage, pageGroups, pages, type PageId } from "../lib/layout";
 import { useUIStore, themeLabels, themes, type Theme } from "../lib/store";
 import { useMediaQuery, useReducedMotion } from "../lib/hooks";
 import type { AccountInfo, SessionInfo } from "../lib/api";
+import { roleLabels } from "../lib/roles";
 import { Button } from "./ui/button";
+import { Badge } from "./ui/badge";
 import { Select } from "./ui/select";
 import { cn } from "../lib/utils";
 
@@ -40,7 +42,7 @@ const SidebarButton = React.memo(function SidebarButton({
   );
 });
 
-function Sidebar({ version }: { version: string }) {
+function Sidebar({ version, capabilities }: { version: string; capabilities?: SessionInfo["capabilities"] }) {
   const page = useUIStore((state) => state.page);
   const setPage = useUIStore((state) => state.setPage);
   return (
@@ -59,7 +61,7 @@ function Sidebar({ version }: { version: string }) {
         {pageGroups.map((group) => (
           <div key={group.id} className="space-y-1">
             <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{group.title}</div>
-            {pages.filter((item) => item.group === group.id).map((item) => (
+            {pages.filter((item) => item.group === group.id && canAccessPage(item.id as PageId, capabilities)).map((item) => (
               <SidebarButton
                 key={item.id}
                 active={page === item.id}
@@ -110,7 +112,8 @@ function Header({
 }) {
   const page = useUIStore((state) => state.page);
   const meta = pages.find((item) => item.id === page) ?? pages[0];
-  const accounts = account?.accounts ?? [{ id: "root", name: "默认账号" }];
+  const accounts = account?.accounts ?? [];
+  const currentAccount = account?.current ?? session.account ?? "";
   return (
     <header className="sticky top-0 z-20 border-b border-border/70 bg-background/88 px-5 py-4 backdrop-blur-xl">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -120,11 +123,12 @@ function Header({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <ThemeSelect />
-          <Select aria-label="当前账号" className="h-9 w-44" value={account?.current ?? session.account ?? "root"} onChange={(event) => onSwitchAccount(event.target.value)}>
-            {accounts.map((item) => (
+          <Select aria-label="当前账号" className="h-9 w-44" value={currentAccount} onChange={(event) => onSwitchAccount(event.target.value)} disabled={accounts.length === 0}>
+            {accounts.length === 0 ? <option value="">无账号授权</option> : accounts.map((item) => (
               <option key={item.id} value={item.id}>{item.name}</option>
             ))}
           </Select>
+          <Badge variant="secondary">{roleLabels[session.user?.role ?? "owner"]}</Badge>
           <Button variant="outline" size="sm" onClick={onRefresh}>
             <RefreshCw className="h-4 w-4" /> 刷新
           </Button>
@@ -137,7 +141,7 @@ function Header({
   );
 }
 
-function MobileNav() {
+function MobileNav({ capabilities }: { capabilities?: SessionInfo["capabilities"] }) {
   const page = useUIStore((state) => state.page);
   const setPage = useUIStore((state) => state.setPage);
   const navRef = React.useRef<HTMLDivElement | null>(null);
@@ -147,7 +151,7 @@ function MobileNav() {
   }, [page]);
   return (
     <div ref={navRef} role="navigation" aria-label="页面导航" className="flex gap-2 overflow-x-auto border-b border-border/70 bg-card/60 px-4 py-3 lg:hidden">
-      {pages.map((item) => {
+      {pages.filter((item) => canAccessPage(item.id as PageId, capabilities)).map((item) => {
         const Icon = item.icon;
         return (
           <button
@@ -218,7 +222,7 @@ export function AppShell({
         跳到主要内容
       </a>
       <Header session={session} account={account} onSwitchAccount={onSwitchAccount} onLogout={onLogout} onRefresh={onRefresh} />
-      {!isDesktop && <MobileNav />}
+      {!isDesktop && <MobileNav capabilities={session.capabilities} />}
       <main ref={mainRef} id="main-content" tabIndex={-1} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pb-12 sm:p-5 lg:p-6 focus:outline-none">
         <MotionDiv key={page} {...transition} transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}>
           {children}
@@ -239,7 +243,7 @@ export function AppShell({
       onLayoutChanged={saveLayout}
     >
       <Panel id="sidebar" defaultSize={`${sidebarSize}%`} minSize="15%" maxSize="27%" className="min-w-0 border-r border-border/70">
-        <Sidebar version={session.version} />
+        <Sidebar version={session.version} capabilities={session.capabilities} />
       </Panel>
       <Separator className="group relative w-[7px] bg-border/35 transition-colors hover:bg-primary/35 data-[separator-state=drag]:bg-primary/70">
         <div className="absolute left-1/2 top-1/2 h-10 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted-foreground/25 transition-colors group-hover:bg-primary/70" />

@@ -23,6 +23,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/access"
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
 	"github.com/DeliciousBuding/chaoxing/internal/classroomagent"
+	"github.com/DeliciousBuding/chaoxing/internal/controlplane"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/location"
 	"github.com/DeliciousBuding/chaoxing/internal/mcphttp"
@@ -513,6 +514,16 @@ func serve() error {
 		captures = store
 		signAudits = store
 	}
+	controlStore, e := controlplane.Open(filepath.Join(c.StateDir, "control.db"), c.OwnerPasswordHash)
+	if e != nil {
+		return e
+	}
+	defer func() {
+		if closeErr := controlStore.Close(); closeErr != nil {
+			log.Printf("control-plane store close failed: %v", closeErr)
+		}
+	}()
+	_ = controlStore.PruneAudit(context.Background(), time.Now().Add(-180*24*time.Hour))
 	pool, e := egress.New(c.Proxies, health)
 	if e != nil {
 		return e
@@ -647,7 +658,32 @@ func serve() error {
 		OwnerPasswordHash: c.OwnerPasswordHash,
 		TrustedProxies:    c.TrustedProxies,
 		Accounts:          uiAccounts,
-		Execute:           accountExecute,
+		Control:           controlStore,
+		AccountConfigs: func() []webui.AccountConfigView {
+			views := make([]webui.AccountConfigView, 0, 1+len(c.Tenants))
+			root := webui.AccountConfigView{ID: "root", Name: "默认账号", LocationEnabled: c.Location != nil && c.Location.Enabled}
+			if c.Watch != nil {
+				root.WatchEnabled = c.Watch.Enabled
+				root.AutoSign = c.Watch.AutoSign
+				root.AutoAnswer = c.Watch.AutoAnswer
+				root.Classes = len(c.Watch.Classes)
+				root.NotifyOnly = c.Watch.ClassroomAgent != nil && c.Watch.ClassroomAgent.NotifyOnly
+			}
+			views = append(views, root)
+			for _, tenant := range c.Tenants {
+				view := webui.AccountConfigView{ID: tenant.ID, Name: tenant.ID, LocationEnabled: root.LocationEnabled}
+				if tenant.Watch != nil {
+					view.WatchEnabled = tenant.Watch.Enabled
+					view.AutoSign = tenant.Watch.AutoSign
+					view.AutoAnswer = tenant.Watch.AutoAnswer
+					view.Classes = len(tenant.Watch.Classes)
+					view.NotifyOnly = tenant.Watch.ClassroomAgent != nil && tenant.Watch.ClassroomAgent.NotifyOnly
+				}
+				views = append(views, view)
+			}
+			return views
+		},
+		Execute: accountExecute,
 		Status: func() any {
 			return map[string]any{"egress": pool.Status(), "process": sup.Metrics(), "tenants": tenantIDs, "watchers": watcherMetrics(), "now": time.Now().UTC()}
 		},

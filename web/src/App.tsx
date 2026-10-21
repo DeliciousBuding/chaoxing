@@ -1,7 +1,7 @@
 import * as React from "react";
 import { api } from "./lib/api";
 import { pageFromURL, useUIStore, writePageURL } from "./lib/store";
-import { pageMeta } from "./lib/layout";
+import { canAccessPage, pageMeta } from "./lib/layout";
 import { AppShell } from "./components/app-shell";
 import { ErrorBanner, PageErrorBoundary, PageSkeleton } from "./components/common";
 
@@ -17,6 +17,8 @@ const Exams = React.lazy(() => import("./pages/Exams").then((m) => ({ default: m
 const Captures = React.lazy(() => import("./pages/Captures").then((m) => ({ default: m.Captures })));
 const Locations = React.lazy(() => import("./pages/Locations").then((m) => ({ default: m.Locations })));
 const Tools = React.lazy(() => import("./pages/Tools").then((m) => ({ default: m.Tools })));
+const Members = React.lazy(() => import("./pages/Members").then((m) => ({ default: m.Members })));
+const Audit = React.lazy(() => import("./pages/Audit").then((m) => ({ default: m.Audit })));
 const Settings = React.lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 
 function Booting() {
@@ -67,6 +69,12 @@ export default function App() {
   React.useEffect(() => {
     document.title = `${pageMeta(page).title} · 学习通控制台`;
   }, [page]);
+
+  React.useEffect(() => {
+    if (session?.authenticated && !canAccessPage(page, session.capabilities)) {
+      useUIStore.getState().setPage("dashboard");
+    }
+  }, [page, session?.authenticated, session?.capabilities]);
 
   React.useEffect(() => {
     document.body.dataset.theme = theme;
@@ -145,6 +153,8 @@ export default function App() {
   else if (page === "captures") content = <Captures />;
   else if (page === "locations") content = <Locations />;
   else if (page === "tools") content = <Tools tools={tools} />;
+  else if (page === "members") content = <Members session={session!} />;
+  else if (page === "audit") content = <Audit />;
   else content = <Settings account={account} session={session!} />;
 
   return (

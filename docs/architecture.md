@@ -1,9 +1,9 @@
 # Architecture
 
-Chaoxing runs as one Go binary. `serve` owns one upstream client, authenticated cookie jar and cache per account, and exposes two loopback listeners. The public listener serves the owner Web UI, OAuth and MCP; the private listener serves local bearer-token calls. Local CLI clients use the default account's daemon session rather than create a fresh upstream client each time.
+Chaoxing runs as one Go binary. `serve` owns one upstream client, authenticated cookie jar and cache per account, and exposes two loopback listeners. The public listener serves the management Web UI, OAuth and MCP; the private listener serves local bearer-token calls. Local CLI clients use the default account's daemon session rather than create a fresh upstream client each time.
 
 ```text
-Browser owner   -> HTTPS mcp.example.com -> Cloudflare Tunnel
+Browser member  -> HTTPS mcp.example.com -> Cloudflare Tunnel
                                       -> 127.0.0.1:8792 -> Web UI session -> /api tools
 MCP client      -> HTTPS mcp.example.com -> Cloudflare Tunnel
                                       -> 127.0.0.1:8792 -> owner OAuth -> MCP tools
@@ -23,11 +23,26 @@ Upstream requests also pass a per-account pacing boundary. The default minimum i
 
 ## Owner Web UI
 
-`internal/webui` embeds the production Vite bundle from `web/src` and mounts it at `/` and `/app`. It is a separate operator identity from MCP OAuth: login verifies the same owner PBKDF2-SHA256 hash, then issues a random opaque session ID that exists only as a SHA-256 key in memory. The cookie uses the `__Host-` prefix, `Secure`, `HttpOnly`, `SameSite=Strict`, an eight-hour absolute TTL and a thirty-minute idle TTL. The in-memory session is bound to the originating client network: IPv4 `/24` and IPv6 `/64`. This tolerates small mobile-network changes while bounding cross-network cookie theft. All browser API requests must carry the configured Host; a different Host is rejected before authentication. Only trusted reverse proxies may supply the client address. The default trust set is loopback only; `X-Forwarded-For` is read right-to-left from the first non-trusted address, so a direct client cannot forge its leftmost value. Login prunes expired sessions and caps active sessions at 32. Every state-changing API request requires both the cookie and an `X-Chaoxing-CSRF` header matching a separate CSRF cookie. Login attempts are bounded per client network to five per minute and twenty per fifteen minutes. The authenticated dashboard exposes safe egress, process and watcher counters; public `/healthz` is liveness-only and `/readyz` exposes only stale/degraded/panic state. Immutable embedded assets are served with strong content-hash ETags, `Vary: Accept-Encoding`, immutable cache policy and precompressed gzip representations.
+`internal/webui` embeds the production Vite bundle from `web/src` and mounts it at `/` and `/app`. Platform login is separate from MCP OAuth: the owner account is seeded from the deployment PBKDF2-SHA256 hash, additional members live in `control.db`, and a successful login issues a random opaque session ID that exists only as a SHA-256 key in memory. The cookie uses the `__Host-` prefix, `Secure`, `HttpOnly`, `SameSite=Strict`, an eight-hour absolute TTL and a thirty-minute idle TTL. The in-memory session is bound to the originating client network: IPv4 `/24` and IPv6 `/64`. This tolerates small mobile-network changes while bounding cross-network cookie theft. All browser API requests must carry the configured Host; a different Host is rejected before authentication. Only trusted reverse proxies may supply the client address. The default trust set is loopback only; `X-Forwarded-For` is read right-to-left from the first non-trusted address, so a direct client cannot forge its leftmost value. Login prunes expired sessions and caps active sessions at 32. Every state-changing API request requires both the cookie and an `X-Chaoxing-CSRF` header matching a separate CSRF cookie. Login attempts are bounded per client network to five per minute and twenty per fifteen minutes. The authenticated dashboard exposes safe egress, process and watcher counters; public `/healthz` is liveness-only and `/readyz` exposes only stale/degraded/panic state. Immutable embedded assets are served with strong content-hash ETags, `Vary: Accept-Encoding`, immutable cache policy and precompressed gzip representations.
 
 The UI API has no parallel capability definition. `/api/tools/call` only accepts names from `internal/operation`, and execution is dispatched to the selected root or tenant account executor. API bodies are capped at 128 KiB, tool calls receive a ninety-second context, and errors use safe fault codes. The static bundle has a strict CSP, `nosniff`, no-referrer, HSTS, a restrictive `Permissions-Policy`, `Cross-Origin-Opener-Policy: same-origin`, `frame-ancestors 'none'`, and immutable caching for hashed assets. The bundle contains no analytics or tracker. Its connections are same-origin only. The optional Baidu map is a separate `/map` document with `sandbox="allow-scripts"` (opaque origin); it receives only an AK and selected coordinates over `postMessage`, and its broader map CSP cannot access the parent session or CSRF token. Map geocoding calls remain server-proxied and bounded.
 
 The UI intentionally does not expose arbitrary file browsing, shell execution, URL fetching, raw cookies, hidden form values or upstream HTML. Dangerous operations such as final submission and sign-in remain explicit button actions with confirmation.
+
+## Control plane and tenant scope
+
+The control plane models only three things: a platform member who can log in, an upstream account (tenant) that owns one Chaoxing identity and state directory, and an explicit grant saying that a member may use an account. `control.db` contains `admin_users`, `account_grants` and `audit_events`; tenant `chaoxing.db` continues to contain sign-in evidence, captures, location presets and proxy state. No credential, cookie, coordinate or coursework body crosses into `control.db`.
+
+| Role | Member management | Account scope | Tool capability |
+| --- | --- | --- | --- |
+| owner | All; unique super-admin | All | All |
+| admin | Operators/viewers; can modify self only | All | All |
+| operator | None | Explicit grants | Read, sign, work, answer, upload |
+| viewer | None | Explicit grants | Read only; no capture or sign-in address/IP audit |
+
+Roles are fixed capability presets, not a general permission DSL. Owner may grant `admin`; admin cannot create or modify another admin, and no session can change its own role or status. A password, role, status or grant change increments `auth_version`; the next authenticated request re-reads the member and rejects a stale session. The owner password remains deployment-managed because the same hash protects OAuth consent; rotating it in the browser would fork the two authentication paths.
+
+Control-plane audit records login success/failure, logout, account selection, member and grant changes, tool calls, permission denials and private location preset/binding writes. Tool arguments, passwords, tokens, cookies, question bodies and page text are deliberately excluded. Details are field-whitelisted, bounded to 4 KiB and retained for 180 days; pruning runs at startup. Tenant sign-in audit remains the authoritative evidence for submitted address, coordinates and egress IP.
 
 ## Production activity capture
 

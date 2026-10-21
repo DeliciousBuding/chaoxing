@@ -1,11 +1,35 @@
 export type JsonObject = Record<string, any>;
 
+export type Role = "owner" | "admin" | "operator" | "viewer";
+
+export interface PlatformUser {
+  id: number;
+  username: string;
+  display_name: string;
+  role: Role;
+  status: "active" | "disabled";
+  created_at?: string;
+  updated_at?: string;
+  last_login_at?: string;
+  accounts?: string[];
+}
+
+export interface Capabilities {
+  manage_users: boolean;
+  view_audit: boolean;
+  manage_accounts: boolean;
+  sensitive_read: boolean;
+  tool_scopes: string[];
+}
+
 export interface SessionInfo {
   authenticated: boolean;
   account?: string;
   csrf: string;
   version: string;
   expires_at?: string;
+  user?: Pick<PlatformUser, "id" | "username" | "display_name" | "role">;
+  capabilities?: Capabilities;
 }
 
 export interface AccountInfo {
@@ -47,6 +71,35 @@ export interface SignAudit {
   latitude?: number;
   longitude?: number;
   created_at: string;
+}
+
+export interface AdminAccount {
+  id: string;
+  name: string;
+  watch_enabled: boolean;
+  auto_sign: boolean;
+  auto_answer: boolean;
+  notify_only: boolean;
+  location_enabled: boolean;
+  classes: number;
+  explicit_members: number;
+}
+
+export interface AuditEvent {
+  id: number;
+  created_at: string;
+  actor_id: number;
+  actor_username: string;
+  actor_role: string;
+  account_key?: string;
+  category: string;
+  action: string;
+  target?: string;
+  success: boolean;
+  ip?: string;
+  user_agent?: string;
+  request_id?: string;
+  details?: Record<string, any>;
 }
 
 export interface MapConfig {
@@ -124,9 +177,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   session: () => request<SessionInfo>("/api/auth/session"),
-  login: (password: string) => request<{ authenticated: boolean }>("/api/auth/login", {
+  login: (username: string, password: string) => request<{ authenticated: boolean }>("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ password })
+    body: JSON.stringify({ username, password })
   }),
   logout: () => request<{ authenticated: boolean }>("/api/auth/logout", { method: "POST" }),
   account: () => request<AccountInfo>("/api/account"),
@@ -172,5 +225,31 @@ export const api = {
   call: (tool: string, args: JsonObject = {}) => request<{ ok: boolean; data: JsonObject }>("/api/tools/call", {
     method: "POST",
     body: JSON.stringify({ tool, arguments: args })
-  })
+  }),
+  members: () => request<{ items: PlatformUser[] }>("/api/admin/users"),
+  createMember: (input: {
+    username: string;
+    display_name: string;
+    password: string;
+    role: Role;
+    accounts: string[];
+  }) => request<PlatformUser>("/api/admin/users", {
+    method: "POST",
+    body: JSON.stringify(input)
+  }),
+  updateMember: (id: number, input: Record<string, unknown>) => request<PlatformUser>(`/api/admin/users/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  }),
+  adminAccounts: () => request<{ items: AdminAccount[]; issuer: string; version: string }>("/api/admin/accounts"),
+  audit: (options: { limit?: number; offset?: number; category?: string; account?: string; actor?: string } = {}) => {
+    const query = new URLSearchParams({
+      limit: String(options.limit ?? 50),
+      offset: String(options.offset ?? 0)
+    });
+    if (options.category) query.set("category", options.category);
+    if (options.account) query.set("account", options.account);
+    if (options.actor) query.set("actor", options.actor);
+    return request<{ items: AuditEvent[]; total: number; limit: number; offset: number }>(`/api/admin/audit?${query.toString()}`);
+  }
 };

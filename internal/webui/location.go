@@ -40,12 +40,22 @@ func (s *Server) requireLocationService(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 501, "LOCATION_DISABLED", "location storage is not configured")
 		return "", false
 	}
+	if !s.requireCapability(w, r, "sensitive") {
+		return "", false
+	}
 	account, ok := s.sessionAccount(r)
 	if !ok {
 		writeError(w, 401, "UNAUTHENTICATED", "login required")
 		return "", false
 	}
 	return account, true
+}
+
+func (s *Server) requireLocationWrite(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if !s.requireCapability(w, r, "accounts") {
+		return "", false
+	}
+	return s.requireLocationService(w, r)
 }
 
 func (s *Server) listLocations(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +75,7 @@ func (s *Server) listLocations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) saveLocation(w http.ResponseWriter, r *http.Request) {
-	account, ok := s.requireLocationService(w, r)
+	account, ok := s.requireLocationWrite(w, r)
 	if !ok {
 		return
 	}
@@ -79,11 +89,12 @@ func (s *Server) saveLocation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_LOCATION", err.Error())
 		return
 	}
+	s.recordAudit(r, s.requestSession(r), "config", "location.preset.create", strconv.FormatInt(item.ID, 10), account, true, map[string]any{"preset_id": item.ID, "label": item.Label})
 	writeJSON(w, 200, item)
 }
 
 func (s *Server) updateLocation(w http.ResponseWriter, r *http.Request) {
-	account, ok := s.requireLocationService(w, r)
+	account, ok := s.requireLocationWrite(w, r)
 	if !ok {
 		return
 	}
@@ -102,11 +113,12 @@ func (s *Server) updateLocation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_LOCATION", err.Error())
 		return
 	}
+	s.recordAudit(r, s.requestSession(r), "config", "location.preset.update", strconv.FormatInt(item.ID, 10), account, true, map[string]any{"preset_id": item.ID, "label": item.Label})
 	writeJSON(w, 200, item)
 }
 
 func (s *Server) deleteLocation(w http.ResponseWriter, r *http.Request) {
-	account, ok := s.requireLocationService(w, r)
+	account, ok := s.requireLocationWrite(w, r)
 	if !ok {
 		return
 	}
@@ -119,6 +131,7 @@ func (s *Server) deleteLocation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_LOCATION", err.Error())
 		return
 	}
+	s.recordAudit(r, s.requestSession(r), "config", "location.preset.delete", strconv.FormatInt(id, 10), account, true, nil)
 	writeJSON(w, 200, map[string]any{"deleted": true})
 }
 
@@ -139,7 +152,7 @@ func (s *Server) listLocationBindings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) saveLocationBinding(w http.ResponseWriter, r *http.Request) {
-	account, ok := s.requireLocationService(w, r)
+	account, ok := s.requireLocationWrite(w, r)
 	if !ok {
 		return
 	}
@@ -151,11 +164,12 @@ func (s *Server) saveLocationBinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_LOCATION_BINDING", err.Error())
 		return
 	}
+	s.recordAudit(r, s.requestSession(r), "config", "location.binding.save", binding.CourseID+":"+binding.ClassID+":"+binding.ScheduleKey, account, true, map[string]any{"preset_id": binding.PresetID})
 	writeJSON(w, 200, map[string]any{"saved": true})
 }
 
 func (s *Server) deleteLocationBinding(w http.ResponseWriter, r *http.Request) {
-	account, ok := s.requireLocationService(w, r)
+	account, ok := s.requireLocationWrite(w, r)
 	if !ok {
 		return
 	}
@@ -171,10 +185,14 @@ func (s *Server) deleteLocationBinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_LOCATION_BINDING", err.Error())
 		return
 	}
+	s.recordAudit(r, s.requestSession(r), "config", "location.binding.delete", req.CourseID+":"+req.ClassID+":"+req.ScheduleKey, account, true, nil)
 	writeJSON(w, 200, map[string]any{"deleted": true})
 }
 
 func (s *Server) mapConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCapability(w, r, "accounts") {
+		return
+	}
 	value := map[string]any{"enabled": false}
 	if s.cfg.Map != nil && s.cfg.Map.Enabled && s.cfg.Map.AK != "" {
 		value = map[string]any{
@@ -192,6 +210,9 @@ func (s *Server) mapConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) geocode(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCapability(w, r, "accounts") {
+		return
+	}
 	if s.cfg.Geocoder == nil {
 		writeError(w, 501, "MAP_DISABLED", "map geocoding is not configured")
 		return
@@ -211,6 +232,9 @@ func (s *Server) geocode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) reverseGeocode(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCapability(w, r, "accounts") {
+		return
+	}
 	if s.cfg.Geocoder == nil {
 		writeError(w, 501, "MAP_DISABLED", "map geocoding is not configured")
 		return

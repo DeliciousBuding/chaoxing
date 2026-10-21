@@ -30,6 +30,7 @@ import (
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
+	"github.com/DeliciousBuding/chaoxing/internal/controlplane"
 	"github.com/DeliciousBuding/chaoxing/internal/location"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/signaudit"
@@ -93,12 +94,35 @@ type ScheduleView struct {
 	Room     string   `json:"room,omitempty"`
 }
 
+// AccountConfigView is a sanitized, read-only projection of one upstream
+// account's operational policy. Secrets stay in the deployment configuration.
+type AccountConfigView struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	WatchEnabled    bool   `json:"watch_enabled"`
+	AutoSign        bool   `json:"auto_sign"`
+	AutoAnswer      bool   `json:"auto_answer"`
+	NotifyOnly      bool   `json:"notify_only"`
+	LocationEnabled bool   `json:"location_enabled"`
+	Classes         int    `json:"classes"`
+}
+
+type Capabilities struct {
+	ManageUsers    bool     `json:"manage_users"`
+	ViewAudit      bool     `json:"view_audit"`
+	ManageAccounts bool     `json:"manage_accounts"`
+	SensitiveRead  bool     `json:"sensitive_read"`
+	ToolScopes     []string `json:"tool_scopes"`
+}
+
 type Config struct {
 	Version           string
 	Issuer            string
 	OwnerPasswordHash string
 	TrustedProxies    []string
 	Accounts          []Account
+	Control           *controlplane.Store
+	AccountConfigs    func() []AccountConfigView
 	Execute           Execute
 	Status            Status
 	Captures          CaptureList
@@ -110,12 +134,17 @@ type Config struct {
 }
 
 type webSession struct {
-	account  string
-	csrf     string
-	created  time.Time
-	lastSeen time.Time
-	expires  time.Time
-	remoteIP string
+	account     string
+	userID      int64
+	username    string
+	displayName string
+	role        string
+	authVersion int64
+	csrf        string
+	created     time.Time
+	lastSeen    time.Time
+	expires     time.Time
+	remoteIP    string
 }
 
 type loginAttempt struct {
@@ -136,6 +165,75 @@ type Server struct {
 	loginSem       chan struct{}
 	indexHTML      []byte
 	assets         map[string]cachedAsset
+}
+
+var allToolScopes = []string{"chaoxing.read", "chaoxing.sign", "chaoxing.work", "chaoxing.answer", "chaoxing.work.submit", "chaoxing.upload", "chaoxing.face"}
+
+func capabilitiesForRole(role string) Capabilities {
+	switch role {
+	case controlplane.RoleOwner:
+		return Capabilities{ManageUsers: true, ViewAudit: true, ManageAccounts: true, SensitiveRead: true, ToolScopes: append([]string(nil), allToolScopes...)}
+	case controlplane.RoleAdmin:
+		return Capabilities{ManageUsers: true, ViewAudit: true, ManageAccounts: true, SensitiveRead: true, ToolScopes: append([]string(nil), allToolScopes...)}
+	case controlplane.RoleOperator:
+		return Capabilities{
+			SensitiveRead: true,
+			ToolScopes:    []string{"chaoxing.read", "chaoxing.sign", "chaoxing.work", "chaoxing.answer", "chaoxing.upload"},
+		}
+	default:
+		return Capabilities{ToolScopes: []string{"chaoxing.read"}}
+	}
+}
+
+func roleAllowsScope(role, scope string) bool {
+	for _, allowed := range capabilitiesForRole(role).ToolScopes {
+		if scope == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) accountsForRole(role string, grants []string) []Account {
+	if role == controlplane.RoleOwner || role == controlplane.RoleAdmin {
+		return append([]Account(nil), s.cfg.Accounts...)
+	}
+	allowed := map[string]bool{}
+	for _, key := range grants {
+		allowed[key] = true
+	}
+	out := make([]Account, 0, len(grants))
+	for _, account := range s.cfg.Accounts {
+		if allowed[account.ID] {
+			out = append(out, account)
+		}
+	}
+	return out
+}
+
+func firstAccountID(accounts []Account) string {
+	if len(accounts) == 0 {
+		return ""
+	}
+	return accounts[0].ID
+}
+
+func (s *Server) sessionRole(session webSession) string {
+	if session.role == "" {
+		return controlplane.RoleOwner
+	}
+	return session.role
+}
+
+func (s *Server) controlUser(ctx context.Context, session webSession) (controlplane.User, bool) {
+	if s.cfg.Control == nil || session.userID <= 0 {
+		return controlplane.User{ID: 0, Username: "owner", DisplayName: "Owner", Role: controlplane.RoleOwner, Status: controlplane.StatusActive}, true
+	}
+	user, err := s.cfg.Control.UserByID(ctx, session.userID)
+	if err != nil || !user.Active() || user.AuthVersion != session.authVersion {
+		return controlplane.User{}, false
+	}
+	return user, true
 }
 
 func New(cfg Config) (*Server, error) {
@@ -264,6 +362,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/sign-audits", s.heavyBounded(s.authenticated(s.signAudits)))
 	mux.Handle("GET /api/tools", s.bounded(s.authenticated(s.tools)))
 	mux.Handle("POST /api/tools/call", s.heavyBounded(s.authenticated(s.call)))
+	mux.Handle("GET /api/admin/users", s.bounded(s.authenticated(s.adminUsers)))
+	mux.Handle("POST /api/admin/users", s.bounded(s.authenticated(s.adminCreateUser)))
+	mux.Handle("PATCH /api/admin/users/{id}", s.bounded(s.authenticated(s.adminUpdateUser)))
+	mux.Handle("GET /api/admin/accounts", s.bounded(s.authenticated(s.adminAccounts)))
+	mux.Handle("GET /api/admin/audit", s.bounded(s.authenticated(s.adminAudit)))
 	s.registerLocationRoutes(mux)
 	s.registerScheduleRoutes(mux)
 }
@@ -413,6 +516,13 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 
 type sessionIDKey struct{}
 
+func (s *Server) requestSession(r *http.Request) webSession {
+	id, _ := r.Context().Value(sessionIDKey{}).(string)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessions[id]
+}
+
 func (s *Server) sameOrigin(w http.ResponseWriter, r *http.Request) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
@@ -438,12 +548,28 @@ func (s *Server) currentSession(w http.ResponseWriter, r *http.Request) (string,
 		if session.remoteIP != s.remoteIP(r) || now.After(session.expires) || now.Sub(session.lastSeen) > idleTTL {
 			delete(s.sessions, id)
 			ok = false
-		} else {
-			session.lastSeen = now
-			s.sessions[id] = session
 		}
 	}
 	s.mu.Unlock()
+	if ok && s.cfg.Control != nil && session.userID > 0 {
+		user, userErr := s.cfg.Control.UserByID(r.Context(), session.userID)
+		if userErr != nil || !user.Active() || user.AuthVersion != session.authVersion {
+			s.mu.Lock()
+			delete(s.sessions, id)
+			s.mu.Unlock()
+			ok = false
+		}
+	}
+	if ok {
+		s.mu.Lock()
+		if current, exists := s.sessions[id]; exists {
+			current.lastSeen = now
+			s.sessions[id] = current
+		} else {
+			ok = false
+		}
+		s.mu.Unlock()
+	}
 	if !ok {
 		// Clear the stale cookie only after all response headers can still be set.
 		http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
@@ -476,7 +602,11 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	session := s.sessions[id]
 	s.mu.Unlock()
-	writeJSON(w, 200, map[string]any{"authenticated": true, "account": session.account, "csrf": s.csrfValue(w, r), "version": s.cfg.Version, "expires_at": session.expires.Format(time.RFC3339)})
+	payload := s.sessionPayload(session)
+	payload["csrf"] = s.csrfValue(w, r)
+	payload["version"] = s.cfg.Version
+	payload["expires_at"] = session.expires.Format(time.RFC3339)
+	writeJSON(w, 200, payload)
 }
 
 func (s *Server) ensureCSRF(w http.ResponseWriter, r *http.Request) {
@@ -501,6 +631,31 @@ func (s *Server) csrfValue(w http.ResponseWriter, r *http.Request) string {
 	return ""
 }
 
+func (s *Server) recordAudit(r *http.Request, session webSession, category, action, target, account string, success bool, details map[string]any) {
+	if s.cfg.Control == nil {
+		return
+	}
+	if details == nil {
+		details = map[string]any{}
+	}
+	role := session.role
+	if role == "" {
+		role = controlplane.RoleOwner
+		if session.userID == 0 && session.username != "" {
+			role = "anonymous"
+		}
+	}
+	encoded, err := json.Marshal(details)
+	if err != nil {
+		encoded = []byte("{}")
+	}
+	_ = s.cfg.Control.RecordAudit(r.Context(), controlplane.AuditEvent{
+		ActorID: session.userID, ActorUsername: session.username, ActorRole: role,
+		AccountKey: account, Category: category, Action: action, Target: target, Success: success,
+		IP: s.remoteIP(r), UserAgent: r.UserAgent(), RequestID: randomToken(), Details: encoded,
+	})
+}
+
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.ensureCSRF(w, r)
 	if !s.sameOrigin(w, r) {
@@ -511,6 +666,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 	if !decodeBody(w, r, &req) {
@@ -530,9 +686,25 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 429, "LOGIN_BUSY", "another login verification is in progress")
 		return
 	}
-	if !access.VerifyPassword(s.cfg.OwnerPasswordHash, req.Password) {
-		writeError(w, 401, "LOGIN_FAILED", "owner password is incorrect")
-		return
+	var session webSession
+	if s.cfg.Control != nil {
+		user, authErr := s.cfg.Control.Authenticate(r.Context(), req.Username, req.Password)
+		if authErr != nil {
+			s.recordAudit(r, webSession{username: strings.TrimSpace(req.Username), role: "anonymous"}, "auth", "auth.login.failed", "", "", false, map[string]any{"reason": "invalid_credentials"})
+			writeError(w, 401, "LOGIN_FAILED", "username or password is incorrect")
+			return
+		}
+		accounts := s.accountsForRole(user.Role, user.Accounts)
+		session = webSession{
+			account: firstAccountID(accounts), userID: user.ID, username: user.Username,
+			displayName: user.DisplayName, role: user.Role, authVersion: user.AuthVersion,
+		}
+	} else {
+		if !access.VerifyPassword(s.cfg.OwnerPasswordHash, req.Password) {
+			writeError(w, 401, "LOGIN_FAILED", "owner password is incorrect")
+			return
+		}
+		session = webSession{account: "root", username: "owner", displayName: "Owner", role: controlplane.RoleOwner}
 	}
 	token := randomToken()
 	id := digest(token)
@@ -549,10 +721,31 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 429, "SESSION_LIMIT", "too many active management sessions")
 		return
 	}
-	s.sessions[id] = webSession{account: "root", csrf: s.csrfValue(w, r), created: now, lastSeen: now, expires: now.Add(sessionTTL), remoteIP: s.remoteIP(r)}
+	session.csrf = s.csrfValue(w, r)
+	session.created, session.lastSeen = now, now
+	session.expires, session.remoteIP = now.Add(sessionTTL), s.remoteIP(r)
+	s.sessions[id] = session
 	s.mu.Unlock()
+	s.recordAudit(r, session, "auth", "auth.login", "", session.account, true, nil)
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", MaxAge: int(sessionTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
-	writeJSON(w, 200, map[string]any{"authenticated": true, "account": "root", "expires_at": now.Add(sessionTTL).Format(time.RFC3339)})
+	payload := s.sessionPayload(session)
+	payload["expires_at"] = now.Add(sessionTTL).Format(time.RFC3339)
+	payload["csrf"] = session.csrf
+	payload["version"] = s.cfg.Version
+	writeJSON(w, 200, payload)
+}
+
+func (s *Server) sessionPayload(session webSession) map[string]any {
+	role := s.sessionRole(session)
+	return map[string]any{
+		"authenticated": true,
+		"account":       session.account,
+		"user": map[string]any{
+			"id": session.userID, "username": session.username,
+			"display_name": session.displayName, "role": role,
+		},
+		"capabilities": capabilitiesForRole(role),
+	}
 }
 
 func (s *Server) allowLogin(ip string) bool {
@@ -589,8 +782,10 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	if ok {
 		s.mu.Lock()
+		session := s.sessions[id]
 		delete(s.sessions, id)
 		s.mu.Unlock()
+		s.recordAudit(r, session, "auth", "auth.logout", "", session.account, true, nil)
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
 	writeJSON(w, 200, map[string]any{"authenticated": false})
@@ -601,7 +796,22 @@ func (s *Server) accountInfo(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	session := s.sessions[id]
 	s.mu.Unlock()
-	writeJSON(w, 200, map[string]any{"current": session.account, "accounts": s.cfg.Accounts})
+	accounts, ok := s.accountsForSession(r.Context(), session)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	current := session.account
+	if !containsAccount(accounts, current) {
+		current = firstAccountID(accounts)
+		s.mu.Lock()
+		if stored, exists := s.sessions[id]; exists {
+			stored.account = current
+			s.sessions[id] = stored
+		}
+		s.mu.Unlock()
+	}
+	writeJSON(w, 200, map[string]any{"current": current, "accounts": accounts})
 }
 
 func (s *Server) selectAccount(w http.ResponseWriter, r *http.Request) {
@@ -611,34 +821,96 @@ func (s *Server) selectAccount(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	for _, account := range s.cfg.Accounts {
+	id, _ := r.Context().Value(sessionIDKey{}).(string)
+	s.mu.Lock()
+	session := s.sessions[id]
+	s.mu.Unlock()
+	accounts, ok := s.accountsForSession(r.Context(), session)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	for _, account := range accounts {
 		if account.ID == req.Account {
-			id, _ := r.Context().Value(sessionIDKey{}).(string)
 			s.mu.Lock()
-			if session, ok := s.sessions[id]; ok {
-				session.account = account.ID
-				session.lastSeen = s.now()
-				s.sessions[id] = session
+			if stored, exists := s.sessions[id]; exists {
+				stored.account = account.ID
+				stored.lastSeen = s.now()
+				s.sessions[id] = stored
+				session = stored
 			}
 			s.mu.Unlock()
+			s.recordAudit(r, session, "account", "account.select", account.ID, account.ID, true, nil)
 			writeJSON(w, 200, map[string]any{"current": account.ID})
 			return
 		}
 	}
-	writeError(w, 400, "INVALID_ACCOUNT", "unknown management account")
+	writeError(w, 403, "ACCOUNT_SCOPE_DENIED", "account is not assigned to this user")
+}
+
+func containsAccount(accounts []Account, id string) bool {
+	for _, account := range accounts {
+		if account.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) accountsForSession(ctx context.Context, session webSession) ([]Account, bool) {
+	if s.cfg.Control == nil || session.userID <= 0 {
+		return append([]Account(nil), s.cfg.Accounts...), true
+	}
+	user, err := s.cfg.Control.UserByID(ctx, session.userID)
+	if err != nil || !user.Active() || user.AuthVersion != session.authVersion {
+		return nil, false
+	}
+	return s.accountsForRole(user.Role, user.Accounts), true
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
-	value := map[string]any{"version": s.cfg.Version, "accounts": s.cfg.Accounts}
-	if s.cfg.Status != nil {
-		if v := s.cfg.Status(); v != nil {
-			value["runtime"] = v
+	session := s.requestSession(r)
+	role := s.sessionRole(session)
+	accounts, _ := s.accountsForSession(r.Context(), session)
+	value := map[string]any{"version": s.cfg.Version, "accounts": accounts}
+	if role != controlplane.RoleViewer && s.cfg.Status != nil {
+		if raw := s.cfg.Status(); raw != nil {
+			if runtime, ok := raw.(map[string]any); ok {
+				allowed := map[string]bool{}
+				for _, account := range accounts {
+					allowed[account.ID] = true
+				}
+				if watchers, ok := runtime["watchers"].(map[string]any); ok {
+					filtered := map[string]any{}
+					for key, item := range watchers {
+						if allowed[key] {
+							filtered[key] = item
+						}
+					}
+					runtime["watchers"] = filtered
+				}
+				if tenants, ok := runtime["tenants"].([]string); ok {
+					filtered := make([]string, 0, len(tenants))
+					for _, tenant := range tenants {
+						if allowed[tenant] {
+							filtered = append(filtered, tenant)
+						}
+					}
+					runtime["tenants"] = filtered
+				}
+				value["runtime"] = runtime
+			}
 		}
 	}
 	writeJSON(w, 200, value)
 }
 
 func (s *Server) captures(w http.ResponseWriter, r *http.Request) {
+	session := s.requestSession(r)
+	if !capabilitiesForRole(s.sessionRole(session)).SensitiveRead {
+		writeError(w, 403, "PERMISSION_DENIED", "capture access is not granted to this role")
+		return
+	}
 	account, ok := s.sessionAccount(r)
 	if !ok {
 		writeError(w, 401, "UNAUTHENTICATED", "login required")
@@ -706,6 +978,11 @@ func (s *Server) captures(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) signAudits(w http.ResponseWriter, r *http.Request) {
+	session := s.requestSession(r)
+	if !capabilitiesForRole(s.sessionRole(session)).SensitiveRead {
+		writeError(w, 403, "PERMISSION_DENIED", "sign audit access is not granted to this role")
+		return
+	}
 	account, ok := s.sessionAccount(r)
 	if !ok {
 		writeError(w, 401, "UNAUTHENTICATED", "login required")
@@ -732,9 +1009,20 @@ func (s *Server) signAudits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": rows})
 }
 
-func (s *Server) tools(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) tools(w http.ResponseWriter, r *http.Request) {
+	role := s.sessionRole(s.requestSession(r))
 	items := []map[string]any{}
 	for _, d := range operation.All() {
+		allowed := true
+		for _, scope := range operation.RequiredScopes(d) {
+			if !roleAllowsScope(role, scope) {
+				allowed = false
+				break
+			}
+		}
+		if !allowed {
+			continue
+		}
 		fields := map[string]any{}
 		names := make([]string, 0, len(d.Fields))
 		for name := range d.Fields {
@@ -758,19 +1046,35 @@ func (s *Server) call(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	if _, ok := operation.Find(req.Tool); !ok {
+	definition, ok := operation.Find(req.Tool)
+	if !ok {
 		writeError(w, 400, "UNKNOWN_TOOL", "operation is not allowlisted")
 		return
 	}
-	id, _ := r.Context().Value(sessionIDKey{}).(string)
-	s.mu.Lock()
-	session := s.sessions[id]
-	s.mu.Unlock()
+	session := s.requestSession(r)
+	role := s.sessionRole(session)
+	for _, scope := range operation.RequiredScopes(definition) {
+		if !roleAllowsScope(role, scope) {
+			s.recordAudit(r, session, "security", "tool.denied", definition.Name, session.account, false, map[string]any{"reason": "permission_denied", "scope": scope})
+			writeError(w, 403, "PERMISSION_DENIED", "this role cannot call the requested tool")
+			return
+		}
+	}
+	accounts, allowed := s.accountsForSession(r.Context(), session)
+	if !allowed || !containsAccount(accounts, session.account) {
+		s.recordAudit(r, session, "security", "tool.denied", definition.Name, session.account, false, map[string]any{"reason": "account_scope_denied"})
+		writeError(w, 403, "ACCOUNT_SCOPE_DENIED", "the selected account is not assigned to this user")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
+	started := time.Now()
 	value, err := s.cfg.Execute(ctx, session.account, req.Tool, req.Arguments)
 	if err != nil {
 		fault := upstream.SafeFault(err)
+		s.recordAudit(r, session, "tool", "tool.call", definition.Name, session.account, false, map[string]any{
+			"tool": definition.Name, "error": fault.Code, "duration_ms": time.Since(started).Milliseconds(),
+		})
 		status := 502
 		if fault.Code == "INVALID_ARGUMENT" || fault.Code == "UNKNOWN_TOOL" {
 			status = 400
@@ -781,7 +1085,303 @@ func (s *Server) call(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, fault.Code, fault.Message)
 		return
 	}
+	s.recordAudit(r, session, "tool", "tool.call", definition.Name, session.account, true, map[string]any{
+		"tool": definition.Name, "duration_ms": time.Since(started).Milliseconds(),
+	})
 	writeJSON(w, 200, map[string]any{"ok": true, "data": value})
+}
+
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request, capability string) (webSession, bool) {
+	if s.cfg.Control == nil {
+		writeError(w, 503, "CONTROL_PLANE_UNAVAILABLE", "control plane is not configured")
+		return webSession{}, false
+	}
+	session := s.requestSession(r)
+	caps := capabilitiesForRole(s.sessionRole(session))
+	allowed := false
+	switch capability {
+	case "users":
+		allowed = caps.ManageUsers
+	case "accounts":
+		allowed = caps.ManageAccounts
+	case "audit":
+		allowed = caps.ViewAudit
+	}
+	if !allowed {
+		s.recordAudit(r, session, "security", "admin.denied", capability, session.account, false, nil)
+		writeError(w, 403, "PERMISSION_DENIED", "administrator permission is required")
+		return webSession{}, false
+	}
+	return session, true
+}
+
+func (s *Server) requireCapability(w http.ResponseWriter, r *http.Request, capability string) bool {
+	session := s.requestSession(r)
+	caps := capabilitiesForRole(s.sessionRole(session))
+	allowed := false
+	switch capability {
+	case "sensitive":
+		allowed = caps.SensitiveRead
+	case "accounts":
+		allowed = caps.ManageAccounts
+	}
+	if !allowed {
+		s.recordAudit(r, session, "security", "permission.denied", capability, session.account, false, nil)
+		writeError(w, 403, "PERMISSION_DENIED", "permission is required")
+	}
+	return allowed
+}
+
+func (s *Server) knownAccount(key string) bool {
+	for _, account := range s.cfg.Accounts {
+		if account.ID == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) validateAccountKeys(keys []string) ([]string, bool) {
+	out := make([]string, 0, len(keys))
+	seen := map[string]bool{}
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if !s.knownAccount(key) {
+			return nil, false
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	return out, true
+}
+
+func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r, "users"); !ok {
+		return
+	}
+	users, err := s.cfg.Control.ListUsers(r.Context())
+	if err != nil {
+		writeError(w, 500, "CONTROL_PLANE_ERROR", "unable to read platform members")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": users})
+}
+
+func (s *Server) adminCreateUser(w http.ResponseWriter, r *http.Request) {
+	session, ok := s.requireAdmin(w, r, "users")
+	if !ok {
+		return
+	}
+	var req struct {
+		Username    string   `json:"username"`
+		DisplayName string   `json:"display_name"`
+		Password    string   `json:"password"`
+		Role        string   `json:"role"`
+		Accounts    []string `json:"accounts"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	if req.Role == controlplane.RoleOwner || (req.Role == controlplane.RoleAdmin && s.sessionRole(session) != controlplane.RoleOwner) {
+		writeError(w, 403, "PERMISSION_DENIED", "only the owner can create administrators")
+		return
+	}
+	if req.Role == controlplane.RoleAdmin || req.Role == controlplane.RoleOwner {
+		req.Accounts = nil
+	}
+	accounts, valid := s.validateAccountKeys(req.Accounts)
+	if !valid {
+		writeError(w, 400, "INVALID_ACCOUNT", "one or more account keys are unknown")
+		return
+	}
+	user, err := s.cfg.Control.CreateUser(r.Context(), controlplane.CreateUserInput{
+		Username: req.Username, DisplayName: req.DisplayName, Password: req.Password,
+		Role: req.Role, Accounts: accounts,
+	})
+	if err != nil {
+		if errors.Is(err, controlplane.ErrInvalidUser) {
+			writeError(w, 400, "INVALID_MEMBER", "username, password, role or account assignment is invalid")
+			return
+		}
+		writeError(w, 500, "CONTROL_PLANE_ERROR", "unable to create platform member")
+		return
+	}
+	s.recordAudit(r, session, "member", "member.create", user.Username, "", true, map[string]any{
+		"username": user.Username, "role": user.Role, "accounts": user.Accounts,
+	})
+	writeJSON(w, 201, user)
+}
+
+func (s *Server) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
+	session, ok := s.requireAdmin(w, r, "users")
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, 400, "INVALID_ID", "member id is invalid")
+		return
+	}
+	var req struct {
+		DisplayName *string   `json:"display_name"`
+		Password    *string   `json:"password"`
+		Role        *string   `json:"role"`
+		Status      *string   `json:"status"`
+		Accounts    *[]string `json:"accounts"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	target, err := s.cfg.Control.UserByID(r.Context(), id)
+	if err != nil {
+		writeError(w, 404, "MEMBER_NOT_FOUND", "platform member was not found")
+		return
+	}
+	actorRole := s.sessionRole(session)
+	if target.Role == controlplane.RoleOwner && actorRole != controlplane.RoleOwner {
+		writeError(w, 403, "PERMISSION_DENIED", "only the owner can modify the owner account")
+		return
+	}
+	if target.Role == controlplane.RoleOwner && req.Password != nil {
+		writeError(w, 400, "OWNER_PASSWORD_MANAGED", "the owner password is managed by the deployment configuration")
+		return
+	}
+	if target.Role == controlplane.RoleAdmin && actorRole != controlplane.RoleOwner && target.ID != session.userID {
+		writeError(w, 403, "PERMISSION_DENIED", "only the owner can modify an administrator")
+		return
+	}
+	if id == session.userID && (req.Role != nil || req.Status != nil) {
+		writeError(w, 403, "PERMISSION_DENIED", "you cannot change your own role or status")
+		return
+	}
+	if req.Role != nil {
+		if *req.Role == controlplane.RoleOwner || (*req.Role == controlplane.RoleAdmin && actorRole != controlplane.RoleOwner) {
+			writeError(w, 403, "PERMISSION_DENIED", "only the owner can grant administrator access")
+			return
+		}
+	}
+	if req.Status != nil && !controlplane.ValidStatus(*req.Status) {
+		writeError(w, 400, "INVALID_STATUS", "status must be active or disabled")
+		return
+	}
+	if req.Role != nil && !controlplane.ValidRole(*req.Role) {
+		writeError(w, 400, "INVALID_ROLE", "role is invalid")
+		return
+	}
+	if req.Accounts != nil {
+		accounts, valid := s.validateAccountKeys(*req.Accounts)
+		if !valid {
+			writeError(w, 400, "INVALID_ACCOUNT", "one or more account keys are unknown")
+			return
+		}
+		req.Accounts = &accounts
+	}
+	user, err := s.cfg.Control.UpdateUser(r.Context(), id, controlplane.UpdateUserInput{
+		DisplayName: req.DisplayName, Password: req.Password, Role: req.Role, Status: req.Status, Accounts: req.Accounts,
+	})
+	if err != nil {
+		if errors.Is(err, controlplane.ErrInvalidUser) {
+			writeError(w, 400, "INVALID_MEMBER", "member update is invalid")
+			return
+		}
+		writeError(w, 500, "CONTROL_PLANE_ERROR", "unable to update platform member")
+		return
+	}
+	changed := []string{}
+	if req.DisplayName != nil {
+		changed = append(changed, "display_name")
+	}
+	if req.Password != nil {
+		changed = append(changed, "password")
+	}
+	if req.Role != nil {
+		changed = append(changed, "role")
+	}
+	if req.Status != nil {
+		changed = append(changed, "status")
+	}
+	if req.Accounts != nil {
+		changed = append(changed, "accounts")
+	}
+	s.recordAudit(r, session, "member", "member.update", user.Username, "", true, map[string]any{
+		"username": user.Username, "changed": changed, "role": user.Role, "status": user.Status, "accounts": user.Accounts,
+	})
+	writeJSON(w, 200, user)
+}
+
+func (s *Server) adminAccounts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r, "accounts"); !ok {
+		return
+	}
+	byID := map[string]AccountConfigView{}
+	if s.cfg.AccountConfigs != nil {
+		for _, item := range s.cfg.AccountConfigs() {
+			byID[item.ID] = item
+		}
+	}
+	users, err := s.cfg.Control.ListUsers(r.Context())
+	if err != nil {
+		writeError(w, 500, "CONTROL_PLANE_ERROR", "unable to read account grants")
+		return
+	}
+	members := map[string]int{}
+	for _, user := range users {
+		if user.Role == controlplane.RoleOwner || user.Role == controlplane.RoleAdmin {
+			continue
+		}
+		for _, key := range user.Accounts {
+			members[key]++
+		}
+	}
+	items := make([]map[string]any, 0, len(s.cfg.Accounts))
+	for _, account := range s.cfg.Accounts {
+		view, exists := byID[account.ID]
+		if !exists {
+			view = AccountConfigView{ID: account.ID, Name: account.Name}
+		}
+		items = append(items, map[string]any{
+			"id": view.ID, "name": view.Name, "watch_enabled": view.WatchEnabled,
+			"auto_sign": view.AutoSign, "auto_answer": view.AutoAnswer, "notify_only": view.NotifyOnly,
+			"location_enabled": view.LocationEnabled, "classes": view.Classes, "explicit_members": members[account.ID],
+		})
+	}
+	writeJSON(w, 200, map[string]any{"items": items, "issuer": s.cfg.Issuer, "version": s.cfg.Version})
+}
+
+func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r, "audit"); !ok {
+		return
+	}
+	limit, offset := 50, 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 1 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 && parsed <= 100000 {
+			offset = parsed
+		}
+	}
+	filter := controlplane.AuditFilter{
+		Category: strings.TrimSpace(r.URL.Query().Get("category")),
+		Account:  strings.TrimSpace(r.URL.Query().Get("account")),
+		Actor:    strings.TrimSpace(r.URL.Query().Get("actor")),
+		Limit:    limit, Offset: offset,
+	}
+	if len(filter.Category) > 24 || len(filter.Account) > 32 || len(filter.Actor) > 32 {
+		writeError(w, 400, "INVALID_FILTER", "audit filter is too long")
+		return
+	}
+	items, total, err := s.cfg.Control.ListAudit(r.Context(), filter)
+	if err != nil {
+		writeError(w, 500, "CONTROL_PLANE_ERROR", "unable to read audit log")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset})
 }
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {

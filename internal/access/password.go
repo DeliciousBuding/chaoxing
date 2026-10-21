@@ -52,3 +52,11 @@ func verifyPassword(raw, password string) bool {
 func VerifyPassword(raw, password string) bool {
 	return verifyPassword(raw, password)
 }
+
+// ValidPasswordHash reports whether raw is a supported password hash without
+// requiring the plaintext password. Bootstrap paths use it before seeding a
+// privileged account.
+func ValidPasswordHash(raw string) bool {
+	_, _, _, err := parsePasswordHash(raw)
+	return err == nil
+}

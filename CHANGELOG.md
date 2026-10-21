@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0-rc.22 — 2026-10-21
+
+- Add a minimal multi-member control plane without changing tenant state schema. `StateDir/control.db` stores platform users, explicit account grants and control-plane audit events; upstream credentials, cookies, coordinates and sign-in evidence remain in each tenant's private state store.
+- Add four fixed roles. `owner` bootstraps from the existing deployment password hash and is the only super-admin; `admin` manages operators/viewers and all accounts; `operator` gets read/sign/work/answer/upload on explicitly granted accounts; `viewer` is read-only, cannot read captures or sign-in IP/address audits, and cannot enter admin APIs.
+- Add the Members and Permissions page and Audit page to the embedded Web UI. Password, role, status and grant changes increment `auth_version`, invalidating existing sessions on their next request. Password hashes remain PBKDF2-SHA256 with 600,000 iterations.
+- Keep the owner password under deployment-config control because the same hash guards OAuth consent. Browser-side member password resets cannot change the owner credential or diverge the two authentication paths.
+- Add a sanitized, read-only account-policy view for administrators. Secrets, proxy URLs, notification tokens, upstream credentials and coordinates never round-trip through the browser.
+- Audit login success/failure, logout, account switching, member and grant changes, tool calls, permission denials, and location preset/binding writes. Details are bounded JSON with no passwords, tokens, question bodies or page text; retention is 180 days and pruning runs at startup.
+- Keep control-plane writes on the same origin/CSRF/Host boundary as the existing UI, enforce a single validation path in Go, and reject client-selected accounts outside the member's grant set before dispatching any tool.
+
 ## 0.5.0-rc.21 — 2026-10-21
 
 - Fix the ordinary-sign-in regression that survived rc.20: a disabled location service now produces a nil resolver instead of a non-nil wrapper, so overlapping timetable rows no longer suppress automatic sign-in when no per-schedule location binding exists. Add a watcher regression test for the exact assembled-service shape.

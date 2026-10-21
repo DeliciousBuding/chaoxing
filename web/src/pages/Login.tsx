@@ -8,6 +8,7 @@ import { Label } from "../components/ui/label";
 import { ErrorBanner } from "../components/common";
 
 export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) {
+  const [username, setUsername] = React.useState("owner");
   const [password, setPassword] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -18,11 +19,11 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!password) return;
+    if (!username.trim() || !password) return;
     setBusy(true);
     setError("");
     try {
-      await api.login(password);
+      await api.login(username.trim(), password);
       onLogin(await api.session());
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "登录失败");
@@ -41,13 +42,24 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
             <GraduationCap className="h-6 w-6" />
           </div>
           <CardTitle className="text-2xl font-semibold tracking-tight">学习通管理平台</CardTitle>
-          <CardDescription>输入所有者密码登录公网私有控制台。会话与 MCP OAuth 授权相互隔离。</CardDescription>
+          <CardDescription>输入平台用户名和密码登录。成员权限与 MCP OAuth 授权相互隔离。</CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={submit}>
-            <input type="text" name="username" autoComplete="username" value="owner" readOnly hidden />
             <div className="space-y-2">
-              <Label htmlFor="password">所有者密码</Label>
+              <Label htmlFor="username">用户名</Label>
+              <Input
+                id="username"
+                name="username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                autoComplete="username"
+                required
+                maxLength={32}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">密码</Label>
               <div className="relative">
                 <LockKeyhole className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -63,7 +75,7 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
               </div>
             </div>
             <ErrorBanner error={error} />
-            <Button className="w-full" type="submit" disabled={busy || !password}>
+            <Button className="w-full" type="submit" disabled={busy || !username.trim() || !password}>
               {busy ? "验证中…" : "登录控制台"}
             </Button>
             <div className="flex items-start gap-2 rounded-xl border border-border/70 bg-muted/35 p-3 text-xs leading-relaxed text-muted-foreground">

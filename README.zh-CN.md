@@ -89,11 +89,13 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 
 当前提供 32 个已验证工具，包括有界学业总览、行动项、学业摘要、抢答、答案生成、全局作业题目桥接、课堂 H5 证据采集、作业保存/提交、上传和人脸签到。`chaoxing capabilities` 查看能力和未支持范围，`chaoxing schema assignments.list` 查看契约。
 
+Web UI 现在支持多成员控制面：`owner` 由部署配置引导，`admin` 可管理 `operator/viewer` 和全部账号，`operator/viewer` 只能访问显式授权的学习通账号；`viewer` 不能读取捕获或签到地址/IP 审计。成员、角色、账号授权和登录/操作轨迹分别保存在 `control.db`，上游凭据、cookie、坐标和签到证据仍留在各租户的私有 `chaoxing.db`。密码、角色、状态或授权变化会让旧 Web UI 会话在下一个请求立即失效。详见[架构说明](docs/architecture.md)。
+
 可选的课堂活动监视器会按课程时间轮询指定班级，合并课程群消息里的签到卡片，发送运维告警，并自动提交普通、位置，以及配置了签到码的密码/手势签到；也可用 `auto_answer` 对课堂抢答执行一次性抢占。内置班级预设坐标、私有位置绑定、持久化设备身份、轮询抖动和单次尝试状态。空闲时段最多五分钟低频轮询并在课表边界唤醒；每个 tick 有 panic 隔离与 Gotify/通知通道告警，`/healthz` 输出聚合的 `last_tick_at` / `consecutive_panics` / `consecutive_crashes` 等安全指标；procd 异常退出会持久化计数并发送高优先级通知。上游返回滑块验证码时，若配置了 solver，`sign_activity` 会自动完成一次有界识别与重试；未配置时 watcher 只告警一次，Agent 可人工完成手动链路；二维码签到接收运营者扫到的原始 payload；拍照签到使用路径受限上传后的 object ID；人脸签到使用独立 scope 授权的人脸模板。
 
 课程监听列表用 `chaoxing watch classes list|add|remove` 维护；`chaoxing courses discover` 会对比 mooc2 课程页与旧课程接口，用来解释“课表上有、学习通里读不到”的课程。
 
-私有签到坐标通过部署机上的 `chaoxing location add|bind|resolve` 写入账号自己的 SQLite，不经过 MCP、不进入仓库；如需在浏览器里选点，可在位置页可视化编辑。
+私有签到坐标通过部署机上的 `chaoxing location add|bind|resolve` 写入账号自己的 SQLite，不经过 MCP、不进入仓库；管理员也可在位置页可视化编辑。位置预设和课表绑定的写入只进入当前授权账号的租户数据，并写入一条不含坐标/地址正文的控制面审计。
 
 滑块识别通过 `captcha_solver` 配置。内置 local solver 使用背景图和缺口图且不访问网络；打码狗只接收背景图，key 保持私有。详见[配置文档](docs/configuration.md)。
 
