@@ -238,7 +238,7 @@ func (c *Client) captchaGet(ctx context.Context, endpoint, referer string) ([]by
 		return nil, fault("RESPONSE_TOO_LARGE", "captcha response exceeds limit")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fault("UPSTREAM_HTTP", fmt.Sprintf("captcha HTTP %d", resp.StatusCode))
+		return nil, httpStatusFault(resp.StatusCode, "captcha")
 	}
 	return body, nil
 }

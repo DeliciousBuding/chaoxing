@@ -90,7 +90,7 @@ type locationResultPayload struct {
 // as MCP/CLI calls so sign state cannot race a concurrent query.
 func (c *Client) SignActivity(ctx context.Context, req SignRequest) (SignResult, error) {
 	if err := c.lock(ctx); err != nil {
-		c.recordSignAudit(req, SignResult{}, err, nil)
+		c.recordSignAudit(req, &SignResult{}, err, nil)
 		return SignResult{}, err
 	}
 	trace := &signAuditTrace{}
@@ -98,7 +98,7 @@ func (c *Client) SignActivity(ctx context.Context, req SignRequest) (SignResult,
 		defer c.queries.Release()
 		return c.signActivityWithSolver(ctx, req, trace)
 	}()
-	c.recordSignAudit(req, result, signErr, trace)
+	c.recordSignAudit(req, &result, signErr, trace)
 	return result, signErr
 }
 
@@ -107,7 +107,7 @@ func (c *Client) SignActivity(ctx context.Context, req SignRequest) (SignResult,
 func (c *Client) signActivityLocked(ctx context.Context, req SignRequest) (SignResult, error) {
 	trace := &signAuditTrace{}
 	result, err := c.signActivityWithSolver(ctx, req, trace)
-	c.recordSignAudit(req, result, err, trace)
+	c.recordSignAudit(req, &result, err, trace)
 	return result, err
 }
 

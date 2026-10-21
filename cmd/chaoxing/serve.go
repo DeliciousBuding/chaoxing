@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -188,7 +189,7 @@ func uploadPreparedFile(ctx context.Context, client *upstream.Client, stateDir s
 	if err != nil || !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
 		return nil, &upstream.Fault{Code: "UPLOAD_UNAVAILABLE", Message: "private upload directory is not a real directory"}
 	}
-	if dirInfo.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && dirInfo.Mode().Perm()&0o077 != 0 {
 		return nil, &upstream.Fault{Code: "UPLOAD_UNAVAILABLE", Message: "private upload directory must not be group/world-accessible"}
 	}
 	path := filepath.Join(uploadDir, filename)
@@ -196,7 +197,7 @@ func uploadPreparedFile(ctx context.Context, client *upstream.Client, stateDir s
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "upload file is unavailable or is not a regular file"}
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "upload file must not be group/world-readable"}
 	}
 	if !ownedByCurrentUser(info) {
@@ -423,16 +424,11 @@ func supervisorNotifier(c config) (notify.Sender, error) {
 	return nil, nil
 }
 
-func stateStoreNeeded(c config) bool {
-	if len(c.Proxies) > 0 || (c.Watch != nil && c.Watch.Enabled) || watchCaptureEnabled(c.Watch) || (c.Location != nil && c.Location.Enabled) {
-		return true
-	}
-	for _, tenant := range c.Tenants {
-		if (tenant.Watch != nil && tenant.Watch.Enabled) || watchCaptureEnabled(tenant.Watch) {
-			return true
-		}
-	}
-	return false
+func stateStoreNeeded(_ config) bool {
+	// Sign auditing is unconditional: a manual CLI/MCP sign-in still has to
+	// produce a private audit row even when watcher, capture, proxy and
+	// location features are all disabled.
+	return true
 }
 
 func lockStateDirs(c config) ([]*statelock.Lock, error) {
@@ -491,9 +487,11 @@ func serve() error {
 		return e
 	}
 	// Egress pool: direct by default, SOCKS5 endpoints when configured. The
-	// same private SQLite store retains proxy health, sticky account egress
-	// and production activity captures only when one of those features is on.
+	// private SQLite store is always opened for sign auditing and also retains
+	// proxy health, sticky account egress and production activity captures
+	// when those features are enabled.
 	var store *statestore.Store
+	storeCloseSafe := true
 	var health egress.HealthStore
 	var captures capture.Store
 	var signAudits signaudit.Store
@@ -502,7 +500,13 @@ func serve() error {
 		if e != nil {
 			return e
 		}
-		defer store.Close()
+		defer func() {
+			if storeCloseSafe {
+				if closeErr := store.Close(); closeErr != nil {
+					log.Printf("state store close failed: %v", closeErr)
+				}
+			}
+		}()
 		if len(c.Proxies) > 0 {
 			health = healthAdapter{store}
 		}
@@ -805,6 +809,10 @@ func serve() error {
 		watchersStopped = true
 	case <-time.After(10 * time.Second):
 		log.Printf("shutdown: watcher did not stop within 10s; refusing to mark a clean process exit")
+		storeCloseSafe = false
+		if e == nil {
+			e = errors.New("watcher shutdown timed out")
+		}
 	}
 	if watchersStopped && (e == nil || errors.Is(e, http.ErrServerClosed)) {
 		if markErr := sup.MarkClean(); markErr != nil {

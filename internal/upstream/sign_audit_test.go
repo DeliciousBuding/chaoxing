@@ -42,9 +42,10 @@ func TestRecordSignAuditCapturesEgressAndSubmittedLocation(t *testing.T) {
 		})},
 	}
 	lat, lng := 31.2304, 121.4737
+	result := SignResult{Method: "location", State: "success", Verified: true}
 	client.recordSignAudit(
 		SignRequest{CourseID: "course-1", ClassID: "class-1", ActivityID: "activity-1"},
-		SignResult{Method: "location", State: "success", Verified: true},
+		&result,
 		nil,
 		&signAuditTrace{Address: "synthetic address", Latitude: &lat, Longitude: &lng},
 	)
@@ -57,6 +58,9 @@ func TestRecordSignAuditCapturesEgressAndSubmittedLocation(t *testing.T) {
 		got.Longitude == nil || *got.Longitude != lng || !got.Verified {
 		t.Fatalf("unexpected audit: %+v", got)
 	}
+	if result.EgressIP != "203.0.113.7" || result.EgressSource != "cloudflare-trace" {
+		t.Fatalf("sign result did not expose the observed egress: %+v", result)
+	}
 }
 
 func TestRecordSignAuditKeepsFailureCode(t *testing.T) {
@@ -67,9 +71,10 @@ func TestRecordSignAuditKeepsFailureCode(t *testing.T) {
 			return nil, fmt.Errorf("synthetic probe failure")
 		})},
 	}
+	result := SignResult{}
 	client.recordSignAudit(
 		SignRequest{CourseID: "course-1", ClassID: "class-1", ActivityID: "activity-1", Address: "fallback address"},
-		SignResult{},
+		&result,
 		&Fault{Code: "SIGN_REJECTED", Message: "synthetic"},
 		nil,
 	)

@@ -79,6 +79,24 @@ func TestSaveSkipsUnchangedCookies(t *testing.T) {
 	}
 }
 
+func TestHTTPStatusFaultRetryClassification(t *testing.T) {
+	tests := []struct {
+		status    int
+		wantCode  string
+		retryable bool
+	}{
+		{http.StatusTooManyRequests, "RATE_LIMITED", true},
+		{http.StatusBadGateway, "UPSTREAM_UNAVAILABLE", true},
+		{http.StatusForbidden, "UPSTREAM_HTTP", false},
+	}
+	for _, test := range tests {
+		fault := SafeFault(httpStatusFault(test.status, "synthetic"))
+		if fault.Code != test.wantCode || fault.Retryable != test.retryable {
+			t.Fatalf("status=%d code=%s retryable=%t want=%s/%t", test.status, fault.Code, fault.Retryable, test.wantCode, test.retryable)
+		}
+	}
+}
+
 func TestAutomaticLoginRetriesOnce(t *testing.T) {
 	c := testClient(t)
 	n, logins := 0, 0

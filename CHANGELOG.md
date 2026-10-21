@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0-rc.20 — 2026-10-21
+
+- Make the sign-in audit operational end to end: successful and failed manual/CLI/MCP and watcher attempts persist the submitted address and jittered coordinates in `sign_audits`, probe the same account-sticky egress path for the observed public IP, return those fields on the sign result, and include the address/IP in success and failure notifications. The private state store is now opened even when watcher, capture and proxy features are disabled so manual sign-ins cannot bypass the audit.
+- Bound automatic sign-in retries. Transient upstream failures now use a 30s/2m/5m/10m backoff with at most four attempts, persist the verified/retry state before sending a notification, and keep retry rows from being pruned in the same tick. Successful sign-ins can no longer be repeated by a notification timeout or process interruption.
+- Only block automatic sign-in for overlapping schedule windows when a per-schedule location resolver is configured; ordinary sign-ins and class-level locations no longer get skipped.
+- Classify upstream HTTP status correctly: 429 as retryable rate limiting, 5xx as retryable upstream unavailability, and ordinary 4xx as non-retryable rejection.
+- Report a partial group sweep as partial in `list_activities`; a single unreadable group, the six-group cap or the byte budget can no longer be hidden behind `complete:true`.
+- Fix cross-platform release builds by adding a Windows `LockFileEx` state-directory lock and making Unix ownership/mode checks conditional. The Windows upload path no longer fails on POSIX mode checks.
+- On watcher shutdown timeout, leave the state store open for the still-running watchers and return a shutdown error instead of marking a clean exit.
+
 ## 0.5.0-rc.19 — 2026-10-21
 
 - Put sign-in and answer decisions on the critical path: class discovery now processes actionable rows immediately, before page capture or the slower group fallback. The tick has a 60s discovery budget, a 30s group-scan budget and a 150s overall supervision budget; exhausting discovery no longer discards already-discovered actions.

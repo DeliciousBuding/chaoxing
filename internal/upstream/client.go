@@ -75,10 +75,13 @@ func SafeFault(err error) *Fault {
 		f.Category = "schema"
 		f.Message = "Upstream response is not recognized; no empty-result assumption."
 		f.Hint = "Report parser drift; do not treat this as no work."
-	case "UPSTREAM_UNAVAILABLE", "UPSTREAM_HTTP":
+	case "UPSTREAM_UNAVAILABLE":
 		f.Category = "upstream"
 		f.Message = "Upstream is temporarily unavailable."
 		f.Retryable = true
+	case "UPSTREAM_HTTP":
+		f.Category = "upstream"
+		f.Message = "Upstream rejected the request."
 	case "SIGN_REJECTED", "SIGN_LOCATION_REJECTED":
 		f.Category = "upstream_state"
 		f.Message = "The sign-in submission was not accepted."
@@ -169,6 +172,8 @@ type Client struct {
 	imGroupsAt        time.Time
 	imActivities      []Activity
 	imActivitiesAt    time.Time
+	imActivitiesOK    bool
+	imActivityWarning []string
 	workJobs          map[string]WorkJob
 	workQuestionSets  map[string]cachedWorkQuestionSet
 	captchaChallenges map[string]signCaptchaChallenge
@@ -364,7 +369,7 @@ func (c *Client) rawLimit(ctx context.Context, method, rawurl string, form url.V
 		return nil, resp, fault("STATE_WRITE_FAILED", "cannot persist session")
 	}
 	if resp.StatusCode != 200 {
-		return nil, resp, fault("UPSTREAM_HTTP", fmt.Sprintf("upstream HTTP %d", resp.StatusCode))
+		return nil, resp, httpStatusFault(resp.StatusCode, "upstream")
 	}
 	return b, resp, nil
 }
@@ -400,10 +405,22 @@ func (c *Client) rawWrite(ctx context.Context, method, rawurl string, body io.Re
 		return nil, resp, fault("STATE_WRITE_FAILED", "cannot persist session")
 	}
 	if resp.StatusCode != 200 {
-		return nil, resp, fault("UPSTREAM_HTTP", fmt.Sprintf("upstream HTTP %d", resp.StatusCode))
+		return nil, resp, httpStatusFault(resp.StatusCode, "upstream")
 	}
 	return b, resp, nil
 }
+
+func httpStatusFault(status int, area string) error {
+	switch {
+	case status == http.StatusTooManyRequests:
+		return fault("RATE_LIMITED", area+" rate limit reached")
+	case status >= 500:
+		return fault("UPSTREAM_UNAVAILABLE", fmt.Sprintf("%s HTTP %d", area, status))
+	default:
+		return fault("UPSTREAM_HTTP", fmt.Sprintf("%s HTTP %d", area, status))
+	}
+}
+
 func loginRequired(b []byte, r *http.Response) bool {
 	if strings.Contains(r.Request.URL.Host, "passport2.") {
 		return true
@@ -443,6 +460,8 @@ func (c *Client) login(ctx context.Context) error {
 	c.imGroupsAt = time.Time{}
 	c.imActivities = nil
 	c.imActivitiesAt = time.Time{}
+	c.imActivitiesOK = false
+	c.imActivityWarning = nil
 	c.workJobs = nil
 	c.workQuestionSets = nil
 	c.captchaChallenges = nil

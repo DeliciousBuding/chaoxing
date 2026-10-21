@@ -175,7 +175,7 @@ func (c *Client) chapterGETAttempt(ctx context.Context, endpoint string) ([]byte
 	}
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("chapters read status=%d endpoint=%s redirects=%d", resp.StatusCode, chapterLabel(resp.Request.URL), redirects)
-		return nil, fault("UPSTREAM_HTTP", "chapter endpoint rejected the read")
+		return nil, httpStatusFault(resp.StatusCode, "chapter")
 	}
 	if loginRequired(b, resp) {
 		return nil, fault("AUTH_REQUIRED", "chapter session rejected")

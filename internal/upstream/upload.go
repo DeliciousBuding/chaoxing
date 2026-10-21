@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -87,7 +86,7 @@ func (c *Client) UploadFile(ctx context.Context, filename string, content []byte
 		return UploadResult{}, fault("STATE_WRITE_FAILED", "cannot persist session")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return UploadResult{}, fault("UPSTREAM_HTTP", fmt.Sprintf("upload HTTP %d", resp.StatusCode))
+		return UploadResult{}, httpStatusFault(resp.StatusCode, "upload")
 	}
 	var uploaded struct {
 		ObjectID  string `json:"objectid"`

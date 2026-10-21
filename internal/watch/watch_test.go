@@ -501,13 +501,60 @@ func TestWatchAutoSignTransientFailureRetriesNextTick(t *testing.T) {
 	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
 	r.now = func() time.Time { return now }
 	r.Tick(context.Background())
-	if len(signer.requests) != 1 || !r.state[key(src.items[0])].LastAttempt.IsZero() {
+	retryState := r.state[key(src.items[0])]
+	if len(signer.requests) != 1 || retryState.Status != "retry" || retryState.LastAttempt.IsZero() ||
+		retryState.RetryAt.IsZero() || retryState.RetryCount != 1 || !retryState.RetryAt.After(now) {
 		t.Fatalf("requests=%d state=%+v", len(signer.requests), r.state)
 	}
 	now = now.Add(time.Minute)
 	r.Tick(context.Background())
 	if len(signer.requests) != 2 {
 		t.Fatalf("transient failure was not retried: %d", len(signer.requests))
+	}
+}
+
+func TestWatchAutoSignStopsAfterBoundedTransientRetries(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
+	signer := &fakeSigner{err: &upstream.Fault{Code: "UPSTREAM_UNAVAILABLE", Message: "synthetic transport failure"}}
+	r, err := New(Config{Interval: time.Minute, AutoSign: true, RepeatEvery: 30 * time.Second, MaxRepeats: 20, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json"}, src, &fakeSender{}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
+	for i := 0; i <= maxSignAttempts+2; i++ {
+		r.Tick(context.Background())
+		now = now.Add(11 * time.Minute)
+	}
+	if len(signer.requests) != maxSignAttempts {
+		t.Fatalf("requests=%d want=%d", len(signer.requests), maxSignAttempts)
+	}
+	if got := r.state[key(src.items[0])].Status; got != "failed" {
+		t.Fatalf("status=%q state=%+v", got, r.state)
+	}
+}
+
+func TestWatchAutoSignOverlapWithoutLocationResolverStillSigns(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "normal", State: "signed", Verified: true}}
+	r, err := New(Config{
+		Interval: time.Minute, AutoSign: true, PollBefore: 20 * time.Minute, PollAfter: 20 * time.Minute,
+		Classes: []Class{{
+			CourseID: "c", ClassID: "k",
+			Schedule: []Schedule{
+				{Days: []string{"Tue"}, Start: "08:00", End: "09:40", Key: "first"},
+				{Days: []string{"Tue"}, Start: "10:00", End: "11:40", Key: "second"},
+			},
+		}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, &fakeSender{}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return time.Date(2026, 10, 20, 9, 50, 0, 0, shanghai) }
+	r.Tick(context.Background())
+	if len(signer.requests) != 1 {
+		t.Fatalf("sign requests=%d", len(signer.requests))
 	}
 }
 

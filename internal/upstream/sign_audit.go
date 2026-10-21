@@ -14,7 +14,7 @@ import (
 
 const egressProbeURL = "https://www.cloudflare.com/cdn-cgi/trace"
 
-func (c *Client) recordSignAudit(req SignRequest, result SignResult, signErr error, trace *signAuditTrace) {
+func (c *Client) recordSignAudit(req SignRequest, result *SignResult, signErr error, trace *signAuditTrace) {
 	if c.config.SignAudit == nil {
 		return
 	}
@@ -45,9 +45,11 @@ func (c *Client) recordSignAudit(req SignRequest, result SignResult, signErr err
 	if latitude == nil && req.Latitude != nil {
 		latitude, longitude = req.Latitude, req.Longitude
 	}
+	result.Address, result.Latitude, result.Longitude = address, latitude, longitude
 	egressIP, egressSource := result.EgressIP, result.EgressSource
 	if egressIP == "" {
 		egressIP, egressSource = c.probeEgressIP()
+		result.EgressIP, result.EgressSource = egressIP, egressSource
 	}
 	record := signaudit.Record{
 		AccountKey: c.config.EgressAccountKey, CourseID: req.CourseID, ClassID: req.ClassID,

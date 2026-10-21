@@ -118,6 +118,8 @@ type ActivityPageSource interface {
 type entry struct {
 	LastSent    time.Time `json:"last_sent"`
 	LastAttempt time.Time `json:"last_attempt,omitempty"`
+	RetryAt     time.Time `json:"retry_at,omitempty"`
+	RetryCount  int       `json:"retry_count,omitempty"`
 	Count       int       `json:"count"`
 	Status      string    `json:"status,omitempty"`
 	Method      string    `json:"method,omitempty"`
@@ -177,6 +179,7 @@ const (
 	tickBudget      = 150 * time.Second
 	pollBudget      = 60 * time.Second
 	groupScanBudget = 30 * time.Second
+	maxSignAttempts = 4
 )
 
 func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer, answerer ...AnswerActivitySource) (*Runner, error) {
@@ -761,13 +764,20 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 				log.Printf("activity watch: notify failed: %v", err)
 				continue
 			}
-			r.state[k] = entry{LastSent: now, Count: e.Count + 1, Status: e.Status, Method: e.Method, Code: e.Code, LastAttempt: e.LastAttempt}
+			r.state[k] = entry{
+				LastSent: now, Count: e.Count + 1, Status: e.Status, Method: e.Method, Code: e.Code,
+				LastAttempt: e.LastAttempt, RetryAt: e.RetryAt, RetryCount: e.RetryCount,
+			}
 			changed = true
 			continue
 		}
-		if r.cfg.AutoSign && autoSignType(item, classes[k]) && (!seen || e.LastAttempt.IsZero()) {
+		if r.cfg.AutoSign && autoSignType(item, classes[k]) && signAttemptDue(seen, e, now) {
 			scheduleKey, ambiguous := activeScheduleKeyInfo(now, classes[k], r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart)
-			if !ambiguous {
+			// An overlapping schedule only blocks the automatic choice when a
+			// per-schedule location binding is actually possible. A normal
+			// sign-in without a location resolver must not be skipped merely
+			// because two timetable rows share the same padding window.
+			if !ambiguous || r.cfg.LocationResolver == nil {
 				changed = r.autoSign(ctx, classes[k], item, e, scheduleKey) || changed
 				continue
 			}
@@ -797,7 +807,10 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 			log.Printf("activity watch: notify failed: %v", err)
 			continue
 		}
-		r.state[k] = entry{LastSent: now, Count: e.Count + 1, Status: e.Status, Method: e.Method, Code: e.Code, LastAttempt: e.LastAttempt}
+		r.state[k] = entry{
+			LastSent: now, Count: e.Count + 1, Status: e.Status, Method: e.Method, Code: e.Code,
+			LastAttempt: e.LastAttempt, RetryAt: e.RetryAt, RetryCount: e.RetryCount,
+		}
 		changed = true
 		log.Printf("activity watch: alerted %s (attempt %d)", item.ID, e.Count+1)
 	}
@@ -807,7 +820,7 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 func (r *Runner) pruneInactive(active map[string]upstream.Activity, now time.Time) bool {
 	changed := false
 	for k, e := range r.state {
-		last := maxTime(e.LastSent, e.LastAttempt)
+		last := maxTime(e.LastSent, e.LastAttempt, e.RetryAt)
 		// Drop rows that disappeared from the feed after six hours, and keep a
 		// hard 24-hour ceiling for activities that somehow remain in the feed.
 		// Without the second bound a permanently returned row would keep the
@@ -818,6 +831,38 @@ func (r *Runner) pruneInactive(active map[string]upstream.Activity, now time.Tim
 		}
 	}
 	return changed
+}
+
+// signAttemptDue centralizes automatic sign-in retry state. LastAttempt being
+// present is not enough to suppress a retry: transient transport failures get
+// a bounded backoff instead of a tight, repeated loop.
+func signAttemptDue(seen bool, e entry, now time.Time) bool {
+	if !seen {
+		return true
+	}
+	if e.Status == "signed" {
+		return false
+	}
+	if e.Status == "retry" {
+		if e.RetryCount >= maxSignAttempts {
+			return false
+		}
+		return e.RetryAt.IsZero() || !now.Before(e.RetryAt)
+	}
+	return e.LastAttempt.IsZero()
+}
+
+func signRetryDelay(attempt int) time.Duration {
+	switch attempt {
+	case 1:
+		return 30 * time.Second
+	case 2:
+		return 2 * time.Minute
+	case 3:
+		return 5 * time.Minute
+	default:
+		return 10 * time.Minute
+	}
 }
 
 func (r *Runner) classPollDelay() time.Duration {
@@ -959,8 +1004,12 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 		loc, resolveErr := r.cfg.LocationResolver.Resolve(ctx, item.CourseID, item.ClassID, scheduleKey)
 		if resolveErr != nil {
 			now := r.now()
-			next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: "failed", Code: "LOCATION_RESOLVE_FAILED"}
+			next := entry{
+				LastAttempt: now, RetryAt: e.RetryAt, RetryCount: e.RetryCount,
+				Count: e.Count, LastSent: e.LastSent, Status: "failed", Code: "LOCATION_RESOLVE_FAILED",
+			}
 			r.state[key(item)] = next
+			r.persistState()
 			if sendErr := r.notify(ctx, notify.Message{Title: "🚨 学习通位置解析失败", Body: formatFailureBody(item, "LOCATION_RESOLVE_FAILED"), Priority: 8}); sendErr != nil {
 				log.Printf("activity watch: notify failed: %v", sendErr)
 			}
@@ -980,19 +1029,40 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 	}
 	result, err := r.signer.SignActivity(ctx, req)
 	now := r.now()
-	next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: e.Status, Method: e.Method, Code: e.Code}
+	k := key(item)
+	next := entry{
+		LastAttempt: now, RetryAt: e.RetryAt, RetryCount: e.RetryCount,
+		Count: e.Count, LastSent: e.LastSent, Status: e.Status, Method: e.Method, Code: e.Code,
+	}
 	title, body := "✅ 学习通自动签到成功", formatSuccessBody(item, result)
 	if err != nil {
 		safe := upstream.SafeFault(err)
 		next.Status, next.Code = "failed", safe.Code
 		if retryableActivityError(err) {
-			next.LastAttempt = time.Time{}
-			next.Status = "retry"
+			next.RetryCount = e.RetryCount + 1
+			if next.RetryCount < maxSignAttempts {
+				next.Status = "retry"
+				next.RetryAt = now.Add(signRetryDelay(next.RetryCount))
+			} else {
+				next.RetryAt = time.Time{}
+			}
 		}
 		title, body = "🚨 学习通自动签到失败", formatFailureBody(item, safe.Code)
+		if result.Address != "" {
+			body += "\n地址：" + result.Address
+		}
+		if result.EgressIP != "" {
+			body += "\n出口 IP：" + result.EgressIP
+		}
 	} else {
 		next.Status, next.Method, next.Code = "signed", result.Method, ""
+		next.RetryAt, next.RetryCount = time.Time{}, 0
 	}
+	// Persist the verified sign-in (or retry decision) before the notification
+	// call. A notification timeout must never make the next tick repeat a
+	// successful upstream sign-in.
+	r.state[k] = next
+	r.persistState()
 	priority := 6
 	if err != nil {
 		priority = 8
@@ -1001,10 +1071,17 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 		log.Printf("activity watch: notify failed: %v", sendErr)
 	} else {
 		next.LastSent, next.Count = now, e.Count+1
+		r.state[k] = next
+		r.persistState()
 	}
-	r.state[key(item)] = next
 	log.Printf("activity watch: auto sign %s: status=%s", item.ID, next.Status)
 	return true
+}
+
+func (r *Runner) persistState() {
+	if err := r.save(); err != nil {
+		log.Printf("activity watch: state write failed: %v", err)
+	}
 }
 
 func (r *Runner) notify(ctx context.Context, message notify.Message) error {
@@ -1258,6 +1335,12 @@ func formatSuccessBody(a upstream.Activity, result upstream.SignResult) string {
 		"方式："+result.Method,
 		"状态：已签到并通过上游状态复核",
 	)
+	if result.Address != "" {
+		lines = append(lines, "地址："+result.Address)
+	}
+	if result.EgressIP != "" {
+		lines = append(lines, "出口 IP："+result.EgressIP)
+	}
 	return strings.Join(lines, "\n")
 }
 

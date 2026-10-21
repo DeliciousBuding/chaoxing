@@ -119,11 +119,12 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 		if err != nil {
 			groupErr = err
 		} else {
-			groupRows, err := c.listGroupActivities(ctx, groups)
+			groupRows, groupComplete, groupWarnings, err := c.groupActivities(ctx, groups)
 			if err != nil {
 				groupErr = err
 			} else {
-				groupAvailable = true
+				groupAvailable = groupComplete
+				warnings = append(warnings, groupWarnings...)
 				known := map[string]bool{}
 				for _, item := range items {
 					known[item.CourseID+":"+item.ClassID+":"+item.ID] = true

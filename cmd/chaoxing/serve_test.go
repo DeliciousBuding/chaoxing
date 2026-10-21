@@ -45,6 +45,12 @@ func TestValidateTenants(t *testing.T) {
 	}
 }
 
+func TestStateStoreIsAlwaysNeededForSignAudit(t *testing.T) {
+	if !stateStoreNeeded(config{}) {
+		t.Fatal("manual sign-in would bypass the private audit store")
+	}
+}
+
 func TestWatchSenderRejectsPartialNotificationConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name string

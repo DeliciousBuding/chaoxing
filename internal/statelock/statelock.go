@@ -10,19 +10,18 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-
-	"golang.org/x/sys/unix"
 )
 
 // ErrInUse means another process currently owns the state directory.
 var ErrInUse = errors.New("state directory is already in use")
 
 type Lock struct {
-	file *os.File
+	file   *os.File
+	unlock func() error
 }
 
 // Acquire creates or opens the per-state-directory lock and holds an
-// exclusive non-blocking flock until Close.
+// exclusive non-blocking file lock until Close.
 func Acquire(dir string) (*Lock, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
@@ -43,28 +42,30 @@ func Acquire(dir string) (*Lock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("state lock unavailable: %w", err)
 	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	unlock, err := lockFile(f)
+	if err != nil {
 		_ = f.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return nil, ErrInUse
-		}
 		return nil, fmt.Errorf("state lock failed: %w", err)
 	}
 	if err := f.Chmod(0o600); err != nil {
-		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		_ = unlock()
 		_ = f.Close()
 		return nil, fmt.Errorf("state lock mode failed: %w", err)
 	}
-	return &Lock{file: f}, nil
+	return &Lock{file: f, unlock: unlock}, nil
 }
 
 func (l *Lock) Close() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	unlockErr := unix.Flock(int(l.file.Fd()), unix.LOCK_UN)
+	var unlockErr error
+	if l.unlock != nil {
+		unlockErr = l.unlock()
+	}
 	closeErr := l.file.Close()
 	l.file = nil
+	l.unlock = nil
 	if unlockErr != nil {
 		return unlockErr
 	}

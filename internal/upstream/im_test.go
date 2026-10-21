@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func lengthPrefixedField(field int, value []byte) []byte {
@@ -116,6 +117,23 @@ func TestIMGroupFallbackUsesCourseDescription(t *testing.T) {
 	}
 	if len(groups) != 1 || groups[0].Name != "Synthetic Course" || groups[0].ID != "group-1" {
 		t.Fatalf("%+v", groups)
+	}
+}
+
+func TestGroupActivitiesCachePreservesPartialCoverage(t *testing.T) {
+	c := testClient(t)
+	c.config.GroupActivities = true
+	c.imActivities = []Activity{{ID: "synthetic", CourseID: "c", ClassID: "k"}}
+	c.imActivitiesAt = time.Now()
+	c.imActivitiesOK = false
+	c.imActivityWarning = []string{"synthetic partial sweep"}
+	rows, complete, warnings, err := c.groupActivities(context.Background(), nil)
+	if err != nil || len(rows) != 1 || complete || len(warnings) != 1 || warnings[0] != "synthetic partial sweep" {
+		t.Fatalf("rows=%+v complete=%t warnings=%v err=%v", rows, complete, warnings, err)
+	}
+	warnings[0] = "mutated"
+	if c.imActivityWarning[0] != "synthetic partial sweep" {
+		t.Fatal("cached warnings were not copied")
 	}
 }
 

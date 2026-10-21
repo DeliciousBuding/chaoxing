@@ -50,22 +50,30 @@ func (c *Client) ListGroupActivities(ctx context.Context) ([]Activity, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.listGroupActivities(ctx, groups)
+	rows, _, _, err := c.groupActivities(ctx, groups)
+	return rows, err
 }
 
-func (c *Client) listGroupActivities(ctx context.Context, groups []imGroup) ([]Activity, error) {
+// groupActivities returns the rows plus whether every group in the bounded
+// sweep was readable. The watcher does not need the coverage flag, but
+// list_activities must not report complete=true after a partial group sweep.
+func (c *Client) groupActivities(ctx context.Context, groups []imGroup) ([]Activity, bool, []string, error) {
 	if !c.config.GroupActivities {
-		return []Activity{}, nil
+		return []Activity{}, true, nil, nil
 	}
 	if c.imActivities != nil && time.Since(c.imActivitiesAt) < 15*time.Second {
-		return append([]Activity(nil), c.imActivities...), nil
+		return append([]Activity(nil), c.imActivities...), c.imActivitiesOK, append([]string(nil), c.imActivityWarning...), nil
 	}
 	cfg, err := c.imConfig(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, nil, err
 	}
+	complete := true
+	warnings := []string{}
 	if len(groups) > maxIMGroupsPerSweep {
 		groups = groups[:maxIMGroupsPerSweep]
+		complete = false
+		warnings = append(warnings, "group sweep capped before every joined group was scanned")
 	}
 	seen := map[string]bool{}
 	rows := []Activity{}
@@ -74,10 +82,12 @@ func (c *Client) listGroupActivities(ctx context.Context, groups []imGroup) ([]A
 	totalBytes := 0
 	for _, group := range groups {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, warnings, err
 		}
 		items, groupBytes, err := c.imGroupActivities(ctx, cfg, group)
 		if err != nil {
+			complete = false
+			warnings = append(warnings, "group "+group.ID+": "+SafeFault(err).Code)
 			if firstGroupErr == nil {
 				firstGroupErr = err
 			}
@@ -96,11 +106,13 @@ func (c *Client) listGroupActivities(ctx context.Context, groups []imGroup) ([]A
 			rows = append(rows, item)
 		}
 		if totalBytes >= maxIMBytesPerSweep {
+			complete = false
+			warnings = append(warnings, "group sweep byte budget reached")
 			break
 		}
 	}
 	if len(groups) > 0 && successfulGroups == 0 && firstGroupErr != nil {
-		return nil, firstGroupErr
+		return nil, false, warnings, firstGroupErr
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].StartsAt == nil || rows[j].StartsAt == nil {
@@ -109,7 +121,8 @@ func (c *Client) listGroupActivities(ctx context.Context, groups []imGroup) ([]A
 		return rows[i].StartsAt.After(*rows[j].StartsAt)
 	})
 	c.imActivities, c.imActivitiesAt = rows, time.Now()
-	return rows, nil
+	c.imActivitiesOK, c.imActivityWarning = complete, warnings
+	return rows, complete, warnings, nil
 }
 
 func (c *Client) imConfig(ctx context.Context) (imConfig, error) {
@@ -382,7 +395,7 @@ func (c *Client) imDo(ctx context.Context, method, endpoint string, body io.Read
 		return nil, fault("RESPONSE_TOO_LARGE", "IM response exceeds limit")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fault("UPSTREAM_HTTP", fmt.Sprintf("IM HTTP %d", resp.StatusCode))
+		return nil, httpStatusFault(resp.StatusCode, "IM")
 	}
 	return b, nil
 }
