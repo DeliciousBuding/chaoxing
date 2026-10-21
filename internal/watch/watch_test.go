@@ -658,6 +658,25 @@ func TestWatchPendingAlertSurvivesActivityDisappearing(t *testing.T) {
 	}
 }
 
+func TestWatchSignDelayBudgetIsCappedPerTick(t *testing.T) {
+	r, err := New(Config{
+		Interval: time.Minute, AutoSign: true,
+		AutoSignDelayMin: 2 * time.Minute, AutoSignDelayMax: 2 * time.Minute,
+		Classes: []Class{{CourseID: "c", ClassID: "k"}},
+	}, &fakeSource{}, &fakeSender{}, &fakeSigner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.signDelayLeft = maxSignDelayPerTick
+	total := time.Duration(0)
+	for i := 0; i < 8; i++ {
+		total += r.autoSignDelay()
+	}
+	if total != maxSignDelayPerTick {
+		t.Fatalf("total delay=%s want %s", total, maxSignDelayPerTick)
+	}
+}
+
 func TestWatchAutoSignSkipsManualVerificationTypes(t *testing.T) {
 	item := signIn("c", "k", "1", true)
 	item.SignType = "qrcode"

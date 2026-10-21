@@ -167,6 +167,8 @@ type Runner struct {
 	alertSender      notify.Sender
 	state            map[string]entry
 	alerts           map[string]pendingAlert
+	panicAlerts      chan notify.Message
+	signDelayLeft    time.Duration
 	now              func() time.Time
 	random           func() float64
 	wait             func(context.Context, time.Duration) bool
@@ -198,6 +200,9 @@ const (
 	alertRetryBase    = 30 * time.Second
 	alertRetryMax     = 5 * time.Minute
 	maxAlertsPerFlush = 4
+	// A sign-in burst must not spend the whole tick budget sleeping. The
+	// jitter stays, but all automatic sign-ins in one tick share this cap.
+	maxSignDelayPerTick = 30 * time.Second
 )
 
 func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer, answerer ...AnswerActivitySource) (*Runner, error) {
@@ -294,7 +299,8 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 		alertSender: notify.Retry{Sender: sender, Attempts: 3, Delay: 2 * time.Second},
 		answerer:    answerSource,
 		state:       map[string]entry{}, alerts: map[string]pendingAlert{},
-		now: time.Now, random: rand.Float64, wait: waitContext,
+		panicAlerts: make(chan notify.Message, 8),
+		now:         time.Now, random: rand.Float64, wait: waitContext,
 		metrics: Metrics{StartedAt: time.Now().UTC()},
 	}
 	if loadErr := r.load(); loadErr != nil {
@@ -480,6 +486,7 @@ func (r *Runner) Run(ctx context.Context) {
 	}
 	defer r.runStarted.Store(false)
 	log.Printf("activity watch started: %d classes, interval %s (+/-%d%%), auto_sign=%t, auto_answer=%t", len(r.cfg.Classes), r.cfg.Interval, r.cfg.IntervalJitterPercent, r.cfg.AutoSign, r.cfg.AutoAnswer)
+	go r.runPanicAlerts(ctx)
 	// Poll once immediately: a restart during class must not wait for the idle
 	// sleep cap before the first observation. Outside the window the tick is a
 	// no-op, so this costs nothing on an idle deployment.
@@ -502,6 +509,27 @@ func (r *Runner) Run(ctx context.Context) {
 		case <-timer.C:
 			r.tick(ctx)
 		}
+	}
+}
+
+// runPanicAlerts drains panic notifications off the polling path. A slow push
+// endpoint previously delayed the next tick by up to the alert timeout.
+func (r *Runner) runPanicAlerts(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case message := <-r.panicAlerts:
+			r.sendPanicAlert(message)
+		}
+	}
+}
+
+func (r *Runner) sendPanicAlert(message notify.Message) {
+	notifyCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if err := r.alertSender.Send(notifyCtx, message); err != nil {
+		log.Printf("activity watch panic alert failed: %v", err)
 	}
 }
 
@@ -552,15 +580,22 @@ func (r *Runner) recordPanic(value any) {
 	r.metricsMu.Unlock()
 	log.Printf("activity watch panic recovered (%d consecutive): %s\n%s", count, kind, debug.Stack())
 
-	notifyCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
 	body := fmt.Sprintf(
 		"连续 panic：%d\n最近类型：%s\nlast_tick：%s\nTick 已恢复，进程未退出；如持续增加请立即检查。",
 		count, kind, now.Format(time.RFC3339),
 	)
-	if err := r.alertSender.Send(notifyCtx, notify.Message{Title: "🚨 学习通 Watcher panic 已恢复", Body: body, Priority: 9}); err != nil {
-		log.Printf("activity watch panic alert failed: %v", err)
+	message := notify.Message{Title: "🚨 学习通 Watcher panic 已恢复", Body: body, Priority: 9}
+	if r.runStarted.Load() {
+		select {
+		case r.panicAlerts <- message:
+		default:
+			log.Print("activity watch: panic alert queue full; dropping alert")
+		}
+		return
 	}
+	// Tests and direct Tick callers do not start the worker, so keep the
+	// synchronous path for them.
+	r.sendPanicAlert(message)
 }
 
 func panicKind(value any) string {
@@ -750,6 +785,7 @@ func (r *Runner) Tick(ctx context.Context) {
 	defer r.tickMu.Unlock()
 	now := r.now()
 	r.flushAlerts(ctx, now)
+	r.signDelayLeft = maxSignDelayPerTick
 	if !inWindow(now, r.cfg.Window) {
 		return
 	}
@@ -984,7 +1020,15 @@ func (r *Runner) classPollDelay() time.Duration {
 }
 
 func (r *Runner) autoSignDelay() time.Duration {
-	return randomDuration(r.cfg.AutoSignDelayMin, r.cfg.AutoSignDelayMax, r.random)
+	delay := randomDuration(r.cfg.AutoSignDelayMin, r.cfg.AutoSignDelayMax, r.random)
+	if delay <= 0 || r.signDelayLeft <= 0 {
+		return 0
+	}
+	if delay > r.signDelayLeft {
+		delay = r.signDelayLeft
+	}
+	r.signDelayLeft -= delay
+	return delay
 }
 
 func randomDuration(min, max time.Duration, random func() float64) time.Duration {

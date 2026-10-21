@@ -571,7 +571,7 @@ func serve() error {
 			health = healthAdapter{store}
 		}
 		captures = store
-		signAudits = store
+		signAudits = signaudit.NewMetered(store)
 	}
 	controlStore, e := controlplane.Open(filepath.Join(c.StateDir, "control.db"), c.OwnerUsername, c.OwnerPasswordHash)
 	if e != nil {
@@ -836,7 +836,12 @@ func serve() error {
 		degraded := sup.Metrics().Degraded
 		control := ui.ControlHealth()
 		auditConsecutive, _ := control["audit_consecutive_write_failures"].(uint64)
-		ok := !stale && panics < 3 && !degraded && !stateDegraded && auditConsecutive < 3
+		var signAuditConsecutive uint64
+		signAuditError := ""
+		if meter, ok := signAudits.(*signaudit.Metered); ok {
+			signAuditConsecutive, signAuditError = meter.Health()
+		}
+		ok := !stale && panics < 3 && !degraded && !stateDegraded && auditConsecutive < 3 && signAuditConsecutive < 3
 		watcherCount, _ := health["count"].(int)
 		ticks, _ := health["ticks"].(int)
 		lastTick, _ := health["last_tick_at"].(time.Time)
@@ -851,6 +856,7 @@ func serve() error {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": ok, "stale": stale, "consecutive_panics": panics, "degraded": degraded,
 			"state_degraded": stateDegraded, "watcher_count": watcherCount, "ticks": ticks,
+			"sign_audit_consecutive_write_failures": signAuditConsecutive, "sign_audit_last_error": signAuditError,
 			"last_tick_at": lastTickText, "audit_write_failures": control["audit_write_failures"],
 			"audit_consecutive_write_failures": auditConsecutive,
 		})
