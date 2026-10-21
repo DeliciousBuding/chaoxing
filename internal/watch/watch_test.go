@@ -707,6 +707,38 @@ func TestWatchSaveDropsAlertsBeforeExceedingStateLimit(t *testing.T) {
 	}
 }
 
+// Manual-verification reminders (QR/photo/face) are the only signal when the
+// activity cannot be signed automatically. A failed push must survive the
+// activity disappearing from the feed.
+func TestWatchManualReminderQueuesOnNotifyFailure(t *testing.T) {
+	item := signIn("c", "k", "1", true)
+	item.SignType = "qrcode"
+	src := &fakeSource{items: []upstream.Activity{item}}
+	snd := &fakeSender{fail: true}
+	r, err := New(Config{Interval: time.Minute, AutoSign: true, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json"}, src, snd, &fakeSigner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
+	r.Tick(context.Background())
+	if len(snd.sent) != 1 || len(r.alerts) != 1 {
+		t.Fatalf("sent=%d pending=%d", len(snd.sent), len(r.alerts))
+	}
+
+	src.items = nil
+	retry := &fakeSender{}
+	r.sender = retry
+	now = now.Add(31 * time.Second)
+	r.Tick(context.Background())
+	if len(retry.sent) != 1 || retry.sent[0].Title != "🔔 学习通签到提醒" {
+		t.Fatalf("%+v", retry.sent)
+	}
+	if len(r.alerts) != 0 {
+		t.Fatalf("pending not cleared: %+v", r.alerts)
+	}
+}
+
 func TestWatchAutoSignSkipsManualVerificationTypes(t *testing.T) {
 	item := signIn("c", "k", "1", true)
 	item.SignType = "qrcode"
