@@ -773,3 +773,25 @@ func TestAnswerAlertTitleByKind(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsIncludeLeadAndMergeContiguousMinutes(t *testing.T) {
+	classes := []Class{{
+		CourseID: "course", ClassID: "class",
+		Schedule: []Schedule{{Days: []string{"Tue"}, Start: "08:00", End: "09:40"}},
+	}}
+	from := time.Date(2026, 10, 20, 0, 0, 0, 0, shanghai) // Tuesday
+	until := from.Add(24 * time.Hour)
+	got := Windows(classes, 2*time.Minute, from, until)
+	if len(got) != 1 {
+		t.Fatalf("windows=%v", got)
+	}
+	if !got[0].Start.Equal(time.Date(2026, 10, 20, 7, 58, 0, 0, shanghai)) {
+		t.Fatalf("start=%v", got[0].Start.In(shanghai))
+	}
+	if !got[0].End.Equal(time.Date(2026, 10, 20, 9, 40, 0, 0, shanghai)) {
+		t.Fatalf("end=%v", got[0].End.In(shanghai))
+	}
+	if got[0].ScheduleKey != "Tue-08:00-09:40" {
+		t.Fatal(got[0].ScheduleKey)
+	}
+}

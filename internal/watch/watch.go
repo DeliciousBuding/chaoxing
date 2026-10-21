@@ -1061,3 +1061,58 @@ func (r *Runner) save() error {
 	}
 	return persist.Write(r.cfg.StatePath, b, 0o600)
 }
+
+// Window is one contiguous interval in which a class is considered active,
+// including the configured lead time. It exists so operators can compare the
+// configured schedule with the real timetable without reading runner state.
+type Window struct {
+	CourseID    string    `json:"course_id"`
+	ClassID     string    `json:"class_id"`
+	Start       time.Time `json:"start"`
+	End         time.Time `json:"end"`
+	ScheduleKey string    `json:"schedule_key,omitempty"`
+}
+
+// Windows projects the active intervals for every class between from and
+// until using the same predicate as the polling loop. Minutes are the smallest
+// granularity the schedule format supports.
+func Windows(classes []Class, lead time.Duration, from, until time.Time) []Window {
+	from, until = from.Truncate(time.Minute), until.Truncate(time.Minute)
+	if until.Before(from) {
+		return nil
+	}
+	out := []Window{}
+	open := map[string]*Window{}
+	for t := from; !t.After(until); t = t.Add(time.Minute) {
+		for _, class := range classes {
+			key := class.CourseID + ":" + class.ClassID
+			active := classActive(t, class, lead)
+			window := open[key]
+			switch {
+			case active && window == nil:
+				open[key] = &Window{CourseID: class.CourseID, ClassID: class.ClassID, Start: t}
+			case !active && window != nil:
+				window.End = t
+				window.ScheduleKey = activeScheduleKey(window.Start.Add(lead), class)
+				out = append(out, *window)
+				delete(open, key)
+			}
+		}
+	}
+	for key, window := range open {
+		window.End = until.Add(time.Minute)
+		for _, class := range classes {
+			if class.CourseID+":"+class.ClassID == key {
+				window.ScheduleKey = activeScheduleKey(window.Start.Add(lead), class)
+			}
+		}
+		out = append(out, *window)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Start.Equal(out[j].Start) {
+			return out[i].CourseID+out[i].ClassID < out[j].CourseID+out[j].ClassID
+		}
+		return out[i].Start.Before(out[j].Start)
+	})
+	return out
+}

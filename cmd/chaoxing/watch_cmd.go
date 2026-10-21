@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/persist"
+	"github.com/DeliciousBuding/chaoxing/internal/watch"
 )
 
 const maxWatchClasses = 8
@@ -20,12 +21,18 @@ const maxWatchClasses = 8
 // only watch.classes and preserves every other configuration field verbatim.
 // The daemon reads configuration at startup, so callers must restart it.
 func watchCommand(configPath string, args []string) error {
-	if len(args) < 2 || args[0] != "classes" {
-		return errors.New("watch subcommand required: classes list|add|remove")
+	if len(args) < 2 {
+		return errors.New("watch subcommand required: classes list|add|remove, windows")
 	}
 	root, err := loadConfigMap(configPath)
 	if err != nil {
 		return err
+	}
+	if args[0] == "windows" {
+		return watchWindows(configPath, args[1:])
+	}
+	if args[0] != "classes" {
+		return errors.New("unknown watch subcommand")
 	}
 	switch args[1] {
 	case "list":
@@ -94,6 +101,64 @@ func watchCommand(configPath string, args []string) error {
 	}
 	fmt.Fprintln(os.Stderr, "restart the daemon to apply the new class list")
 	return nil
+}
+
+// watchWindows prints the same active intervals the polling loop would use,
+// including lead time, so an operator can compare configuration with the real
+// timetable before relying on automatic sign-in.
+func watchWindows(configPath string, args []string) error {
+	c, err := load()
+	if err != nil {
+		return err
+	}
+	if c.Watch == nil {
+		return errors.New("watch is not configured")
+	}
+	fs := flag.NewFlagSet("watch windows", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	days := fs.Int("days", 7, "number of days to project")
+	fromRaw := fs.String("from", "", "optional RFC3339 start time (default now)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *days < 1 || *days > 30 {
+		return errors.New("--days must be between 1 and 30")
+	}
+	from := time.Now()
+	if strings.TrimSpace(*fromRaw) != "" {
+		parsed, err := time.Parse(time.RFC3339, *fromRaw)
+		if err != nil {
+			return errors.New("--from must be RFC3339")
+		}
+		from = parsed
+	}
+	lead := time.Duration(c.Watch.LeadSeconds) * time.Second
+	if lead == 0 {
+		lead = 2 * time.Minute
+	}
+	if lead > 10*time.Minute {
+		lead = 10 * time.Minute
+	}
+	windows := watch.Windows(c.Watch.Classes, lead, from, from.Add(time.Duration(*days)*24*time.Hour))
+	type row struct {
+		CourseID    string `json:"course_id"`
+		ClassID     string `json:"class_id"`
+		Start       string `json:"start"`
+		End         string `json:"end"`
+		ScheduleKey string `json:"schedule_key,omitempty"`
+	}
+	out := make([]row, 0, len(windows))
+	for _, w := range windows {
+		out = append(out, row{
+			CourseID: w.CourseID, ClassID: w.ClassID,
+			Start:       w.Start.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04 MST"),
+			End:         w.End.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04 MST"),
+			ScheduleKey: w.ScheduleKey,
+		})
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"ok": true, "lead_seconds": int(lead.Seconds()), "count": len(out), "windows": out,
+	})
 }
 
 func loadConfigMap(path string) (map[string]any, error) {
