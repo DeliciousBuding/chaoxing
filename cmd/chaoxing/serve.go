@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,6 +27,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
 	"github.com/DeliciousBuding/chaoxing/internal/statestore"
+	"github.com/DeliciousBuding/chaoxing/internal/supervisor"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 	"github.com/DeliciousBuding/chaoxing/internal/watch"
 	"github.com/DeliciousBuding/chaoxing/internal/webui"
@@ -334,6 +336,18 @@ func watchCaptureEnabled(w *watchConfig) bool {
 	return w != nil && w.Capture != nil && w.Capture.Enabled
 }
 
+func supervisorNotifier(c config) (notify.Sender, error) {
+	if c.Watch != nil && c.Watch.Enabled {
+		return watchSender(*c.Watch)
+	}
+	for _, tenant := range c.Tenants {
+		if tenant.Watch != nil && tenant.Watch.Enabled {
+			return watchSender(*tenant.Watch)
+		}
+	}
+	return nil, nil
+}
+
 func stateStoreNeeded(c config) bool {
 	if len(c.Proxies) > 0 || watchCaptureEnabled(c.Watch) || (c.Location != nil && c.Location.Enabled) {
 		return true
@@ -355,6 +369,19 @@ func serve() error {
 		return errors.New("public and management listeners must be distinct loopback addresses")
 	}
 	if e = validateTenants(c); e != nil {
+		return e
+	}
+	// Process supervision starts before any network service so a procd respawn
+	// can distinguish an unexpected exit from a SIGTERM-initiated restart.
+	supervisorSender, senderErr := supervisorNotifier(c)
+	if senderErr != nil {
+		return senderErr
+	}
+	sup, e := supervisor.Start(supervisor.Config{
+		Path:   filepath.Join(c.StateDir, "supervisor-state.json"),
+		Sender: supervisorSender,
+	})
+	if e != nil {
 		return e
 	}
 	// Egress pool: direct by default, SOCKS5 endpoints when configured. The
@@ -495,7 +522,7 @@ func serve() error {
 		Accounts:          uiAccounts,
 		Execute:           accountExecute,
 		Status: func() any {
-			return map[string]any{"egress": pool.Status(), "tenants": tenantIDs, "watchers": watcherMetrics()}
+			return map[string]any{"egress": pool.Status(), "process": sup.Metrics(), "tenants": tenantIDs, "watchers": watcherMetrics()}
 		},
 		Captures: captureList,
 		Location: locations,
@@ -511,7 +538,7 @@ func serve() error {
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version, "watchers": watcherHealth()})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version, "process": sup.Metrics(), "watchers": watcherHealth()})
 	})
 	local := http.NewServeMux()
 	localAuth := func(w http.ResponseWriter, r *http.Request) bool {
@@ -530,6 +557,7 @@ func serve() error {
 			"version":  version,
 			"egress":   pool.Status(),
 			"tenants":  tenantIDs,
+			"process":  sup.Metrics(),
 			"watchers": watcherMetrics(),
 		})
 	})
@@ -599,6 +627,11 @@ func serve() error {
 	defer cancel()
 	_ = pub.Shutdown(shutdown)
 	_ = priv.Shutdown(shutdown)
+	if e == nil || errors.Is(e, http.ErrServerClosed) {
+		if markErr := sup.MarkClean(); markErr != nil {
+			log.Printf("supervisor clean shutdown marker failed: %v", markErr)
+		}
+	}
 	if errors.Is(e, http.ErrServerClosed) {
 		return nil
 	}

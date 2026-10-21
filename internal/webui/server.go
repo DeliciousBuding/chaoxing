@@ -4,6 +4,8 @@
 package webui
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -19,6 +21,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,6 +63,14 @@ const (
 type Account struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+// cachedAsset holds a deterministic entity tag and a precompressed
+// representation for one immutable Vite asset. The original bytes stay in the
+// embedded filesystem; only the compressed copy is held in heap memory.
+type cachedAsset struct {
+	etag       string
+	compressed []byte
 }
 
 type Execute func(ctx context.Context, account, tool string, arguments map[string]any) (any, error)
@@ -104,6 +115,7 @@ type Server struct {
 	now            func() time.Time
 	sem            chan struct{}
 	indexHTML      []byte
+	assets         map[string]cachedAsset
 }
 
 func New(cfg Config) (*Server, error) {
@@ -144,11 +156,48 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, errors.New("webui bundle is missing; run npm --prefix web run build")
 	}
+	assets, err := buildAssetCache()
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		cfg: cfg, issuerHost: issuer.Host, trustedProxies: trusted,
 		sessions: map[string]webSession{}, now: time.Now,
-		sem: make(chan struct{}, 8), indexHTML: index,
+		sem: make(chan struct{}, 8), indexHTML: index, assets: assets,
 	}, nil
+}
+
+func buildAssetCache() (map[string]cachedAsset, error) {
+	root := distFS()
+	out := map[string]cachedAsset{}
+	err := fs.WalkDir(root, "assets", func(current string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		content, err := fs.ReadFile(root, current)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(content)
+		var compressed bytes.Buffer
+		writer := gzip.NewWriter(&compressed)
+		if _, err := writer.Write(content); err != nil {
+			return err
+		}
+		if err := writer.Close(); err != nil {
+			return err
+		}
+		name := strings.TrimPrefix(current, "assets/")
+		out[name] = cachedAsset{etag: `"` + hex.EncodeToString(sum[:]) + `"`, compressed: compressed.Bytes()}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func parseTrustedProxies(values []string) ([]netip.Prefix, error) {
@@ -181,17 +230,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /app", s.index)
 	mux.HandleFunc("GET /app/{path...}", s.index)
-	mux.Handle("GET /assets/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.TrimPrefix(r.URL.Path, "/assets/") == "" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
-		http.FileServerFS(distFS()).ServeHTTP(w, r)
-	}))
+	mux.Handle("GET /assets/", http.HandlerFunc(s.serveAsset))
 
 	mux.Handle("GET /api/auth/session", s.bounded(s.sessionInfo))
 	mux.Handle("POST /api/auth/login", s.bounded(s.login))
@@ -203,6 +242,95 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/tools", s.bounded(s.authenticated(s.tools)))
 	mux.Handle("POST /api/tools/call", s.bounded(s.authenticated(s.call)))
 	s.registerLocationRoutes(mux)
+}
+
+func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/assets/")
+	asset, ok := s.assets[name]
+	if name == "" || !ok || !fs.ValidPath(name) {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("ETag", asset.etag)
+	w.Header().Set("Vary", "Accept-Encoding")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+	if etagMatch(r.Header.Get("If-None-Match"), asset.etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if acceptsGzip(r) && len(asset.compressed) > 0 {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Length", strconv.Itoa(len(asset.compressed)))
+		w.Header().Set("Content-Type", assetContentType(name))
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = w.Write(asset.compressed)
+		return
+	}
+	root := distFS()
+	file, err := root.Open("assets/" + name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+	seeker, ok := file.(io.ReadSeeker)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	// ServeContent handles HEAD, range requests and content-type detection for
+	// clients that cannot use the precompressed representation.
+	http.ServeContent(w, r, name, time.Time{}, seeker)
+}
+
+func etagMatch(header, etag string) bool {
+	if header == "" {
+		return false
+	}
+	if header == "*" {
+		return true
+	}
+	for _, value := range strings.Split(header, ",") {
+		if strings.TrimSpace(value) == etag {
+			return true
+		}
+	}
+	return false
+}
+
+func acceptsGzip(r *http.Request) bool {
+	for _, value := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		if strings.EqualFold(strings.TrimSpace(value), "gzip") {
+			return true
+		}
+	}
+	return false
+}
+
+func assetContentType(name string) string {
+	switch path.Ext(name) {
+	case ".js", ".mjs":
+		return "text/javascript; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".svg":
+		return "image/svg+xml"
+	case ".json":
+		return "application/json; charset=utf-8"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".woff2":
+		return "font/woff2"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func (s *Server) bounded(next http.HandlerFunc) http.Handler {

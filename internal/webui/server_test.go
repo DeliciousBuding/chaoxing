@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -219,20 +221,60 @@ func TestWebUIServesEmbeddedBundleWithCSP(t *testing.T) {
 	}
 }
 
-func TestWebUIServesEmbeddedAssetWithImmutableCache(t *testing.T) {
+func TestWebUIServesEmbeddedAssetWithETagAndGzip(t *testing.T) {
 	_, mux := newTestServer(t)
 	w := do(t, mux, "GET", "/", "")
 	match := regexp.MustCompile(`src="/assets/([^"]+\.js)"`).FindStringSubmatch(w.Body.String())
 	if match == nil {
 		t.Fatal("built JavaScript asset missing from index")
 	}
-	w = do(t, mux, "GET", "/assets/"+match[1], "")
+	name := match[1]
+	w = do(t, mux, "GET", "/assets/"+name, "")
 	if w.Code != 200 || !strings.Contains(w.Header().Get("Content-Type"), "javascript") {
 		t.Fatal(w.Code, w.Header().Get("Content-Type"), w.Body.String())
 	}
 	if cache := w.Header().Get("Cache-Control"); !strings.Contains(cache, "immutable") {
 		t.Fatal("hashed asset is not cached immutably", cache)
 	}
+	etag := w.Header().Get("ETag")
+	if etag == "" || w.Header().Get("Vary") != "Accept-Encoding" {
+		t.Fatal("asset negotiation headers missing", etag, w.Header().Get("Vary"))
+	}
+	original, err := dist.ReadFile("dist/assets/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(w.Body.Bytes(), original) {
+		t.Fatal("identity asset response changed")
+	}
+
+	r := httptest.NewRequest("GET", "https://mcp.example.com/assets/"+name, nil)
+	r.Header.Set("If-None-Match", etag)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	if rec.Code != 304 || rec.Body.Len() != 0 || !strings.Contains(rec.Header().Get("Cache-Control"), "immutable") {
+		t.Fatal("conditional asset request did not return an empty 304", rec.Code, rec.Body.String())
+	}
+
+	r = httptest.NewRequest("GET", "https://mcp.example.com/assets/"+name, nil)
+	r.Header.Set("Accept-Encoding", "gzip")
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	if rec.Code != 200 || rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatal(rec.Code, rec.Header().Get("Content-Encoding"), rec.Body.String())
+	}
+	reader, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, original) {
+		t.Fatal("gzip asset did not decode to the original bytes")
+	}
+
 	w = do(t, mux, "GET", "/assets/", "")
 	if w.Code != 404 {
 		t.Fatal("asset directory listing was enabled", w.Code, w.Body.String())

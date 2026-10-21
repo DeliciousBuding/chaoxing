@@ -5,6 +5,7 @@ import {
   Globe2,
   GripVertical,
   HeartPulse,
+  ServerCog,
   ShieldCheck
 } from "lucide-react";
 import {
@@ -123,6 +124,8 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
       ...(value as Record<string, any>)
     }));
   const watcherPanics = watcherRows.reduce((sum, item) => sum + (Number(item.consecutive_panics) || 0), 0);
+  const process: Record<string, any> = runtime.process ?? {};
+  const processCrashes = Number(process.consecutive_crashes) || 0;
 
   const metrics = React.useMemo<Record<DashboardCardId, Metric>>(() => ({
     security: {
@@ -141,11 +144,15 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
       id: "watchers", title: "Watcher 监督", description: `panic 已隔离并可观测；当前连续 panic ${watcherPanics} 次`, icon: HeartPulse,
       value: watcherRows.length, tone: watcherPanics > 0 ? "warning" : "success"
     },
+    supervisor: {
+      id: "supervisor", title: "进程监督", description: `procd 异常退出计数已持久化；当前连续 ${processCrashes} 次`, icon: ServerCog,
+      value: processCrashes > 0 ? processCrashes : "稳定", tone: processCrashes > 0 ? "warning" : "success"
+    },
     capabilities: {
       id: "capabilities", title: "能力域", description: "以 capabilities 契约为准，不猜测接口", icon: Database,
       value: capabilityCount ?? "—", tone: "primary"
     }
-  }), [capabilityCount, connection?.meta?.status, egress.length]);
+  }), [capabilityCount, connection?.meta?.status, egress.length, processCrashes]);
 
   const order = React.useMemo(() => {
     const valid = dashboardOrder.filter((id): id is DashboardCardId => id in metrics);

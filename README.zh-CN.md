@@ -89,7 +89,7 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 
 当前提供 32 个已验证工具，包括有界学业总览、行动项、学业摘要、抢答、答案生成、全局作业题目桥接、课堂 H5 证据采集、作业保存/提交、上传和人脸签到。`chaoxing capabilities` 查看能力和未支持范围，`chaoxing schema assignments.list` 查看契约。
 
-可选的课堂活动监视器会按课程时间轮询指定班级，合并课程群消息里的签到卡片，发送运维告警，并自动提交普通、位置，以及配置了签到码的密码/手势签到；也可用 `auto_answer` 对课堂抢答执行一次性抢占。内置班级预设坐标、私有位置绑定、持久化设备身份、轮询抖动和单次尝试状态。空闲时段最多五分钟低频轮询并在课表边界唤醒；每个 tick 有 panic 隔离与 Gotify/通知通道告警，`/healthz` 输出聚合的 `last_tick_at` / `consecutive_panics` 等安全指标。上游返回滑块验证码时，若配置了 solver，`sign_activity` 会自动完成一次有界识别与重试；未配置时 watcher 只告警一次，Agent 可人工完成手动链路；二维码签到接收运营者扫到的原始 payload；拍照签到使用路径受限上传后的 object ID；人脸签到使用独立 scope 授权的人脸模板。
+可选的课堂活动监视器会按课程时间轮询指定班级，合并课程群消息里的签到卡片，发送运维告警，并自动提交普通、位置，以及配置了签到码的密码/手势签到；也可用 `auto_answer` 对课堂抢答执行一次性抢占。内置班级预设坐标、私有位置绑定、持久化设备身份、轮询抖动和单次尝试状态。空闲时段最多五分钟低频轮询并在课表边界唤醒；每个 tick 有 panic 隔离与 Gotify/通知通道告警，`/healthz` 输出聚合的 `last_tick_at` / `consecutive_panics` / `consecutive_crashes` 等安全指标；procd 异常退出会持久化计数并发送高优先级通知。上游返回滑块验证码时，若配置了 solver，`sign_activity` 会自动完成一次有界识别与重试；未配置时 watcher 只告警一次，Agent 可人工完成手动链路；二维码签到接收运营者扫到的原始 payload；拍照签到使用路径受限上传后的 object ID；人脸签到使用独立 scope 授权的人脸模板。
 
 滑块识别通过 `captcha_solver` 配置。内置 local solver 使用背景图和缺口图且不访问网络；打码狗只接收背景图，key 保持私有。详见[配置文档](docs/configuration.md)。
 

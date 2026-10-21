@@ -13,7 +13,7 @@ export const themeLabels: Record<Theme, string> = {
   contrast: "高对比"
 };
 
-const defaultDashboardOrder = ["security", "egress", "upstream", "watchers", "capabilities"] as const;
+const defaultDashboardOrder = ["security", "egress", "upstream", "watchers", "supervisor", "capabilities"] as const;
 export type DashboardCardId = (typeof defaultDashboardOrder)[number];
 
 interface UIState {

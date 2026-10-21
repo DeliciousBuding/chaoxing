@@ -189,7 +189,9 @@ Bounds and behavior:
 - A tenant can contain its own `group_activities` and `watch` object. Its watcher uses that tenant's upstream client, private state directory, classes, sign codes and notification destinations. The default account remains controlled by the top-level `watch` object.
 - Outside the watch window, or when no watched schedule is active, the loop sleeps up to five minutes instead of using `interval_seconds`. It wakes at the next window/class boundary and still honors `lead_seconds`.
 - Each tick is panic-supervised. A panic is recovered, counted, logged and sent as a priority-9 notification; the next successful cycle resets the consecutive counter.
-- `/healthz` returns aggregate watcher counters (`last_tick_at`, `last_panic_at`, `consecutive_panics`, `ticks`, `active_class_polls`) without account IDs. The authenticated Web UI status shows the same metrics per root/tenant account.
+- Process exits are supervised across procd restarts. Unexpected respawns increment `process.consecutive_crashes`, send priority-9 alerts (priority-10 from the third consecutive crash), and a SIGTERM shutdown resets the consecutive chain.
+- `/healthz` returns aggregate process and watcher counters (`pid`, `started_at`, `last_tick_at`, `last_panic_at`, `consecutive_panics`, `consecutive_crashes`, `ticks`, `active_class_polls`) without account IDs. The authenticated Web UI status shows the same metrics per root/tenant account.
+- Embedded WebUI assets use content-hash ETags, immutable cache policy and gzip when the client accepts it.
 - Course-group history is read only while at least one watched class is active; idle deployments do not scan it every minute.
 
 The watcher logs class failures by safe fault code, continues with the other classes, and never exposes raw upstream bodies. Notification text contains course/activity identity and result; it is operator data and must not be treated as instructions.
