@@ -67,7 +67,9 @@ function CoordinateField({
 export function Locations() {
   const [config, setConfig] = React.useState<MapConfig>({ enabled: false });
   const [presets, setPresets] = React.useState<LocationPreset[]>([]);
+  const [presetsLoaded, setPresetsLoaded] = React.useState(false);
   const [bindings, setBindings] = React.useState<LocationBinding[]>([]);
+  const [bindingsLoaded, setBindingsLoaded] = React.useState(false);
   const [courses, setCourses] = React.useState<CourseRow[]>([]);
   const [schedules, setSchedules] = React.useState<WatchSchedule[]>([]);
   const [form, setForm] = React.useState<LocationPreset>(emptyPreset);
@@ -132,25 +134,40 @@ export function Locations() {
   async function reload() {
     setBusy(true);
     setError("");
-    try {
-      const [mapValue, presetValue, bindingValue, courseValue, scheduleValue] = await Promise.all([
-        api.mapConfig(),
-        api.locations(),
-        api.locationBindings(),
-        api.call("list_courses"),
-        api.watchSchedules()
-      ]);
-      setConfig(mapValue);
-      setPresets(presetValue.items ?? []);
-      setBindings(bindingValue.items ?? []);
-      setSchedules(scheduleValue.items ?? []);
-      const rows = ((courseValue.data as any)?.result ?? []) as CourseRow[];
-      setCourses(rows);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
+    const [mapResult, presetResult, bindingResult, courseResult, scheduleResult] = await Promise.allSettled([
+      api.mapConfig(),
+      api.locations(),
+      api.locationBindings(),
+      api.call("list_courses"),
+      api.watchSchedules()
+    ]);
+    const failures: string[] = [];
+    if (mapResult.status === "fulfilled") setConfig(mapResult.value);
+    else failures.push(`地图：${mapResult.reason instanceof Error ? mapResult.reason.message : String(mapResult.reason)}`);
+    if (presetResult.status === "fulfilled") {
+      setPresets(presetResult.value.items ?? []);
+      setPresetsLoaded(true);
+    } else {
+      failures.push(`位置：${presetResult.reason instanceof Error ? presetResult.reason.message : String(presetResult.reason)}`);
     }
+    if (bindingResult.status === "fulfilled") {
+      setBindings(bindingResult.value.items ?? []);
+      setBindingsLoaded(true);
+    } else {
+      failures.push(`绑定：${bindingResult.reason instanceof Error ? bindingResult.reason.message : String(bindingResult.reason)}`);
+    }
+    if (courseResult.status === "fulfilled") {
+      setCourses(((courseResult.value.data as any)?.result ?? []) as CourseRow[]);
+    } else {
+      failures.push(`课程：${courseResult.reason instanceof Error ? courseResult.reason.message : String(courseResult.reason)}`);
+    }
+    if (scheduleResult.status === "fulfilled") {
+      setSchedules(scheduleResult.value.items ?? []);
+    } else {
+      failures.push(`课表：${scheduleResult.reason instanceof Error ? scheduleResult.reason.message : String(scheduleResult.reason)}`);
+    }
+    if (failures.length > 0) setError(failures.join("；"));
+    setBusy(false);
   }
 
   React.useEffect(() => { void reload(); }, []);
@@ -511,7 +528,7 @@ export function Locations() {
               </div>
             </CardHeader>
             <CardContent>
-              {busy && presets.length === 0 ? <Loading /> : presets.length === 0 ? <EmptyState bare title="暂无位置" /> : (
+              {busy && !presetsLoaded ? <Loading /> : !presetsLoaded ? <EmptyState bare title="位置读取失败" /> : presets.length === 0 ? <EmptyState bare title="暂无位置" /> : (
                 <>
                   <div className="space-y-2 lg:hidden">
                     {presets.map((preset) => (
@@ -567,7 +584,7 @@ export function Locations() {
               <CardTitle>课程绑定</CardTitle>
             </CardHeader>
             <CardContent>
-              {busy && bindingRows.length === 0 ? <Loading /> : bindingRows.length === 0 ? <EmptyState bare title="暂无绑定" /> : (
+              {busy && !bindingsLoaded ? <Loading /> : !bindingsLoaded ? <EmptyState bare title="绑定读取失败" /> : bindingRows.length === 0 ? <EmptyState bare title="暂无绑定" /> : (
                 <>
                   <div className="space-y-2 lg:hidden">
                     {bindingRows.map(({ binding, preset, course, schedule }) => (

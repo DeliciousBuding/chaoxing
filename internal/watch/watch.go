@@ -206,6 +206,7 @@ const (
 	// A sign-in burst must not spend the whole tick budget sleeping. The
 	// jitter stays, but all automatic sign-ins in one tick share this cap.
 	maxSignDelayPerTick = 30 * time.Second
+	signActionTimeout   = 30 * time.Second
 )
 
 func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer, answerer ...AnswerActivitySource) (*Runner, error) {
@@ -1175,9 +1176,11 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 	if delay := r.autoSignDelay(); delay > 0 && !r.wait(ctx, delay) {
 		return false
 	}
+	actionCtx, cancel := context.WithTimeout(ctx, signActionTimeout)
+	defer cancel()
 	req := upstream.SignRequest{CourseID: item.CourseID, ClassID: item.ClassID, ActivityID: item.ID}
 	if r.cfg.LocationResolver != nil {
-		loc, resolveErr := r.cfg.LocationResolver.Resolve(ctx, item.CourseID, item.ClassID, scheduleKey)
+		loc, resolveErr := r.cfg.LocationResolver.Resolve(actionCtx, item.CourseID, item.ClassID, scheduleKey)
 		if resolveErr != nil {
 			now := r.now()
 			next := entry{
@@ -1205,7 +1208,7 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 	if class.SignCode != nil {
 		req.SignCode = class.SignCode.Code
 	}
-	result, err := r.signer.SignActivity(ctx, req)
+	result, err := r.signer.SignActivity(actionCtx, req)
 	now := r.now()
 	k := key(item)
 	next := entry{

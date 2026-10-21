@@ -50,6 +50,7 @@ export function StudyResources() {
   const [chapters, setChapters] = React.useState<any>(null);
   const [materials, setMaterials] = React.useState<any>(null);
   const [schedule, setSchedule] = React.useState<any>(null);
+  const [loadedWeek, setLoadedWeek] = React.useState<number | null>(null);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
@@ -88,6 +89,10 @@ export function StudyResources() {
     }
     setBusy(true);
     setError("");
+    setChapters(null);
+    setMaterials(null);
+    setSchedule(null);
+    setLoadedWeek(weekNumber);
     const failures: string[] = [];
     try {
       try {
@@ -139,7 +144,13 @@ export function StudyResources() {
         <CardContent className="grid gap-4 lg:grid-cols-[1fr_180px_auto]">
           <div className="space-y-2">
             <Label htmlFor="study-course">课程</Label>
-            <Select id="study-course" value={courseKey} onChange={(event) => setCourseKey(event.target.value)}>
+            <Select id="study-course" value={courseKey} onChange={(event) => {
+              setCourseKey(event.target.value);
+              setChapters(null);
+              setMaterials(null);
+              setSchedule(null);
+              setLoadedWeek(null);
+            }}>
               <option value="">选择课程</option>
               {courses.map((course) => (
                 <option key={courseKeyFor(course)} value={courseKeyFor(course)}>
@@ -150,7 +161,11 @@ export function StudyResources() {
           </div>
           <div className="space-y-2">
             <Label htmlFor="study-week">教学周</Label>
-            <Input id="study-week" type="number" min={1} max={30} value={week} onChange={(event) => setWeek(event.target.value)} />
+            <Input id="study-week" type="number" min={1} max={30} value={week} onChange={(event) => {
+              setWeek(event.target.value);
+              setSchedule(null);
+              setLoadedWeek(null);
+            }} />
           </div>
           <div className="flex items-end">
             <Button disabled={!selectedCourse || busy} onClick={() => void load()}>
@@ -162,7 +177,7 @@ export function StudyResources() {
 
       <Card>
         <CardHeader>
-          <CardTitle>章节任务</CardTitle>
+          <CardTitle>章节任务{selectedCourse ? ` · ${selectedCourse.name}` : ""}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {chapters && <MetaSummary data={chapters} />}
@@ -213,7 +228,7 @@ export function StudyResources() {
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle><LibraryBig className="mr-2 inline h-4 w-4" />课程资料</CardTitle>
+            <CardTitle><LibraryBig className="mr-2 inline h-4 w-4" />课程资料{selectedCourse ? ` · ${selectedCourse.name}` : ""}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             {materials && <MetaSummary data={materials} />}
@@ -278,7 +293,7 @@ export function StudyResources() {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>教学周课表</CardTitle>
+            <CardTitle>教学周课表{loadedWeek ? ` · 第 ${loadedWeek} 周` : ""}</CardTitle>
           </CardHeader>
           <CardContent>
             {!schedule ? (

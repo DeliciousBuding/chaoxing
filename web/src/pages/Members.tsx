@@ -51,6 +51,7 @@ export function Members({ session }: { session: SessionInfo }) {
   const [creating, setCreating] = React.useState(false);
   const [form, setForm] = React.useState<FormState>(emptyForm);
   const [loading, setLoading] = React.useState(true);
+  const [membersLoaded, setMembersLoaded] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [notice, setNotice] = React.useState("");
@@ -60,15 +61,21 @@ export function Members({ session }: { session: SessionInfo }) {
   const load = React.useCallback(async () => {
     setLoading(true);
     setError("");
-    try {
-      const [memberResult, accountResult] = await Promise.all([api.members(), api.adminAccounts()]);
-      setUsers(memberResult.items);
-      setAccounts(accountResult.items);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
+    const [memberResult, accountResult] = await Promise.allSettled([api.members(), api.adminAccounts()]);
+    const failures: string[] = [];
+    if (memberResult.status === "fulfilled") {
+      setUsers(memberResult.value.items);
+      setMembersLoaded(true);
+    } else {
+      failures.push(`成员：${memberResult.reason instanceof Error ? memberResult.reason.message : String(memberResult.reason)}`);
     }
+    if (accountResult.status === "fulfilled") {
+      setAccounts(accountResult.value.items);
+    } else {
+      failures.push(`账号：${accountResult.reason instanceof Error ? accountResult.reason.message : String(accountResult.reason)}`);
+    }
+    if (failures.length > 0) setError(failures.join("；"));
+    setLoading(false);
   }, []);
 
   React.useEffect(() => { void load(); }, [load]);
@@ -225,7 +232,9 @@ export function Members({ session }: { session: SessionInfo }) {
             <CardTitle>成员列表</CardTitle>
           </CardHeader>
           <CardContent>
-            {loading ? <Loading label="正在读取成员" /> : users.length === 0 ? (
+            {loading ? <Loading label="正在读取成员" /> : !membersLoaded ? (
+              <EmptyState bare title="成员读取失败" />
+            ) : users.length === 0 ? (
               <EmptyState bare title="还没有平台成员" />
             ) : (
               <>

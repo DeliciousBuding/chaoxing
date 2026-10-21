@@ -157,6 +157,10 @@ func TestActivityCaptureRoundTripAndPrune(t *testing.T) {
 	if _, err := s.SaveActivityCapture(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
+	// A repeated poll with identical evidence must not rewrite the row.
+	if _, err := s.SaveActivityCapture(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
 	item.State = "finished"
 	item.LastSeenAt = now.Add(time.Minute)
 	if _, err := s.SaveActivityCapture(context.Background(), item); err != nil {

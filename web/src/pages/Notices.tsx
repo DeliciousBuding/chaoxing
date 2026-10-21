@@ -51,7 +51,7 @@ export function Notices() {
                       {row.send_time && <span>{formatBeijing(row.send_time)}</span>}
                     </div>
                   </div>
-                  <div className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-muted-foreground">{row.content || "—"}</div>
+                  <div className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-5 text-muted-foreground">{row.content || "—"}</div>
                 </article>
               ))}
             </div>

@@ -95,8 +95,14 @@ func TestAcademicSelectionPreflight(t *testing.T) {
 	if _, e := c.studyOverview(context.Background(), nil); e == nil {
 		t.Fatal("unbounded overview")
 	}
-	if _, e := c.actionItems(context.Background(), nil); e == nil {
-		t.Fatal("unbounded action selection")
+	c.assignments = []Assignment{{ID: "synthetic", SubmissionState: "pending", Status: "未交"}}
+	c.assignmentsAt = time.Now()
+	v, e := c.actionItems(context.Background(), nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if out := v.(map[string]any); len(out["items"].([]map[string]any)) != 1 || out["complete"] != false {
+		t.Fatal(out)
 	}
 	if _, e := c.listAssignments(context.Background(), map[string]any{"status": "invented"}); e == nil {
 		t.Fatal("invalid status")
@@ -351,7 +357,7 @@ func TestAcademicOverviewActionsBoundedAndSourceBacked(t *testing.T) {
 	if len(out["items"].([]Assignment)) != 1 || out["complete"] != false || out["assignments_complete"] != true || out["has_more"] != true {
 		t.Fatal(out)
 	}
-	v, e = c.actionItems(context.Background(), map[string]any{"limit": float64(1)})
+	v, e = c.actionItems(context.Background(), map[string]any{"course_id": co.ID, "class_id": co.ClassID, "limit": float64(1)})
 	if e != nil {
 		t.Fatal(e)
 	}

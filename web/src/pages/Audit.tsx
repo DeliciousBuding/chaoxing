@@ -92,7 +92,7 @@ export function Audit() {
             <Label htmlFor="audit-actor" className="text-[11px]">操作者</Label>
             <Input id="audit-actor" className="w-[120px]" value={actor} onChange={(event) => setActor(event.target.value)} placeholder="username" maxLength={32} />
           </div>
-          <Button size="sm" type="submit" variant="outline" disabled={loading}><RefreshCw className="h-4 w-4" /> <span className="hidden sm:inline">查询</span></Button>
+          <Button size="sm" type="submit" variant="outline" disabled={loading} aria-label="查询审计日志" title="查询审计日志"><RefreshCw className="h-4 w-4" /> <span className="hidden sm:inline">查询</span></Button>
         </form>
         }
       />

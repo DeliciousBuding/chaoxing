@@ -16,6 +16,7 @@ import (
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
+	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 )
 
 func newTestServer(t *testing.T) (*Server, *http.ServeMux) {
@@ -189,6 +190,57 @@ func TestWebUILoginSessionAndToolCall(t *testing.T) {
 	w = do(t, mux, "GET", "/api/status", "", csrfCookie, session)
 	if w.Code != 401 {
 		t.Fatal("logout did not invalidate session", w.Code, w.Body.String())
+	}
+}
+
+func TestToolErrorsStayJSON4xx(t *testing.T) {
+	hash, err := access.HashPassword("correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(Config{
+		Version: "test", Issuer: "https://mcp.example.com", OwnerPasswordHash: hash,
+		Accounts: []Account{{ID: "tenant", Name: "tenant"}},
+		Execute: func(context.Context, string, string, map[string]any) (any, error) {
+			return nil, &upstream.Fault{Code: "AMBIGUOUS_COURSE", Message: "synthetic ambiguity"}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	s.Register(mux)
+	w := do(t, mux, "GET", "/api/auth/session", "")
+	csrf := cookieValue(w, csrfCookie)
+	csrfCookie := &http.Cookie{Name: csrfCookie, Value: csrf}
+	w = doCSRF(t, mux, "POST", "/api/auth/login", `{"password":"correct horse battery staple"}`, csrf, csrfCookie)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	session := &http.Cookie{Name: sessionCookie, Value: cookieValue(w, sessionCookie)}
+	w = doCSRF(t, mux, "POST", "/api/tools/call", `{"tool":"list_courses","arguments":{}}`, csrf, csrfCookie, session)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("content-type=%q", w.Header().Get("Content-Type"))
+	}
+	value := jsonMap(t, w)
+	errValue, _ := value["error"].(map[string]any)
+	if errValue["code"] != "AMBIGUOUS_COURSE" {
+		t.Fatalf("body=%v", value)
+	}
+	for code, want := range map[string]int{
+		"AMBIGUOUS_COURSE":   http.StatusBadRequest,
+		"NOT_FOUND":          http.StatusNotFound,
+		"COURSE_ACCESS":      http.StatusForbidden,
+		"RATE_LIMITED":       http.StatusTooManyRequests,
+		"UPSTREAM_SCHEMA":    http.StatusFailedDependency,
+		"STATE_WRITE_FAILED": http.StatusFailedDependency,
+	} {
+		if got := toolErrorStatus(code); got != want {
+			t.Fatalf("%s: got %d want %d", code, got, want)
+		}
 	}
 }
 
@@ -498,6 +550,18 @@ func TestWebUILoginRateLimitWindow(t *testing.T) {
 	}
 	if s.allowLogin("192.0.2.0/24") {
 		t.Fatal("eleventh login attempt inside one minute was allowed")
+	}
+}
+
+func TestWebUILoginGlobalRateLimit(t *testing.T) {
+	s, _ := newTestServer(t)
+	now := time.Now().UTC()
+	s.now = func() time.Time { return now }
+	for i := 0; i < loginMinuteGlobal; i++ {
+		s.attempts = append(s.attempts, loginAttempt{at: now.Add(-time.Duration(i) * time.Second), ip: fmt.Sprintf("198.51.100.%d", i+1)})
+	}
+	if s.allowLogin("203.0.113.1") {
+		t.Fatal("global login minute cap was not enforced")
 	}
 }
 

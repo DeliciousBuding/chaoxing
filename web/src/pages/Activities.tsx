@@ -1,19 +1,72 @@
 import * as React from "react";
-import { api } from "../lib/api";
+import { api, type Course, type WatchSchedule } from "../lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
+import { Select } from "../components/ui/select";
 import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader, statusVariant } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { labelFor } from "../lib/labels";
+import { teachingWeek, weekMatches } from "../lib/teaching-week";
 
 const signableTypes = ["normal_or_photo", "password", "gesture", "location", "qrcode", "photo"];
 
 function canSignRow(row: any) {
   return Boolean(row.signable && row.user_state === "unsigned" && signableTypes.includes(row.sign_type));
+}
+
+function courseKey(course: { course_id: string; class_id: string }) {
+  return `${course.course_id}:${course.class_id}`;
+}
+
+function beijingClock(now: Date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(now);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  return {
+    day: value("weekday").slice(0, 3).toLowerCase(),
+    minutes: Number(value("hour")) * 60 + Number(value("minute"))
+  };
+}
+
+function parseClock(value: string) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  return match ? Number(match[1]) * 60 + Number(match[2]) : Number.NaN;
+}
+
+function pickDefaultCourse(courses: Course[], schedules: WatchSchedule[], termStart?: string) {
+  const available = courses.filter((course) => !course.retired);
+  if (available.length === 0) return null;
+  const week = teachingWeek(new Date(), termStart);
+  const clock = beijingClock(new Date());
+  const activeSchedule = schedules.find((schedule) => {
+    const days = schedule.days ?? [];
+    const start = parseClock(schedule.start);
+    const end = parseClock(schedule.end);
+    return days.some((day) => day.slice(0, 3).toLowerCase() === clock.day)
+      && Number.isFinite(start) && Number.isFinite(end)
+      && clock.minutes >= start && clock.minutes <= end
+      && weekMatches(week, schedule.weeks);
+  });
+  const scheduledCourse = activeSchedule
+    ? available.find((course) => courseKey(course) === `${activeSchedule.course_id}:${activeSchedule.class_id}`)
+    : null;
+  if (scheduledCourse) return scheduledCourse;
+  const firstScheduled = schedules.find((schedule) =>
+    available.some((course) => courseKey(course) === `${schedule.course_id}:${schedule.class_id}`)
+  );
+  if (firstScheduled) {
+    return available.find((course) => courseKey(course) === `${firstScheduled.course_id}:${firstScheduled.class_id}`) ?? null;
+  }
+  return available[0];
 }
 
 function SignFields({
@@ -79,23 +132,75 @@ function SignFields({
 }
 
 export function Activities({ tools }: { tools: any[] }) {
+  const [courses, setCourses] = React.useState<Course[]>([]);
+  const [selectedKey, setSelectedKey] = React.useState("");
   const [data, setData] = React.useState<any>(null);
   const [detail, setDetail] = React.useState<any>(null);
   const [signTarget, setSignTarget] = React.useState<any>(null);
   const [signForm, setSignForm] = React.useState<Record<string, string>>({});
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [catalogBusy, setCatalogBusy] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
+  const selectedCourse = courses.find((course) => courseKey(course) === selectedKey) ?? null;
 
-  async function load() {
+  async function load(course: Course) {
     setBusy(true);
     setError("");
     try {
-      setData((await api.call("list_activities")).data);
+      setData((await api.call("list_activities", {
+        course_id: course.course_id,
+        class_id: course.class_id,
+        limit: 50
+      })).data);
       setLoaded(true);
     }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setData(null);
+      setLoaded(true);
+    }
     finally { setBusy(false); }
+  }
+
+  async function loadCatalog() {
+    setCatalogBusy(true);
+    setError("");
+    const [courseResult, scheduleResult] = await Promise.allSettled([
+      api.call("list_courses"),
+      api.watchSchedules()
+    ]);
+    if (courseResult.status === "rejected") {
+      setError(courseResult.reason instanceof Error ? courseResult.reason.message : String(courseResult.reason));
+      setCourses([]);
+      setLoaded(true);
+      setCatalogBusy(false);
+      return;
+    }
+    const rows = ((courseResult.value.data as any)?.result ?? []) as Course[];
+    const scheduleRows = scheduleResult.status === "fulfilled" ? scheduleResult.value.items ?? [] : [];
+    const termStart = scheduleResult.status === "fulfilled" ? scheduleResult.value.term_start : undefined;
+    setCourses(rows);
+    const chosen = pickDefaultCourse(rows, scheduleRows, termStart);
+    setCatalogBusy(false);
+    if (!chosen) {
+      setSelectedKey("");
+      setData(null);
+      setLoaded(true);
+      return;
+    }
+    setSelectedKey(courseKey(chosen));
+    await load(chosen);
+  }
+
+  function selectCourse(key: string) {
+    setSelectedKey(key);
+    setDetail(null);
+    setSignTarget(null);
+    setData(null);
+    setLoaded(false);
+    const course = courses.find((item) => courseKey(item) === key);
+    if (course) void load(course);
   }
 
   function beginSign(row: any) {
@@ -151,7 +256,8 @@ export function Activities({ tools }: { tools: any[] }) {
       const result = await api.call("sign_activity", args);
       setDetail(result.data);
       setSignTarget(null);
-      await load();
+      if (selectedCourse) await load(selectedCourse);
+      else await loadCatalog();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -164,23 +270,47 @@ export function Activities({ tools }: { tools: any[] }) {
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
   }
 
-  React.useEffect(() => { void load(); }, []);
+  React.useEffect(() => { void loadCatalog(); }, []);
   const rows: any[] = data?.items ?? [];
 
   return (
     <div className="space-y-5">
       <PageHeader
         title="课堂活动"
-        actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新活动</Button>}
+        actions={<Button size="sm" variant="outline" onClick={() => selectedCourse ? void load(selectedCourse) : void loadCatalog()} disabled={busy || catalogBusy}>刷新活动</Button>}
       />
       <ErrorBanner error={error} />
+      <Card>
+        <CardHeader><CardTitle>读取范围</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="min-w-0 flex-1 space-y-2">
+            <Label htmlFor="activity-course">课程</Label>
+            <Select
+              id="activity-course"
+              value={selectedKey}
+              onChange={(event) => selectCourse(event.target.value)}
+              disabled={catalogBusy || busy}
+            >
+              <option value="">{catalogBusy ? "读取课程…" : "选择课程"}</option>
+              {courses.filter((course) => !course.retired).map((course) => (
+                <option key={courseKey(course)} value={courseKey(course)}>
+                  {course.name}{course.class ? ` · ${course.class}` : ""}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => selectedCourse ? void load(selectedCourse) : void loadCatalog()} disabled={busy || catalogBusy}>
+            刷新
+          </Button>
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
           <CardTitle>活动流</CardTitle>
           {data && <MetaSummary data={data} />}
         </CardHeader>
         <CardContent className="space-y-4">
-          {busy && !data ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState bare title="当前没有活动" /> : (
+          {!selectedCourse ? <EmptyState bare title="选择课程后读取课堂活动" /> : busy && !data ? <Loading /> : !loaded ? null : !data ? <EmptyState bare title="活动读取失败" /> : rows.length === 0 ? <EmptyState bare title="当前没有活动" /> : (
             <>
             <div className="space-y-3 lg:hidden">
               {rows.map((row, index) => (

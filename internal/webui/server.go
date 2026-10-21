@@ -63,6 +63,7 @@ const (
 	maxSessionsPerUser = 6
 	loginMinuteIP      = 5
 	loginQuarterIP     = 20
+	loginMinuteGlobal  = 20
 )
 
 var (
@@ -186,6 +187,7 @@ type Server struct {
 	now            func() time.Time
 	sem            chan struct{}
 	heavy          chan struct{}
+	media          chan struct{}
 	loginSem       chan struct{}
 	indexHTML      []byte
 	assets         map[string]cachedAsset
@@ -301,7 +303,7 @@ func New(cfg Config) (*Server, error) {
 	return &Server{
 		cfg: cfg, issuerHost: issuer.Host, trustedProxies: trusted,
 		sessions: map[string]webSession{}, now: time.Now,
-		sem: make(chan struct{}, 8), heavy: make(chan struct{}, 2), loginSem: make(chan struct{}, 1),
+		sem: make(chan struct{}, 8), heavy: make(chan struct{}, 2), media: make(chan struct{}, 4), loginSem: make(chan struct{}, 1),
 		indexHTML: index, assets: assets,
 	}, nil
 }
@@ -378,11 +380,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/account", s.bounded(s.authenticated(s.accountInfo)))
 	mux.Handle("POST /api/account/select", s.bounded(s.authenticated(s.selectAccount)))
 	mux.Handle("GET /api/status", s.bounded(s.authenticated(s.status)))
-	mux.Handle("GET /api/captures", s.heavyBounded(s.authenticated(s.captures)))
+	mux.Handle("GET /api/captures", s.bounded(s.authenticated(s.captures)))
 	mux.Handle("GET /api/sign-audits", s.bounded(s.authenticated(s.signAudits)))
 	mux.Handle("GET /api/profile", s.heavyBounded(s.authenticated(s.profile)))
-	mux.Handle("GET /api/media/avatar", s.heavyBounded(s.authenticated(s.avatar)))
-	mux.Handle("GET /api/media/course-cover", s.heavyBounded(s.authenticated(s.courseCover)))
+	mux.Handle("GET /api/media/avatar", s.mediaBounded(s.authenticated(s.avatar)))
+	mux.Handle("GET /api/media/course-cover", s.mediaBounded(s.authenticated(s.courseCover)))
 	mux.Handle("GET /api/tools", s.bounded(s.authenticated(s.tools)))
 	mux.Handle("POST /api/tools/call", s.heavyBounded(s.authenticated(s.call)))
 	mux.Handle("GET /api/admin/users", s.bounded(s.authenticated(s.adminUsers)))
@@ -494,19 +496,45 @@ func (s *Server) heavyBounded(next http.HandlerFunc) http.Handler {
 	return s.limited(s.heavy, next)
 }
 
+// mediaBounded keeps a burst of course covers from immediately exhausting a
+// tool-call slot. Media requests wait briefly for one of their own slots.
+func (s *Server) mediaBounded(next http.HandlerFunc) http.Handler {
+	return s.limitedWait(s.media, 1500*time.Millisecond, next)
+}
+
 func (s *Server) limited(limit chan struct{}, next http.HandlerFunc) http.Handler {
+	return s.limitedWait(limit, 0, next)
+}
+
+func (s *Server) limitedWait(limit chan struct{}, wait time.Duration, next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.hostOK(w, r) {
 			return
 		}
-		select {
-		case limit <- struct{}{}:
-			defer func() { <-limit }()
-		default:
+		acquired := false
+		if wait <= 0 {
+			select {
+			case limit <- struct{}{}:
+				acquired = true
+			default:
+			}
+		} else {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			select {
+			case limit <- struct{}{}:
+				acquired = true
+			case <-timer.C:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		if !acquired {
 			w.Header().Set("Retry-After", "1")
 			writeError(w, 503, "TEMPORARILY_UNAVAILABLE", "management UI is busy")
 			return
 		}
+		defer func() { <-limit }()
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -932,12 +960,15 @@ func (s *Server) allowLogin(ip string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	kept := make([]loginAttempt, 0, len(s.attempts)+1)
-	perMinute, perQuarter := 0, 0
+	perMinute, perQuarter, globalMinute := 0, 0, 0
 	for _, attempt := range s.attempts {
 		if now.Sub(attempt.at) > 15*time.Minute {
 			continue
 		}
 		kept = append(kept, attempt)
+		if now.Sub(attempt.at) <= time.Minute {
+			globalMinute++
+		}
 		if attempt.ip == ip {
 			perQuarter++
 			if now.Sub(attempt.at) <= time.Minute {
@@ -950,7 +981,7 @@ func (s *Server) allowLogin(ip string) bool {
 		kept = kept[len(kept)-1024:]
 	}
 	s.attempts = kept
-	return perMinute < loginMinuteIP && perQuarter < loginQuarterIP
+	return globalMinute < loginMinuteGlobal && perMinute < loginMinuteIP && perQuarter < loginQuarterIP
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -1432,11 +1463,8 @@ func (s *Server) call(w http.ResponseWriter, r *http.Request) {
 		s.recordAudit(r, session, "tool", "tool.call", definition.Name, account, false, map[string]any{
 			"tool": definition.Name, "error": fault.Code, "duration_ms": time.Since(started).Milliseconds(),
 		})
-		status := 502
-		if fault.Code == "INVALID_ARGUMENT" || fault.Code == "UNKNOWN_TOOL" {
-			status = 400
-		} else if fault.Code == "RATE_LIMITED" {
-			status = 429
+		status := toolErrorStatus(fault.Code)
+		if status == http.StatusTooManyRequests {
 			w.Header().Set("Retry-After", "1")
 		}
 		writeError(w, status, fault.Code, fault.Message)
@@ -1446,6 +1474,25 @@ func (s *Server) call(w http.ResponseWriter, r *http.Request) {
 		"tool": definition.Name, "duration_ms": time.Since(started).Milliseconds(),
 	})
 	writeJSON(w, 200, map[string]any{"ok": true, "data": value})
+}
+
+// Tool errors are deliberately 4xx. Cloudflare replaces origin 5xx bodies
+// with an HTML error page, which hides the stable JSON error contract from the
+// management UI. Upstream availability is represented as 424 Failed
+// Dependency so the client still receives a parseable JSON response.
+func toolErrorStatus(code string) int {
+	switch code {
+	case "INVALID_ARGUMENT", "INVALID_TOOL", "UNKNOWN_TOOL", "INVALID_URL", "UNSUPPORTED", "AMBIGUOUS_COURSE":
+		return http.StatusBadRequest
+	case "NOT_FOUND":
+		return http.StatusNotFound
+	case "AUTH_REQUIRED", "AUTH_COOLDOWN", "CREDENTIALS_UNAVAILABLE", "COURSE_ACCESS":
+		return http.StatusForbidden
+	case "RATE_LIMITED":
+		return http.StatusTooManyRequests
+	default:
+		return http.StatusFailedDependency
+	}
 }
 
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request, capability string) (webSession, bool) {

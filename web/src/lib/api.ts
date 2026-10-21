@@ -166,6 +166,25 @@ export class ApiError extends Error {
 
 export const SESSION_EXPIRED_EVENT = "chaoxing:session-expired";
 
+const errorMessages: Record<string, string> = {
+  AMBIGUOUS_COURSE: "匹配到多个班级，请选择具体课程/班级",
+  NOT_FOUND: "未找到对应数据",
+  AUTH_REQUIRED: "学习通登录已失效，请检查账号",
+  AUTH_COOLDOWN: "学习通登录暂时冷却，请稍后重试",
+  CREDENTIALS_UNAVAILABLE: "学习通凭据不可用，请检查账号",
+  COURSE_ACCESS: "当前账号无权访问该课程",
+  RATE_LIMITED: "请求过于频繁，请稍后重试",
+  UPSTREAM_UNAVAILABLE: "学习通暂时不可用，请稍后重试",
+  UPSTREAM_SCHEMA: "学习通返回结构变化，暂时无法读取",
+  UPSTREAM_HTTP: "学习通拒绝了本次请求",
+  RESPONSE_TOO_LARGE: "返回数据过大，请缩小读取范围",
+  STATE_WRITE_FAILED: "本地状态写入失败，请检查存储",
+  UNSUPPORTED: "该功能暂不支持",
+  INVALID_ARGUMENT: "参数不完整或格式不正确",
+  INVALID_TOOL: "工具名称无效",
+  UNKNOWN_TOOL: "工具名称无效"
+};
+
 function csrfToken(): string {
   const prefix = "__Host-chaoxing_csrf=";
   for (const part of document.cookie.split(";")) {
@@ -190,10 +209,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!response.ok || body?.ok === false) {
     const error = body?.error ?? {};
+    const code = error.code ?? `HTTP_${response.status}`;
     if (response.status === 401 && path !== "/api/auth/login" && typeof window !== "undefined") {
       window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
     }
-    throw new ApiError(error.code ?? `HTTP_${response.status}`, error.message ?? response.statusText);
+    const fallback = response.status >= 500
+      ? `服务暂时不可用（HTTP ${response.status}）`
+      : response.statusText || `请求失败（HTTP ${response.status}）`;
+    throw new ApiError(code, error.message || errorMessages[code] || fallback);
   }
   return body as T;
 }

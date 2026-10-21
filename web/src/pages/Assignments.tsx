@@ -19,20 +19,27 @@ export function Assignments() {
   async function load() {
     setBusy(true);
     setError("");
-    const failures: string[] = [];
     try {
-      const [actions, all] = await Promise.allSettled([
-        api.call("list_action_items"),
-        api.call("list_assignments", { status: "all", limit: 100 })
-      ]);
-      if (actions.status === "fulfilled") setActionItems(actions.value.data);
-      else failures.push(`待办：${actions.reason instanceof Error ? actions.reason.message : String(actions.reason)}`);
-      if (all.status === "fulfilled") setAssignments(all.value.data);
-      else failures.push(`作业：${all.reason instanceof Error ? all.reason.message : String(all.reason)}`);
-      if (failures.length > 0) setError(failures.join("；"));
+      const all = await api.call("list_assignments", { status: "all", limit: 100 });
+      const allData = all.data ?? {};
+      const rows: any[] = allData.items ?? [];
+      const pending = rows.filter((row) => row.submission_state !== "submitted");
+      setAssignments(allData);
+      setActionItems({
+        ...allData,
+        items: pending.map((row) => ({
+          kind: "assignment",
+          action: row.submission_state === "pending" ? "review_assignment" : "review_state",
+          assignment: row,
+          inferred: false
+        })),
+        total_in_feed: pending.length,
+        has_more: false
+      });
       setLoaded(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setLoaded(true);
     }
     finally { setBusy(false); }
   }
@@ -88,8 +95,8 @@ export function Assignments() {
       <PageHeader
         title="待办与作业"
         meta={
-          <Badge variant={!loaded ? "secondary" : actions.length > 0 ? "warning" : "secondary"}>
-            {!loaded ? "读取中" : actions.length > 0 ? "有待处理" : "暂无待办"}
+          <Badge variant={!loaded ? "secondary" : error ? "destructive" : actions.length > 0 ? "warning" : "secondary"}>
+            {!loaded ? "读取中" : error ? "读取失败" : actions.length > 0 ? "有待处理" : "暂无待办"}
           </Badge>
         }
         actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新待办</Button>}

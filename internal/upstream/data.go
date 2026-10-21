@@ -903,6 +903,26 @@ func (c *Client) actionItems(ctx context.Context, a map[string]any) (any, error)
 	// Filter before the result limit, so submitted work cannot hide pending work.
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
+	limit := number(a, "limit", 50)
+	if limit < 1 || limit > 100 {
+		return nil, fault("INVALID_ARGUMENT", "limit must be 1..100")
+	}
+	hasSelection := str(a, "course") != "" || str(a, "course_id") != "" || str(a, "class_id") != ""
+	if !hasSelection {
+		if e := c.fetchAssignments(ctx); e != nil {
+			return nil, e
+		}
+		items, total := assignmentActionItems(c.assignments, limit)
+		return map[string]any{
+			"items":         items,
+			"total_in_feed": total,
+			"has_more":      total > len(items),
+			"complete":      false,
+			"coverage":      "global_feed_only; other action sources unsupported",
+			"warnings":      []string{"action items use the global assignment feed; per-course coverage is not established"},
+			"fetched_at":    time.Now().UTC(),
+		}, nil
+	}
 	courses, e := c.fetchCourses(ctx)
 	if e != nil {
 		return nil, e
@@ -910,10 +930,6 @@ func (c *Client) actionItems(ctx context.Context, a map[string]any) (any, error)
 	selected, e := academicSelection(courses, a)
 	if e != nil {
 		return nil, e
-	}
-	limit := number(a, "limit", 50)
-	if limit < 1 || limit > 100 {
-		return nil, fault("INVALID_ARGUMENT", "limit must be 1..100")
 	}
 	items := []map[string]any{}
 	details := []AcademicCoverage{}

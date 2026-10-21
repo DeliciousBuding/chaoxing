@@ -106,7 +106,7 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
                       <Badge variant={item.auto_sign ? "success" : "secondary"}>{item.auto_sign ? "自动签到" : "签到关闭"}</Badge>
                       <Badge variant={item.auto_answer ? "success" : "secondary"}>{item.auto_answer ? "自动答题" : "答题关闭"}</Badge>
                       {item.notify_only && <Badge variant="success">通知优先</Badge>}
-                      {!item.notify_only && <Badge variant="warning">允许自动作答</Badge>}
+                      {!item.notify_only && <Badge variant={item.auto_answer ? "warning" : "secondary"}>{item.auto_answer ? "允许自动作答" : "需人工确认"}</Badge>}
                       <Badge variant={item.location_enabled ? "success" : "secondary"}>
                         {item.location_enabled ? "位置已配置" : "位置未配置"}
                       </Badge>

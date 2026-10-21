@@ -58,9 +58,9 @@ export function Work({ tools }: { tools: any[] }) {
     if (!selectedCourse || !jobID) return;
     if (!window.confirm("使用配置的题库 / LLM 生成草稿？不会自动提交上游。")) return;
     setBusy(true);
+    setError("");
     try {
-      const result = await api.call("answer_work", { course_id: selectedCourse.course_id, class_id: selectedCourse.class_id, job_id: jobID });
-      setQuestions(result.data);
+      await api.call("answer_work", { course_id: selectedCourse.course_id, class_id: selectedCourse.class_id, job_id: jobID });
       await loadQuestions();
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }

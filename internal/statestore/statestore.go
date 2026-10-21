@@ -347,7 +347,14 @@ func (s *Store) SaveActivityCapture(_ context.Context, item capture.Activity) (c
 	ON CONFLICT(account_key, activity_key) DO UPDATE SET
 		kind=excluded.kind, state=excluded.state, user_state=excluded.user_state, sign_type=excluded.sign_type,
 		source=excluded.source, last_seen_at=excluded.last_seen_at, update_count=activity_captures.update_count+1,
-		activity_json=excluded.activity_json`,
+		activity_json=excluded.activity_json
+	WHERE activity_captures.kind <> excluded.kind
+		OR activity_captures.state <> excluded.state
+		OR activity_captures.user_state <> excluded.user_state
+		OR activity_captures.sign_type <> excluded.sign_type
+		OR activity_captures.source <> excluded.source
+		OR activity_captures.activity_json <> excluded.activity_json
+		OR activity_captures.last_seen_at + 300 < excluded.last_seen_at`,
 		item.AccountKey, item.ActivityKey, item.CourseID, item.ClassID, item.ActivityID, item.Kind, item.State,
 		item.UserState, item.SignType, item.Source, item.FirstSeenAt.Unix(), item.LastSeenAt.Unix(), string(item.ActivityJSON))
 	if err != nil {

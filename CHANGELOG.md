@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0-rc.35 — 2026-10-21
+
+- Fix the two production pages that failed on a multi-course account. `list_action_items` now falls back to the bounded global assignment feed when no course is selected, and the todo page derives pending rows from one `list_assignments` response instead of issuing a second ambiguous scan.
+- Add a course selector to classroom activities and always pass exact `course_id`/`class_id`; the default follows the current Asia/Shanghai schedule when possible, with the first non-retired course as a fallback.
+- Keep tool failures as parseable JSON through Cloudflare. Ambiguous/input errors return 400, absent resources 404, access/auth errors 403, rate limits 429, and upstream or state failures 424 instead of origin 5xx responses that Cloudflare replaces with HTML.
+- Map stable API error codes to Chinese recovery messages and fall back to `HTTP n` when an upstream or proxy response has no JSON body.
+- Fix the work-answer crash after a successful AI draft: `answer_work` returns draft metadata, not a question array, so the page refreshes the existing question view instead of replacing it.
+- Preserve local location presets and bindings when one catalog, schedule or map request fails; show a distinct read-failure state instead of clearing successful data. Members likewise keep the member list when the account summary fails.
+- Clear stale study chapters/materials/schedule on course or week changes and label loaded cards with the active course/week.
+- Reduce capture write amplification with a conditional UPSERT: identical observations no longer rewrite a row or increment `update_count`; a five-minute heartbeat preserves prune semantics.
+- Give automatic sign-in a 30-second action budget and add a 20/minute global login cap. Move media to a four-slot bounded pool with a short wait, and take captures off the tool-call pool.
+
 ## 0.5.0-rc.23 — 2026-10-21
 
 - Close the control-plane session fail-open: authenticated requests now carry an explicit server session record, every handler re-checks that the record still exists, and a missing/deleted session can never become `owner` or receive all account grants. Zero-value roles are audited as `anonymous`, never as the owner.
