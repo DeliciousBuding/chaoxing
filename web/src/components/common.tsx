@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader } from "./ui/card";
 import { Skeleton } from "./ui/skeleton";
 import { cn } from "../lib/utils";
 import { useReducedMotion } from "../lib/hooks";
+import { formatBeijing } from "../lib/time";
 
 export function ErrorBanner({ error }: { error: unknown }) {
   const reduced = useReducedMotion();
@@ -83,7 +84,7 @@ export function MetaSummary({ data }: { data: any }) {
         {meta.status === "complete" ? "完整覆盖" : "部分覆盖"}
       </Badge>
       <span>范围：{meta.coverage?.scope ?? "unknown"}</span>
-      {meta.freshness?.fetched_at && <span>抓取：{new Date(meta.freshness.fetched_at).toLocaleString()}</span>}
+      {meta.freshness?.fetched_at && <span>抓取：{formatBeijing(meta.freshness.fetched_at)}（北京时间）</span>}
       {meta.trace_id && <span>Trace：{meta.trace_id}</span>}
     </div>
   );

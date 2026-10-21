@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0-rc.16 — 2026-10-21
+
+- Make every watcher schedule a week-aware, independently keyed occurrence. Polling now defaults to 20 minutes before through 20 minutes after class in Asia/Shanghai, supports explicit stable keys for regular/guidance collisions, and projects the exact same windows through `watch windows`.
+- Restore `watch.auto_answer` propagation through the daemon/tenant assembly boundary; the flag can no longer be silently dropped while the answerer is constructed.
+- Serialize `get_activity_page` through the per-account query gate, eliminating a race with the shared cookie/cache/session state used by reads, sign-in and answer calls.
+- Capture the active schedule key before automatic sign-in delay, so a delayed submission cannot cross the post-class boundary and fall back to the wrong location.
+- Make schedule binding resolution try the exact week-qualified key, then the legacy pre-week alias, then the class-wide default; add a strict account filter to capture retention.
+- Harden runtime state: single-instance state-directory locks, unique temporary state files with directory fsync, one tick at a time, bounded tick execution, watch-state size limit, completion-based health timestamps and `/readyz`.
+- Reduce public health disclosure (`/healthz` now exposes only liveness/version) and keep detailed PID/tick data on the authenticated dashboard and loopback management listener.
+
 ## Unreleased
 
 - Extend `chaoxing courses discover` to query both mooc2 course tabs (`courseType=1` and `courseType=0`) and report the source of each row, so a course that only appears in the unfiltered tab is still found.

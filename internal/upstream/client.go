@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -149,6 +151,7 @@ type Client struct {
 	config            Config
 	http              *http.Client
 	saved             map[string]SavedCookies
+	savedHash         [sha256.Size]byte
 	lastLogin         time.Time
 	loginFailedAt     time.Time
 	courses           []Course
@@ -219,6 +222,9 @@ func New(c Config) (*Client, error) {
 		}
 		clear(b)
 	}
+	if payload, err := x.sessionPayload(); err == nil {
+		x.savedHash = sha256.Sum256(payload)
+	}
 	return x, nil
 }
 
@@ -249,35 +255,65 @@ func EncryptLogin(text string) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 func (c *Client) save(resp *http.Response) error {
-	if cs := resp.Cookies(); len(cs) > 0 {
-		u := *resp.Request.URL
-		u.RawQuery = ""
-		u.Path = "/"
-		record := SavedCookies{u.String(), cs}
-		old := c.saved[record.URL]
-		merged := map[string]*http.Cookie{}
-		for _, v := range old.Cookies {
-			merged[v.Name+"|"+v.Domain+"|"+v.Path] = v
-		}
-		for _, v := range cs {
-			merged[v.Name+"|"+v.Domain+"|"+v.Path] = v
-		}
-		record.Cookies = nil
-		for _, v := range merged {
-			record.Cookies = append(record.Cookies, v)
-		}
-		c.saved[record.URL] = record
+	cs := resp.Cookies()
+	if len(cs) == 0 {
+		return nil
 	}
-	all := []SavedCookies{}
-	for _, s := range c.saved {
-		all = append(all, s)
+	u := *resp.Request.URL
+	u.RawQuery = ""
+	u.Path = "/"
+	record := SavedCookies{URL: u.String(), Cookies: cs}
+	old := c.saved[record.URL]
+	merged := map[string]*http.Cookie{}
+	for _, v := range old.Cookies {
+		merged[v.Name+"|"+v.Domain+"|"+v.Path] = v
 	}
-	b, e := json.Marshal(all)
+	for _, v := range cs {
+		merged[v.Name+"|"+v.Domain+"|"+v.Path] = v
+	}
+	record.Cookies = record.Cookies[:0]
+	for _, v := range merged {
+		record.Cookies = append(record.Cookies, v)
+	}
+	c.saved[record.URL] = record
+
+	b, e := c.sessionPayload()
 	if e != nil {
 		return e
 	}
 	defer clear(b)
-	return vault.SealData(c.config.SessionPath, c.config.KeyPath, b)
+	sum := sha256.Sum256(b)
+	if sum == c.savedHash {
+		return nil
+	}
+	if e = vault.SealData(c.config.SessionPath, c.config.KeyPath, b); e != nil {
+		return e
+	}
+	c.savedHash = sum
+	return nil
+}
+
+// sessionPayload serializes cookies in stable order so an unchanged jar does
+// not trigger an encrypted disk write on every upstream response.
+func (c *Client) sessionPayload() ([]byte, error) {
+	all := []SavedCookies{}
+	for _, s := range c.saved {
+		all = append(all, s)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].URL < all[j].URL })
+	for i := range all {
+		sort.Slice(all[i].Cookies, func(a, b int) bool {
+			left, right := all[i].Cookies[a], all[i].Cookies[b]
+			if left.Name != right.Name {
+				return left.Name < right.Name
+			}
+			if left.Domain != right.Domain {
+				return left.Domain < right.Domain
+			}
+			return left.Path < right.Path
+		})
+	}
+	return json.Marshal(all)
 }
 func (c *Client) raw(ctx context.Context, method, rawurl string, form url.Values) ([]byte, *http.Response, error) {
 	u, e := url.Parse(rawurl)
@@ -502,7 +538,7 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 	case "list_activities":
 		return c.activities(ctx, args)
 	case "get_activity_page":
-		return c.ActivityPage(ctx, args)
+		return c.activityPageLocked(ctx, args)
 	case "list_work_jobs":
 		return c.ListWorkJobs(ctx, args)
 	case "get_work_questions":

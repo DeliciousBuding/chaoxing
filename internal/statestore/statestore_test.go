@@ -14,13 +14,22 @@ import (
 
 func open(t *testing.T) (*Store, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "state.db")
+	path := filepath.Join(privateDir(t), "state.db")
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
 	return s, path
+}
+
+func privateDir(t testing.TB) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func TestProxyHealthRoundTrip(t *testing.T) {
@@ -71,7 +80,7 @@ func TestNewerSchemaRejected(t *testing.T) {
 }
 
 func TestV1HealthSchemaMigratesToV3(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legacy.db")
+	path := filepath.Join(privateDir(t), "legacy.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +111,7 @@ func TestV1HealthSchemaMigratesToV3(t *testing.T) {
 	if err != nil || health["legacy"].Failures != 2 || !health["legacy"].CoolUntil.Equal(cool) {
 		t.Fatal(health, err)
 	}
-	if _, err := s.ListActivityCaptures(context.Background(), 1); err != nil {
+	if _, err := s.ListActivityCaptures(context.Background(), "root", "", 1, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ProxyAssignments(); err != nil {
@@ -129,18 +138,51 @@ func TestActivityCaptureRoundTripAndPrune(t *testing.T) {
 	if err := s.SaveActivityPage(context.Background(), "root", "c:k:1", []byte(`{"forms":[]}`), ""); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := s.ListActivityCaptures(context.Background(), 10)
+	rows, err := s.ListActivityCaptures(context.Background(), "root", "", 10, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || rows[0].UpdateCount != 2 || rows[0].State != "finished" || len(rows[0].PageJSON) == 0 {
 		t.Fatalf("%+v", rows)
 	}
-	if err := s.PruneActivityCaptures(context.Background(), now.Add(2*time.Minute)); err != nil {
+	rows, err = s.ListActivityCaptures(context.Background(), "root", "", 10, false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if rows, err = s.ListActivityCaptures(context.Background(), 10); err != nil || len(rows) != 0 {
+	if len(rows) != 1 || !rows[0].HasPage || len(rows[0].PageJSON) != 0 {
+		t.Fatalf("metadata-only list leaked page evidence: %+v", rows)
+	}
+	if err := s.PruneActivityCaptures(context.Background(), "root", now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err = s.ListActivityCaptures(context.Background(), "root", "", 10, false); err != nil || len(rows) != 0 {
 		t.Fatalf("rows=%d err=%v", len(rows), err)
+	}
+}
+
+func TestActivityCapturePruneIsAccountScoped(t *testing.T) {
+	s, _ := open(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	item := capture.Activity{
+		AccountKey: "tenant-a", ActivityKey: "c:k:1", CourseID: "c", ClassID: "k", ActivityID: "1",
+		Kind: "practice", State: "active", UserState: "unsigned", SignType: "unknown", Source: "class",
+		FirstSeenAt: now, LastSeenAt: now, ActivityJSON: []byte(`{"id":"1"}`),
+	}
+	if _, err := s.SaveActivityCapture(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	item.AccountKey = "tenant-b"
+	if _, err := s.SaveActivityCapture(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PruneActivityCaptures(context.Background(), "tenant-a", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := s.ListActivityCaptures(context.Background(), "tenant-a", "", 10, false); err != nil || len(rows) != 0 {
+		t.Fatalf("tenant-a rows=%d err=%v", len(rows), err)
+	}
+	if rows, err := s.ListActivityCaptures(context.Background(), "tenant-b", "", 10, false); err != nil || len(rows) != 1 {
+		t.Fatalf("tenant-b rows=%d err=%v", len(rows), err)
 	}
 }
 
@@ -161,7 +203,7 @@ func TestActivityPageCaptureDoesNotOverwriteEvidence(t *testing.T) {
 	if err := s.SaveActivityPage(context.Background(), "root", "c:k:1", []byte(`{"second":true}`), ""); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := s.ListActivityCaptures(context.Background(), 1)
+	rows, err := s.ListActivityCaptures(context.Background(), "root", "c:k:1", 1, true)
 	if err != nil {
 		t.Fatal(err)
 	}

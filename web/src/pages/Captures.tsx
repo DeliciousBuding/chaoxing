@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { EmptyState, ErrorBanner, JsonBlock, Loading } from "../components/common";
+import { formatBeijing } from "../lib/time";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 export function Captures() {
@@ -15,7 +16,7 @@ export function Captures() {
   async function load() {
     setBusy(true);
     setError("");
-    try { setRows((await api.captures(200)).items); }
+    try { setRows((await api.captures(50)).items); }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   }
@@ -24,9 +25,8 @@ export function Captures() {
     setBusy(true);
     setError("");
     try {
-      const result = await api.captures(200, { includePage: true, account: row.account, activityKey: row.activity_key });
-      const detail = result.items.find((item) => item.account === row.account && item.activity_key === row.activity_key);
-      setSelected(detail ?? row);
+      const result = await api.captures(1, { includePage: true, account: row.account, activityKey: row.activity_key });
+      setSelected(result.items[0] ?? row);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -58,7 +58,7 @@ export function Captures() {
                     <TableCell><Badge>{row.kind}</Badge></TableCell>
                     <TableCell><Badge variant={row.state === "active" ? "warning" : "secondary"}>{row.state}</Badge></TableCell>
                     <TableCell><Badge variant={row.has_page ? "success" : "secondary"}>{row.has_page ? "已捕获" : "未捕获"}</Badge></TableCell>
-                    <TableCell>{new Date(row.last_seen_at).toLocaleString()}</TableCell>
+                    <TableCell>{formatBeijing(row.last_seen_at)}</TableCell>
                     <TableCell><Button size="sm" variant="outline" onClick={() => void view(row)} disabled={busy}>查看</Button></TableCell>
                   </TableRow>
                 ))}

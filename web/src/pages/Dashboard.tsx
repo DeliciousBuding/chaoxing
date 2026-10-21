@@ -27,6 +27,7 @@ import { ErrorBanner, JsonBlock, Loading, MetaSummary } from "../components/comm
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { useUIStore, type DashboardCardId } from "../lib/store";
 import { cn } from "../lib/utils";
+import { formatBeijing } from "../lib/time";
 
 type Metric = {
   id: DashboardCardId;
@@ -268,7 +269,7 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
                     <TableCell className="font-mono text-xs">{String(item.account)}</TableCell>
                     <TableCell className="text-xs">
                       <span className="inline-flex items-center gap-2">
-                        {item.last_tick_at ? new Date(item.last_tick_at).toLocaleString() : "—"}
+                        {item.last_tick_at ? formatBeijing(item.last_tick_at) : "—"}
                         {isStale(item) && <Badge variant="destructive">停滞</Badge>}
                       </span>
                     </TableCell>

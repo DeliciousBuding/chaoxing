@@ -169,17 +169,23 @@ func (s *Store) Resolve(ctx context.Context, account, courseID, classID, schedul
 	query := `SELECT p.latitude, p.longitude, p.address
 		FROM location_bindings b JOIN location_presets p ON p.id=b.preset_id
 		WHERE b.account_key=? AND b.course_id=? AND b.class_id=? AND b.schedule_key=?`
-	err := s.db.QueryRowContext(ctx, query, account, courseID, classID, scheduleKey).Scan(&row.latitude, &row.longitude, &row.address)
-	if err == nil {
-		return &location.Location{Latitude: row.latitude, Longitude: row.longitude, Address: row.address}, nil
+	keys := []string{scheduleKey}
+	if legacy := legacyScheduleKey(scheduleKey); legacy != "" {
+		keys = append(keys, legacy)
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
+	for _, key := range keys {
+		err := s.db.QueryRowContext(ctx, query, account, courseID, classID, key).Scan(&row.latitude, &row.longitude, &row.address)
+		if err == nil {
+			return &location.Location{Latitude: row.latitude, Longitude: row.longitude, Address: row.address}, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
 	}
 	if scheduleKey == "" {
 		return nil, nil
 	}
-	err = s.db.QueryRowContext(ctx, query, account, courseID, classID, "").Scan(&row.latitude, &row.longitude, &row.address)
+	err := s.db.QueryRowContext(ctx, query, account, courseID, classID, "").Scan(&row.latitude, &row.longitude, &row.address)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -187,4 +193,24 @@ func (s *Store) Resolve(ctx context.Context, account, courseID, classID, schedul
 		return nil, err
 	}
 	return &location.Location{Latitude: row.latitude, Longitude: row.longitude, Address: row.address}, nil
+}
+
+// legacyScheduleKey maps an auto-generated week-qualified binding key back to
+// the pre-week format. Explicit schedule keys never carry the generated -W
+// suffix, so this only applies to bindings created by older releases.
+func legacyScheduleKey(key string) string {
+	i := strings.LastIndex(key, "-W")
+	if i <= 0 || i+2 >= len(key) {
+		return ""
+	}
+	suffix := key[i+2:]
+	for _, r := range suffix {
+		switch {
+		case r >= '0' && r <= '9':
+		case r == '.' || r == ',' || r == '-':
+		default:
+			return ""
+		}
+	}
+	return key[:i]
 }

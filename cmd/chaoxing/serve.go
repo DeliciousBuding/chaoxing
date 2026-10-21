@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,6 +27,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/mcphttp"
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
+	"github.com/DeliciousBuding/chaoxing/internal/statelock"
 	"github.com/DeliciousBuding/chaoxing/internal/statestore"
 	"github.com/DeliciousBuding/chaoxing/internal/supervisor"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
@@ -269,33 +271,12 @@ func newWatcher(c watchConfig, stateDir string, client *upstream.Client, capture
 	if err != nil {
 		return nil, err
 	}
-	interval := time.Duration(c.IntervalSeconds) * time.Second
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	cfg := watch.Config{
-		Interval:              interval,
-		IntervalJitterPercent: c.IntervalJitterPercent,
-		ClassPollDelayMin:     time.Duration(c.ClassPollDelayMinMs) * time.Millisecond,
-		ClassPollDelayMax:     time.Duration(c.ClassPollDelayMaxMs) * time.Millisecond,
-		AutoSignDelayMin:      time.Duration(c.AutoSignDelayMinSecs) * time.Second,
-		AutoSignDelayMax:      time.Duration(c.AutoSignDelayMaxSecs) * time.Second,
-		RepeatEvery:           time.Duration(c.RepeatSeconds) * time.Second,
-		MaxRepeats:            c.MaxRepeats,
-		Window:                c.Window,
-		Lead:                  time.Duration(c.LeadSeconds) * time.Second,
-		AutoSign:              c.AutoSign,
-		Classes:               c.Classes,
-		StatePath:             filepath.Join(stateDir, "watch-state.json"),
+	cfg, err := watchCoreConfig(c, stateDir)
+	if err != nil {
+		return nil, err
 	}
 	if locationResolver != nil {
 		cfg.LocationResolver = locationResolver
-	}
-	if cfg.ClassPollDelayMin == 0 && cfg.ClassPollDelayMax == 0 {
-		cfg.ClassPollDelayMin, cfg.ClassPollDelayMax = 750*time.Millisecond, 3*time.Second
-	}
-	if cfg.AutoSignDelayMin == 0 && cfg.AutoSignDelayMax == 0 {
-		cfg.AutoSignDelayMin, cfg.AutoSignDelayMax = 5*time.Second, 25*time.Second
 	}
 	if c.Capture != nil && c.Capture.Enabled {
 		retention := 7 * 24 * time.Hour
@@ -330,6 +311,59 @@ func newWatcher(c watchConfig, stateDir string, client *upstream.Client, capture
 		cfg.ClassroomAgent = agent
 	}
 	return watch.New(cfg, client, sender, client, answerer...)
+}
+
+// watchCoreConfig maps the daemon configuration to the watcher without
+// dropping safety-relevant fields. It is kept separate so the mapping can be
+// tested without starting a network client or an event loop.
+func watchCoreConfig(c watchConfig, stateDir string) (watch.Config, error) {
+	termStart, err := parseWatchTermStart(c.TermStart)
+	if err != nil {
+		return watch.Config{}, err
+	}
+	interval := time.Duration(c.IntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	cfg := watch.Config{
+		Interval:              interval,
+		IntervalJitterPercent: c.IntervalJitterPercent,
+		ClassPollDelayMin:     time.Duration(c.ClassPollDelayMinMs) * time.Millisecond,
+		ClassPollDelayMax:     time.Duration(c.ClassPollDelayMaxMs) * time.Millisecond,
+		AutoSignDelayMin:      time.Duration(c.AutoSignDelayMinSecs) * time.Second,
+		AutoSignDelayMax:      time.Duration(c.AutoSignDelayMaxSecs) * time.Second,
+		RepeatEvery:           time.Duration(c.RepeatSeconds) * time.Second,
+		MaxRepeats:            c.MaxRepeats,
+		Window:                c.Window,
+		Lead:                  time.Duration(c.LeadSeconds) * time.Second,
+		PollBefore:            time.Duration(c.PollBeforeMinutes) * time.Minute,
+		PollAfter:             time.Duration(c.PollAfterMinutes) * time.Minute,
+		GroupScanInterval:     time.Duration(c.GroupScanSeconds) * time.Second,
+		TermStart:             termStart,
+		AutoSign:              c.AutoSign,
+		AutoAnswer:            c.AutoAnswer,
+		Classes:               c.Classes,
+		StatePath:             filepath.Join(stateDir, "watch-state.json"),
+	}
+	if cfg.ClassPollDelayMin == 0 && cfg.ClassPollDelayMax == 0 {
+		cfg.ClassPollDelayMin, cfg.ClassPollDelayMax = 750*time.Millisecond, 3*time.Second
+	}
+	if cfg.AutoSignDelayMin == 0 && cfg.AutoSignDelayMax == 0 {
+		cfg.AutoSignDelayMin, cfg.AutoSignDelayMax = 5*time.Second, 25*time.Second
+	}
+	return cfg, nil
+}
+
+func parseWatchTermStart(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	value, err := time.ParseInLocation("2006-01-02", raw, time.FixedZone("CST", 8*60*60))
+	if err != nil {
+		return time.Time{}, errors.New("watch term_start must use YYYY-MM-DD")
+	}
+	return value, nil
 }
 
 // watcherStale flags a live process whose polling loop has not completed a
@@ -378,6 +412,26 @@ func stateStoreNeeded(c config) bool {
 	return false
 }
 
+func lockStateDirs(c config) ([]*statelock.Lock, error) {
+	dirs := []string{c.StateDir}
+	for _, tenant := range c.Tenants {
+		dirs = append(dirs, tenant.StateDir)
+	}
+	sort.Strings(dirs)
+	locks := make([]*statelock.Lock, 0, len(dirs))
+	for _, dir := range dirs {
+		lock, err := statelock.Acquire(dir)
+		if err != nil {
+			for _, held := range locks {
+				_ = held.Close()
+			}
+			return nil, fmt.Errorf("state directory lock: %w", err)
+		}
+		locks = append(locks, lock)
+	}
+	return locks, nil
+}
+
 func serve() error {
 	c, e := load()
 	if e != nil {
@@ -389,6 +443,17 @@ func serve() error {
 	if e = validateTenants(c); e != nil {
 		return e
 	}
+	stateLocks, e := lockStateDirs(c)
+	if e != nil {
+		return e
+	}
+	defer func() {
+		for _, lock := range stateLocks {
+			if err := lock.Close(); err != nil {
+				log.Printf("state directory unlock failed: %v", err)
+			}
+		}
+	}()
 	// Process supervision starts before any network service so a procd respawn
 	// can distinguish an unexpected exit from a SIGTERM-initiated restart.
 	supervisorSender, senderErr := supervisorNotifier(c)
@@ -532,11 +597,11 @@ func serve() error {
 		}
 		return nil, &upstream.Fault{Code: "INVALID_ARGUMENT", Message: "unknown management account"}
 	}
-	captureList := func(ctx context.Context, limit int) ([]capture.Activity, error) {
+	captureList := func(ctx context.Context, account, activityKey string, limit int, includePage bool) ([]capture.Activity, error) {
 		if store == nil {
 			return []capture.Activity{}, nil
 		}
-		return store.ListActivityCaptures(ctx, limit)
+		return store.ListActivityCaptures(ctx, account, activityKey, limit, includePage)
 	}
 	ui, err := webui.New(webui.Config{
 		Version:           version,
@@ -549,6 +614,22 @@ func serve() error {
 			return map[string]any{"egress": pool.Status(), "process": sup.Metrics(), "tenants": tenantIDs, "watchers": watcherMetrics(), "now": time.Now().UTC()}
 		},
 		Captures: captureList,
+		Schedules: func(account string) []webui.ScheduleView {
+			var classes []watch.Class
+			if account == "root" {
+				if c.Watch != nil {
+					classes = c.Watch.Classes
+				}
+			} else {
+				for _, tenant := range c.Tenants {
+					if tenant.ID == account && tenant.Watch != nil {
+						classes = tenant.Watch.Classes
+						break
+					}
+				}
+			}
+			return webuiScheduleViews(classes)
+		},
 		Location: locations,
 		Map:      mapConfig,
 		Geocoder: geocoder,
@@ -562,7 +643,21 @@ func serve() error {
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version, "process": sup.Metrics(), "watchers": watcherHealth()})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version})
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		health := watcherHealth()
+		stale, _ := health["stale"].(bool)
+		panics, _ := health["consecutive_panics"].(int)
+		degraded := sup.Metrics().Degraded
+		ok := !stale && panics < 3 && !degraded
+		w.Header().Set("Content-Type", "application/json")
+		if !ok {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": ok, "stale": stale, "consecutive_panics": panics, "degraded": degraded,
+		})
 	})
 	local := http.NewServeMux()
 	localAuth := func(w http.ResponseWriter, r *http.Request) bool {
@@ -660,6 +755,26 @@ func serve() error {
 		return nil
 	}
 	return e
+}
+
+func webuiScheduleViews(classes []watch.Class) []webui.ScheduleView {
+	out := []webui.ScheduleView{}
+	for _, class := range classes {
+		for _, schedule := range class.Schedule {
+			weeks, _ := watch.NormalizeWeeks(schedule.Weeks)
+			out = append(out, webui.ScheduleView{
+				CourseID: class.CourseID,
+				ClassID:  class.ClassID,
+				Key:      schedule.EffectiveKey(),
+				Days:     append([]string(nil), schedule.Days...),
+				Start:    schedule.Start,
+				End:      schedule.End,
+				Weeks:    weeks,
+				Room:     schedule.Room,
+			})
+		}
+	}
+	return out
 }
 
 func watchSender(c watchConfig) (notify.Sender, error) {

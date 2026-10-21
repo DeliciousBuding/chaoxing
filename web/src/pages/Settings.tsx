@@ -3,6 +3,7 @@ import { api, type AccountInfo, type SessionInfo } from "../lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { JsonBlock } from "../components/common";
+import { formatBeijing } from "../lib/time";
 
 export function Settings({ account, session }: { account: AccountInfo | null; session: SessionInfo }) {
   const [status, setStatus] = React.useState<any>(null);
@@ -13,9 +14,9 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
     ["会话 Cookie", "__Host- 前缀 / HttpOnly / Secure / SameSite=Strict"],
     ["会话绑定", "登录来源地址"],
     ["CSRF", "双提交 Header + Cookie，所有写请求强制校验"],
-    ["登录限速", "1 分钟 10 次 / 15 分钟 30 次"],
+    ["登录限速", "每个客户端 1 分钟 5 次 / 15 分钟 20 次"],
     ["会话生命周期", "8 小时绝对过期 / 30 分钟空闲过期"],
-    ["会话容量", "最多 128 个活跃会话，登录时清理过期会话"],
+    ["会话容量", "最多 32 个活跃会话，登录时清理过期会话"],
     ["请求边界", "128 KiB JSON / 并发闸门 / 90 秒工具超时"],
     ["安全头", "CSP、nosniff、no-referrer、frame-ancestors none"],
     ["隐私边界", "仅同源 API，不包含分析脚本或第三方 tracker"],
@@ -29,7 +30,7 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
           <CardHeader><CardTitle>当前会话</CardTitle><CardDescription>Web UI 会话与 MCP OAuth token 独立隔离。</CardDescription></CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center gap-2 text-sm"><span className="text-muted-foreground">当前账号：</span><Badge>{account?.current ?? session.account ?? "root"}</Badge></div>
-            {session.expires_at && <div className="text-sm text-muted-foreground">过期时间：{new Date(session.expires_at).toLocaleString()}</div>}
+            {session.expires_at && <div className="text-sm text-muted-foreground">过期时间：{formatBeijing(session.expires_at)}（北京时间）</div>}
             <div className="text-xs text-muted-foreground">版本：{session.version}</div>
           </CardContent>
         </Card>

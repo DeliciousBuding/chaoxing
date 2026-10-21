@@ -367,6 +367,23 @@ func TestWebUILoginRateLimitWindow(t *testing.T) {
 	}
 }
 
+func TestWebUILoginCapsConcurrentPasswordVerification(t *testing.T) {
+	s, mux := newTestServer(t)
+	s.loginSem <- struct{}{}
+	defer func() { <-s.loginSem }()
+	w := do(t, mux, "GET", "/api/auth/session", "")
+	csrf := cookieValue(w, csrfCookie)
+	csrfCookie := &http.Cookie{Name: csrfCookie, Value: csrf}
+	w = doCSRF(t, mux, "POST", "/api/auth/login", `{"password":"correct horse battery staple"}`, csrf, csrfCookie)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatal("concurrent PBKDF2 was not bounded", w.Code, w.Body.String())
+	}
+	value := jsonMap(t, w)
+	if err, _ := value["error"].(map[string]any); err["code"] != "LOGIN_BUSY" {
+		t.Fatal(value)
+	}
+}
+
 func TestWebUIRejectsInvalidHost(t *testing.T) {
 	_, mux := newTestServer(t)
 	r := httptest.NewRequest("GET", "https://evil.example.com/api/auth/session", nil)
@@ -425,12 +442,15 @@ func TestWebUISessionSurvivesIPv4AddressChangeInsideNetwork(t *testing.T) {
 func TestWebUICapturePageEvidenceIsOptIn(t *testing.T) {
 	s, mux := newTestServer(t)
 	seen := time.Now().UTC().Truncate(time.Second)
-	s.cfg.Captures = func(context.Context, int) ([]capture.Activity, error) {
+	s.cfg.Captures = func(_ context.Context, account, activityKey string, limit int, includePage bool) ([]capture.Activity, error) {
+		if account != "root" || limit != 10 {
+			t.Fatalf("scope=%q limit=%d", account, limit)
+		}
 		return []capture.Activity{{
 			AccountKey: "root", ActivityKey: "course:class:activity", CourseID: "course", ClassID: "class",
 			ActivityID: "activity", Kind: "practice", State: "active", UserState: "unsigned", SignType: "unknown",
 			Source: "class", FirstSeenAt: seen, LastSeenAt: seen, ActivityJSON: []byte(`{"id":"activity"}`),
-			PageJSON: []byte(`{"forms":[{"action":"/practice/submit"}]}`),
+			PageJSON: []byte(`{"forms":[{"action":"/practice/submit"}]}`), HasPage: true,
 		}}, nil
 	}
 
@@ -454,6 +474,15 @@ func TestWebUICapturePageEvidenceIsOptIn(t *testing.T) {
 	}
 	if _, exists := items[0].(map[string]any)["page_json"]; exists {
 		t.Fatal("page evidence was returned without opt-in")
+	}
+	if items[0].(map[string]any)["has_page"] != true {
+		t.Fatal("has_page metadata missing")
+	}
+	if w := do(t, mux, "GET", "/api/captures?limit=10&account=tenant", "", csrfCookie, session); w.Code != http.StatusForbidden {
+		t.Fatal("cross-account capture query accepted", w.Code, w.Body.String())
+	}
+	if w := do(t, mux, "GET", "/api/captures?limit=10&include_page=true", "", csrfCookie, session); w.Code != http.StatusBadRequest {
+		t.Fatal("unbounded page evidence request accepted", w.Code, w.Body.String())
 	}
 
 	w = do(t, mux, "GET", "/api/captures?limit=10&include_page=true&account=root&activity_key=course%3Aclass%3Aactivity", "", csrfCookie, session)

@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
 )
@@ -33,6 +35,50 @@ func testClient(t *testing.T) *Client {
 func response(r *http.Request, body string) *http.Response {
 	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}
 }
+
+func TestSaveSkipsUnchangedCookies(t *testing.T) {
+	c := testClient(t)
+	req, err := http.NewRequest(http.MethodGet, "https://i.chaoxing.com/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCookie := func(value string) *http.Response {
+		resp := response(req, "")
+		resp.Header.Set("Set-Cookie", "sid="+value+"; Path=/; Domain=.chaoxing.com")
+		return resp
+	}
+	if err := c.save(withCookie("one")); err != nil {
+		t.Fatal(err)
+	}
+	epoch := time.Unix(1700000000, 0)
+	if err := os.Chtimes(c.config.SessionPath, epoch, epoch); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.save(withCookie("one")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(c.config.SessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(epoch) {
+		t.Fatal("unchanged cookie jar rewrote the sealed session")
+	}
+	if err := c.save(withCookie("two")); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Stat(c.config.SessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ModTime().Equal(epoch) {
+		t.Fatal("changed cookie jar was not persisted")
+	}
+	if err := c.save(response(req, "")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAutomaticLoginRetriesOnce(t *testing.T) {
 	c := testClient(t)
 	n, logins := 0, 0

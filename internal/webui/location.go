@@ -216,8 +216,9 @@ func (s *Server) reverseGeocode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Latitude  *float64 `json:"latitude"`
-		Longitude *float64 `json:"longitude"`
+		Latitude         *float64 `json:"latitude"`
+		Longitude        *float64 `json:"longitude"`
+		CoordinateSystem string   `json:"coordinate_system"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -226,7 +227,18 @@ func (s *Server) reverseGeocode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_ARGUMENT", "latitude and longitude are required")
 		return
 	}
-	address, err := s.cfg.Geocoder.ReverseGeocode(r.Context(), *req.Latitude, *req.Longitude)
+	system := strings.ToLower(strings.TrimSpace(req.CoordinateSystem))
+	if system == "" {
+		system = location.CoordinateBD09
+	}
+	switch system {
+	case location.CoordinateBD09, location.CoordinateGCJ02, location.CoordinateWGS84:
+	default:
+		writeError(w, 400, "INVALID_ARGUMENT", "coordinate_system must be bd09, gcj02 or wgs84")
+		return
+	}
+	latitude, longitude := location.ToBD09(*req.Latitude, *req.Longitude, system)
+	address, err := s.cfg.Geocoder.ReverseGeocode(r.Context(), latitude, longitude)
 	if err != nil {
 		writeError(w, 502, "REVERSE_GEOCODE_FAILED", err.Error())
 		return

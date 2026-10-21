@@ -500,8 +500,12 @@ func TestMCPDiscoveryIsAnonymousButCallsRemainProtected(t *testing.T) {
 			t.Fatalf("method %s bypassed OAuth: %d", method, w.Code)
 		}
 	}
+	w := request(mux, "POST", "/mcp", `{"jsonrpc":"2.0","id":1,"method":"initialize","padding":"`+strings.Repeat("a", 5000)+`"}`, "application/json")
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized anonymous discovery accepted: %d", w.Code)
+	}
 	f := authorizeFlow(t, mux)
-	w := form(mux, "/oauth/token", tokenForm(f))
+	w = form(mux, "/oauth/token", tokenForm(f))
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}

@@ -40,6 +40,17 @@ export interface MapConfig {
   zoom?: number;
 }
 
+export interface WatchSchedule {
+  course_id: string;
+  class_id: string;
+  key: string;
+  days: string[];
+  start: string;
+  end: string;
+  weeks?: string;
+  room?: string;
+}
+
 export interface ToolDefinition {
   id: string;
   name: string;
@@ -121,6 +132,7 @@ export const api = {
   }),
   deleteLocation: (id: number) => request<{ deleted: boolean }>(`/api/locations/${id}`, { method: "DELETE" }),
   locationBindings: () => request<{ items: LocationBinding[] }>("/api/location-bindings"),
+  watchSchedules: () => request<{ items: WatchSchedule[]; timezone: string; coordinate_system: string }>("/api/watch/schedules"),
   saveLocationBinding: (binding: LocationBinding) => request<{ saved: boolean }>("/api/location-bindings", {
     method: "POST",
     body: JSON.stringify(binding)
@@ -134,9 +146,9 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ address })
   }),
-  reverseGeocode: (latitude: number, longitude: number) => request<{ address: string }>("/api/map/reverse-geocode", {
+  reverseGeocode: (latitude: number, longitude: number, coordinateSystem = "bd09") => request<{ address: string }>("/api/map/reverse-geocode", {
     method: "POST",
-    body: JSON.stringify({ latitude, longitude })
+    body: JSON.stringify({ latitude, longitude, coordinate_system: coordinateSystem })
   }),
   tools: () => request<{ items: ToolDefinition[] }>("/api/tools"),
   call: (tool: string, args: JsonObject = {}) => request<{ ok: boolean; data: JsonObject }>("/api/tools/call", {

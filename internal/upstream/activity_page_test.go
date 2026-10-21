@@ -52,3 +52,19 @@ func TestActivityPageCollectsPracticeStructureWithoutValues(t *testing.T) {
 		t.Fatal(page)
 	}
 }
+
+func TestActivityPageHonorsSessionQueryGate(t *testing.T) {
+	c := testClient(t)
+	if err := c.queries.Acquire(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer c.queries.Release()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel()
+	_, err := c.ActivityPage(ctx, map[string]any{
+		"course_id": "course-1", "class_id": "class-1", "activity_id": "9301",
+	})
+	if err == nil || SafeFault(err).Code != "UPSTREAM_UNAVAILABLE" {
+		t.Fatalf("gate bypass: %v", err)
+	}
+}

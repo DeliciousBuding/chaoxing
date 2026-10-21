@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -67,6 +68,10 @@ type watchConfig struct {
 	RepeatSeconds         int                   `json:"repeat_seconds"`
 	MaxRepeats            int                   `json:"max_repeats"`
 	LeadSeconds           int                   `json:"lead_seconds"`
+	PollBeforeMinutes     int                   `json:"poll_before_minutes,omitempty"`
+	PollAfterMinutes      int                   `json:"poll_after_minutes,omitempty"`
+	GroupScanSeconds      int                   `json:"group_scan_seconds,omitempty"`
+	TermStart             string                `json:"term_start,omitempty"`
 	Window                string                `json:"window,omitempty"`
 	Classes               []watch.Class         `json:"classes"`
 	ClassroomAgent        *classroomAgentConfig `json:"classroom_agent,omitempty"`
@@ -419,6 +424,9 @@ func configFile() string {
 }
 func load() (config, error) {
 	var c config
+	if e := checkPrivateFile(configFile()); e != nil {
+		return c, e
+	}
 	b, e := os.ReadFile(configFile())
 	if e != nil {
 		return c, errors.New("configuration unavailable")
@@ -431,6 +439,20 @@ func load() (config, error) {
 		return c, e
 	}
 	return c, nil
+}
+
+func checkPrivateFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return errors.New("configuration unavailable")
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("configuration must be a regular file")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return errors.New("configuration permissions must be 0600")
+	}
+	return nil
 }
 func (c config) client() (*upstream.Client, error) {
 	cfg, err := c.upstreamConfig()

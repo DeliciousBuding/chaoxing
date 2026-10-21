@@ -135,7 +135,7 @@ func (f Feishu) Send(ctx context.Context, m Message) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := f.client().Do(req)
 	if err != nil {
-		return err
+		return errors.New("feishu webhook transport failed")
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -198,7 +198,7 @@ func (g Gotify) Send(ctx context.Context, m Message) error {
 	req.Header.Set("X-Gotify-Key", g.Token)
 	resp, err := g.client().Do(req)
 	if err != nil {
-		return err
+		return errors.New("gotify transport failed")
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -239,7 +239,7 @@ func (n Ntfy) Send(ctx context.Context, m Message) error {
 	req.Header.Set("Tags", "rotating_light")
 	resp, err := n.client().Do(req)
 	if err != nil {
-		return err
+		return errors.New("ntfy transport failed")
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))

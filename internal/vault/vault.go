@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 type Credentials struct {
@@ -43,6 +44,16 @@ func Atomic(path string, data []byte) error {
 	return os.Rename(name, path)
 }
 func key(path string, create bool) ([]byte, error) {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("encryption key must be a regular file")
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+			return nil, errors.New("encryption key permissions must be 0600")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) && create {
 		b = make([]byte, 32)

@@ -92,7 +92,7 @@ func (f *fakeCaptureStore) SaveActivityPage(_ context.Context, _, activityKey st
 	return nil
 }
 
-func (f *fakeCaptureStore) PruneActivityCaptures(context.Context, time.Time) error {
+func (f *fakeCaptureStore) PruneActivityCaptures(context.Context, string, time.Time) error {
 	f.pruned++
 	return nil
 }
@@ -376,6 +376,33 @@ func TestWatchCapturesGroupCards(t *testing.T) {
 	r.Tick(context.Background())
 	if len(store.saved) != 1 || store.saved[0].Source != "group" || store.saved[0].AccountKey != "tenant" {
 		t.Fatalf("%+v", store.saved)
+	}
+}
+
+func TestWatchGroupFallbackUsesSlowCadence(t *testing.T) {
+	src := &fakeGroupSource{}
+	r, err := New(Config{
+		Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, &fakeSender{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
+	r.Tick(context.Background())
+	if src.groupCalls != 1 {
+		t.Fatalf("first group scans=%d", src.groupCalls)
+	}
+	now = now.Add(time.Minute)
+	r.Tick(context.Background())
+	if src.groupCalls != 1 {
+		t.Fatalf("group fallback ignored cadence: %d", src.groupCalls)
+	}
+	now = now.Add(5 * time.Minute)
+	r.Tick(context.Background())
+	if src.groupCalls != 2 {
+		t.Fatalf("group fallback did not resume: %d", src.groupCalls)
 	}
 }
 
@@ -710,13 +737,48 @@ func TestWatchResolverOverridesPresetLocation(t *testing.T) {
 	}
 }
 
+func TestAutoSignUsesScheduleKeyCapturedBeforeDelay(t *testing.T) {
+	clock := time.Date(2026, 10, 20, 9, 59, 50, 0, shanghai) // Tuesday, 10s before post-class padding ends
+	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "gate-1", true)}}
+	snd := &fakeSender{}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	service := &fakeLocationService{account: "root", bindings: map[string]location.Location{
+		"c\x00k\x00Tue-08:00-09:40": {Latitude: 39.90420, Longitude: 116.40740, Address: "Synthetic specific"},
+		"c\x00k\x00":                {Latitude: 31.10000, Longitude: 121.20000, Address: "Synthetic class fallback"},
+	}}
+	r, err := New(Config{
+		Interval: time.Minute, AutoSign: true, AutoSignDelayMin: 30 * time.Second, AutoSignDelayMax: 30 * time.Second,
+		PollAfter: 20 * time.Minute, Classes: []Class{{
+			CourseID: "c", ClassID: "k",
+			Schedule: []Schedule{{Days: []string{"Tue"}, Start: "08:00", End: "09:40"}},
+		}}, StatePath: t.TempDir() + "/state.json",
+		LocationResolver: location.NewResolver(service, "root"),
+	}, src, snd, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return clock }
+	r.wait = func(_ context.Context, d time.Duration) bool {
+		clock = clock.Add(d)
+		return true
+	}
+	r.Tick(context.Background())
+	if len(signer.requests) != 1 {
+		t.Fatalf("requests=%d", len(signer.requests))
+	}
+	req := signer.requests[0]
+	if req.Latitude == nil || *req.Latitude != 39.90420 || req.Address != "Synthetic specific" {
+		t.Fatalf("schedule identity changed during delay: %+v", req)
+	}
+}
+
 func TestActiveScheduleKey(t *testing.T) {
 	class := Class{Schedule: []Schedule{{Days: []string{"Tue", "Thu"}, Start: "08:00", End: "09:40"}}}
-	got := activeScheduleKey(time.Date(2026, 10, 20, 8, 30, 0, 0, shanghai), class)
+	got := activeScheduleKey(time.Date(2026, 10, 20, 8, 30, 0, 0, shanghai), class, 0, 0, time.Time{})
 	if got != "Tue,Thu-08:00-09:40" {
 		t.Fatal(got)
 	}
-	if activeScheduleKey(time.Date(2026, 10, 20, 10, 0, 0, 0, shanghai), class) != "" {
+	if activeScheduleKey(time.Date(2026, 10, 20, 10, 0, 0, 0, shanghai), class, 0, 0, time.Time{}) != "" {
 		t.Fatal("returned a key outside the schedule")
 	}
 }
@@ -781,7 +843,7 @@ func TestWindowsIncludeLeadAndMergeContiguousMinutes(t *testing.T) {
 	}}
 	from := time.Date(2026, 10, 20, 0, 0, 0, 0, shanghai) // Tuesday
 	until := from.Add(24 * time.Hour)
-	got := Windows(classes, 2*time.Minute, from, until)
+	got := Windows(classes, 2*time.Minute, 0, time.Time{}, from, until)
 	if len(got) != 1 {
 		t.Fatalf("windows=%v", got)
 	}
@@ -793,5 +855,120 @@ func TestWindowsIncludeLeadAndMergeContiguousMinutes(t *testing.T) {
 	}
 	if got[0].ScheduleKey != "Tue-08:00-09:40" {
 		t.Fatal(got[0].ScheduleKey)
+	}
+}
+
+func TestPaddingDefaultsToTwentyMinutesAndKeepsLegacyLead(t *testing.T) {
+	before, after, err := Padding(0, 0, 0)
+	if err != nil || before != 20*time.Minute || after != 20*time.Minute {
+		t.Fatalf("default padding=%s/%s err=%v", before, after, err)
+	}
+	before, after, err = Padding(0, 0, 90*time.Second)
+	if err != nil || before != 90*time.Second || after != 0 {
+		t.Fatalf("legacy padding=%s/%s err=%v", before, after, err)
+	}
+	before, after, err = Padding(0, 0, -time.Second)
+	if err != nil || before != 0 || after != 0 {
+		t.Fatalf("legacy exact-start padding=%s/%s err=%v", before, after, err)
+	}
+	if _, _, err := Padding(31*time.Minute, 20*time.Minute, 0); err == nil {
+		t.Fatal("oversized padding accepted")
+	}
+}
+
+func TestTeachingWeekAndScheduleWeeks(t *testing.T) {
+	term := time.Date(2026, 9, 13, 0, 0, 0, 0, shanghai)
+	cases := []struct {
+		at   time.Time
+		week int
+	}{
+		{time.Date(2026, 9, 13, 8, 0, 0, 0, shanghai), 1},
+		{time.Date(2026, 9, 19, 23, 59, 0, 0, shanghai), 1},
+		{time.Date(2026, 9, 20, 0, 0, 0, 0, shanghai), 2},
+		{time.Date(2026, 10, 21, 12, 0, 0, 0, shanghai), 6},
+	}
+	for _, tc := range cases {
+		if got := teachingWeek(tc.at, term); got != tc.week {
+			t.Fatalf("%s: week=%d want %d", tc.at, got, tc.week)
+		}
+	}
+	if !scheduleWeekActive(time.Date(2026, 10, 27, 8, 0, 0, 0, shanghai), "7,13", term) {
+		t.Fatal("week 7 guidance not active")
+	}
+	if scheduleWeekActive(time.Date(2026, 10, 20, 8, 0, 0, 0, shanghai), "7,13", term) {
+		t.Fatal("week 6 matched week 7 guidance")
+	}
+	if !scheduleWeekActive(time.Date(2026, 10, 20, 8, 0, 0, 0, shanghai), "", term) {
+		t.Fatal("empty weeks should match every teaching week")
+	}
+}
+
+func TestScheduleUsesTwentyMinutePaddingAndCrossMidnight(t *testing.T) {
+	before, after, _ := Padding(0, 0, 0)
+	class := Class{Schedule: []Schedule{{Days: []string{"Tue"}, Start: "08:00", End: "09:40"}}}
+	if classActive(time.Date(2026, 10, 20, 7, 39, 59, 0, shanghai), class, before, after, time.Time{}) {
+		t.Fatal("active before twenty-minute padding")
+	}
+	if !classActive(time.Date(2026, 10, 20, 7, 40, 0, 0, shanghai), class, before, after, time.Time{}) {
+		t.Fatal("not active at twenty-minute padding")
+	}
+	if !classActive(time.Date(2026, 10, 20, 9, 59, 59, 0, shanghai), class, before, after, time.Time{}) {
+		t.Fatal("not active during post-class padding")
+	}
+	if classActive(time.Date(2026, 10, 20, 10, 0, 0, 0, shanghai), class, before, after, time.Time{}) {
+		t.Fatal("active after post-class padding")
+	}
+
+	overnight := Class{Schedule: []Schedule{{Days: []string{"Mon"}, Start: "23:50", End: "00:30"}}}
+	if !classActive(time.Date(2026, 10, 20, 0, 49, 0, 0, shanghai), overnight, before, after, time.Time{}) {
+		t.Fatal("overnight schedule not active after midnight")
+	}
+	if classActive(time.Date(2026, 10, 20, 0, 50, 0, 0, shanghai), overnight, before, after, time.Time{}) {
+		t.Fatal("overnight schedule active after padding")
+	}
+}
+
+func TestGuidanceScheduleHasIndependentRoomAndKey(t *testing.T) {
+	term := time.Date(2026, 9, 13, 0, 0, 0, 0, shanghai)
+	class := Class{
+		CourseID: "arch", ClassID: "class",
+		Schedule: []Schedule{
+			{Key: "arch-tue-regular", Days: []string{"Tue"}, Start: "08:00", End: "09:40", Weeks: "1-6", Room: "复209"},
+			{Key: "arch-tue-guidance", Days: []string{"Tue"}, Start: "08:00", End: "09:40", Weeks: "7,13", Room: "中303"},
+		},
+	}
+	regular := time.Date(2026, 10, 20, 8, 30, 0, 0, shanghai)
+	guidance := time.Date(2026, 10, 27, 8, 30, 0, 0, shanghai)
+	if got := activeScheduleKey(regular, class, 0, 0, term); got != "arch-tue-regular" {
+		t.Fatalf("regular key=%q", got)
+	}
+	if got := activeScheduleKey(guidance, class, 0, 0, term); got != "arch-tue-guidance" {
+		t.Fatalf("guidance key=%q", got)
+	}
+	windows := Windows([]Class{class}, 20*time.Minute, 20*time.Minute, term,
+		time.Date(2026, 10, 20, 0, 0, 0, 0, shanghai), time.Date(2026, 10, 21, 0, 0, 0, 0, shanghai))
+	if len(windows) != 1 || windows[0].Room != "复209" || windows[0].ScheduleKey != "arch-tue-regular" {
+		t.Fatalf("regular windows=%+v", windows)
+	}
+	windows = Windows([]Class{class}, 20*time.Minute, 20*time.Minute, term,
+		time.Date(2026, 10, 27, 0, 0, 0, 0, shanghai), time.Date(2026, 10, 28, 0, 0, 0, 0, shanghai))
+	if len(windows) != 1 || windows[0].Room != "中303" || windows[0].ScheduleKey != "arch-tue-guidance" {
+		t.Fatalf("guidance windows=%+v", windows)
+	}
+}
+
+func TestGuidanceOnlyWeeksDoNotPollOnOtherWeeks(t *testing.T) {
+	term := time.Date(2026, 9, 13, 0, 0, 0, 0, shanghai)
+	class := Class{
+		CourseID: "net", ClassID: "class",
+		Schedule: []Schedule{{Key: "net-fri-guidance", Days: []string{"Fri"}, Start: "08:00", End: "09:40", Weeks: "8,14", Room: "中214"}},
+	}
+	week6 := time.Date(2026, 10, 23, 8, 30, 0, 0, shanghai)
+	week8 := time.Date(2026, 11, 6, 8, 30, 0, 0, shanghai)
+	if classActive(week6, class, 20*time.Minute, 20*time.Minute, term) {
+		t.Fatal("week 6 Friday guidance should not be active")
+	}
+	if !classActive(week8, class, 20*time.Minute, 20*time.Minute, term) {
+		t.Fatal("week 8 Friday guidance should be active")
 	}
 }

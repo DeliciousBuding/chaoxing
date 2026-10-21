@@ -87,11 +87,38 @@ func TestWatchClassesRejectsBadInput(t *testing.T) {
 	for _, args := range [][]string{
 		{"classes", "add", "--course", "c", "--class", "k", "--days", "Funday", "--start", "08:00", "--end", "09:00"},
 		{"classes", "add", "--course", "c", "--class", "k", "--days", "Tue", "--start", "9:00", "--end", "10:00"},
-		{"classes", "add", "--course", "c", "--class", "k", "--days", "Tue", "--start", "10:00", "--end", "09:00"},
+		{"classes", "add", "--course", "c", "--class", "k", "--days", "Tue", "--start", "10:00", "--end", "10:00"},
+		{"classes", "add", "--course", "c", "--class", "k", "--days", "Tue", "--start", "10:00", "--end", "11:00", "--weeks", "7-6"},
+		{"classes", "add", "--course", "c", "--class", "k", "--days", "Tue", "--start", "10:00", "--end", "11:00", "--key", "bad key"},
 		{"classes", "remove", "--course", "c", "--class", "missing"},
 	} {
 		if err := watchCommand(path, args); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
+	}
+}
+
+func TestWatchClassesAddIndependentGuidanceSchedule(t *testing.T) {
+	path := writeTestConfig(t, `{"watch":{"classes":[{"course_id":"c1","class_id":"k1","schedule":[]}]}}`)
+	if err := watchCommand(path, []string{
+		"classes", "add", "--course", "c1", "--class", "k1", "--days", "Tue",
+		"--start", "08:00", "--end", "09:40", "--weeks", "7,13",
+		"--key", "arch-tue-guidance", "--room", "中303",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	schedule := readTestConfig(t, path)["watch"].(map[string]any)["classes"].([]any)[0].(map[string]any)["schedule"].([]any)[0].(map[string]any)
+	if schedule["weeks"] != "7,13" || schedule["key"] != "arch-tue-guidance" || schedule["room"] != "中303" {
+		t.Fatalf("schedule=%v", schedule)
+	}
+}
+
+func TestWatchClassesAllowCrossMidnight(t *testing.T) {
+	path := writeTestConfig(t, `{"watch":{"classes":[]}}`)
+	if err := watchCommand(path, []string{
+		"classes", "add", "--course", "c", "--class", "k", "--days", "Mon",
+		"--start", "23:50", "--end", "00:30",
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

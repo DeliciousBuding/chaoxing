@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -8,8 +9,17 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/statestore"
 )
 
+func privateLocationDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestLocationCommandRoundTrip(t *testing.T) {
-	stateDir := t.TempDir()
+	stateDir := privateLocationDir(t)
 	if err := locationCommand(stateDir, []string{
 		"add", "--label", "synthetic-lab", "--lat", "39.9087", "--lng", "116.3975",
 		"--address", "synthetic address",
@@ -53,7 +63,7 @@ func TestLocationCommandRoundTrip(t *testing.T) {
 }
 
 func TestLocationCommandConvertsCoordinateSystems(t *testing.T) {
-	stateDir := t.TempDir()
+	stateDir := privateLocationDir(t)
 	if err := locationCommand(stateDir, []string{
 		"add", "--label", "wgs", "--lat", "39.9042", "--lng", "116.4074", "--system", "wgs84",
 	}); err != nil {
@@ -74,7 +84,7 @@ func TestLocationCommandConvertsCoordinateSystems(t *testing.T) {
 }
 
 func TestLocationCommandRejectsInvalidInput(t *testing.T) {
-	stateDir := t.TempDir()
+	stateDir := privateLocationDir(t)
 	for _, args := range [][]string{
 		{"add", "--lat", "39.9", "--lng", "116.4"},
 		{"add", "--label", "x", "--lat", "999", "--lng", "116.4"},

@@ -36,9 +36,19 @@ type Class struct {
 }
 
 type Schedule struct {
+	// Key is the stable identity used by per-schedule location bindings.
+	// Operators should set it when two entries can share the same time slot
+	// (for example a regular class and a room-changed guidance class).
+	Key   string   `json:"key,omitempty"`
 	Days  []string `json:"days"`
 	Start string   `json:"start"`
 	End   string   `json:"end"`
+	// Weeks restricts the entry to teaching weeks ("1-6", "7,13", "1-16").
+	// Empty keeps the legacy behaviour of every week.
+	Weeks string `json:"weeks,omitempty"`
+	// Room is display metadata and is also returned by the schedule
+	// projection. Sign-in coordinates always come from the location binding.
+	Room string `json:"room,omitempty"`
 }
 
 type Location = location.Location
@@ -59,19 +69,28 @@ type Config struct {
 	RepeatEvery           time.Duration
 	MaxRepeats            int
 	Window                string
-	Lead                  time.Duration
-	AutoSign              bool
-	AutoAnswer            bool
-	ClassroomAgent        *classroomagent.Agent
-	Classes               []Class
-	StatePath             string
-	Capture               bool
-	CaptureAccount        string
-	CaptureRetention      time.Duration
-	CaptureActivityPages  bool
-	CaptureStore          capture.Store
-	LocationResolver      *location.Resolver
-	ActivityPageSource    ActivityPageSource
+	// Lead is the legacy pre-class padding. PollBefore/PollAfter supersede it.
+	Lead       time.Duration
+	PollBefore time.Duration
+	PollAfter  time.Duration
+	// GroupScanInterval bounds the optional Easemob course-group fallback.
+	// The class feed remains the primary, every-tick source.
+	GroupScanInterval time.Duration
+	// TermStart is the first day of teaching week 1; required once any
+	// schedule carries a Weeks restriction.
+	TermStart            time.Time
+	AutoSign             bool
+	AutoAnswer           bool
+	ClassroomAgent       *classroomagent.Agent
+	Classes              []Class
+	StatePath            string
+	Capture              bool
+	CaptureAccount       string
+	CaptureRetention     time.Duration
+	CaptureActivityPages bool
+	CaptureStore         capture.Store
+	LocationResolver     *location.Resolver
+	ActivityPageSource   ActivityPageSource
 }
 
 type ActivitySource interface {
@@ -114,6 +133,7 @@ type stateFile struct {
 // timing and counters, never course identities or upstream response bodies.
 type Metrics struct {
 	StartedAt         time.Time `json:"started_at"`
+	LastTickStartedAt time.Time `json:"last_tick_started_at,omitempty"`
 	LastTickAt        time.Time `json:"last_tick_at"`
 	LastPanicAt       time.Time `json:"last_panic_at,omitempty"`
 	ConsecutivePanics int       `json:"consecutive_panics"`
@@ -134,13 +154,23 @@ type Runner struct {
 	random           func() float64
 	wait             func(context.Context, time.Duration) bool
 	lastCapturePrune time.Time
+	lastGroupScan    time.Time
 	metrics          Metrics
 	metricsMu        sync.RWMutex
 	ticks            atomic.Uint64
 	activePolls      atomic.Uint64
+	tickMu           sync.Mutex
+	runStarted       atomic.Bool
 }
 
 var shanghai = time.FixedZone("CST", 8*60*60)
+
+const (
+	defaultPollPadding = 20 * time.Minute
+	maxPollPadding     = 30 * time.Minute
+	maxWatchStateBytes = 2 << 20
+	tickBudget         = 90 * time.Second
+)
 
 func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer, answerer ...AnswerActivitySource) (*Runner, error) {
 	if source == nil || sender == nil {
@@ -183,16 +213,28 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 	if cfg.MaxRepeats > 20 {
 		cfg.MaxRepeats = 20
 	}
-	if cfg.Lead < -time.Second {
-		return nil, errors.New("watch lead seconds must be -1 or between 0 and 600")
+	if cfg.GroupScanInterval == 0 {
+		cfg.GroupScanInterval = 5 * time.Minute
 	}
-	if cfg.Lead < 0 {
-		cfg.Lead = 0
-	} else if cfg.Lead == 0 {
-		cfg.Lead = 2 * time.Minute
+	if cfg.GroupScanInterval < time.Minute || cfg.GroupScanInterval > 30*time.Minute {
+		return nil, errors.New("watch group scan interval must be between 1 and 30 minutes")
 	}
-	if cfg.Lead > 10*time.Minute {
-		cfg.Lead = 10 * time.Minute
+	before, after, err := Padding(cfg.PollBefore, cfg.PollAfter, cfg.Lead)
+	if err != nil {
+		return nil, err
+	}
+	cfg.PollBefore, cfg.PollAfter = before, after
+	if cfg.TermStart.IsZero() {
+		for _, class := range cfg.Classes {
+			for _, schedule := range class.Schedule {
+				if strings.TrimSpace(schedule.Weeks) != "" {
+					return nil, errors.New("watch term_start is required when a schedule restricts weeks")
+				}
+			}
+		}
+	} else {
+		local := cfg.TermStart.In(shanghai)
+		cfg.TermStart = time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, shanghai)
 	}
 	if len(cfg.Classes) == 0 {
 		return nil, errors.New("watch requires at least one class")
@@ -232,6 +274,36 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 	return r, nil
 }
 
+// Padding resolves the polling window around a class. PollBefore/PollAfter
+// are the current configuration; Lead remains accepted so an old deployment
+// can be upgraded without silently changing its semantics.
+func Padding(before, after, legacy time.Duration) (time.Duration, time.Duration, error) {
+	if legacy < -time.Second {
+		return 0, 0, errors.New("watch lead seconds must be -1 or between 0 and 1800")
+	}
+	if before == 0 && after == 0 {
+		switch {
+		case legacy < 0:
+			before, after = 0, 0
+		case legacy > 0:
+			before, after = legacy, 0
+		default:
+			before, after = defaultPollPadding, defaultPollPadding
+		}
+	} else {
+		if before == 0 {
+			before = defaultPollPadding
+		}
+		if after == 0 {
+			after = defaultPollPadding
+		}
+	}
+	if before < 0 || after < 0 || before > maxPollPadding || after > maxPollPadding {
+		return 0, 0, errors.New("watch poll padding must be between 0 and 30 minutes")
+	}
+	return before, after, nil
+}
+
 func validateClasses(classes []Class) error {
 	for _, class := range classes {
 		if strings.TrimSpace(class.CourseID) == "" || strings.TrimSpace(class.ClassID) == "" {
@@ -240,6 +312,7 @@ func validateClasses(classes []Class) error {
 		if class.Location != nil && (class.Location.Latitude < -90 || class.Location.Latitude > 90 || class.Location.Longitude < -180 || class.Location.Longitude > 180) {
 			return errors.New("watch class location is outside range")
 		}
+		keys := map[string]bool{}
 		for _, schedule := range class.Schedule {
 			if len(schedule.Days) == 0 {
 				return errors.New("watch class schedule requires days")
@@ -249,18 +322,134 @@ func validateClasses(classes []Class) error {
 					return errors.New("watch class schedule day is invalid")
 				}
 			}
-			if _, err := minuteOfDay(schedule.Start); err != nil {
+			start, err := minuteOfDay(schedule.Start)
+			if err != nil {
 				return err
 			}
-			if _, err := minuteOfDay(schedule.End); err != nil {
+			end, err := minuteOfDay(schedule.End)
+			if err != nil {
 				return err
 			}
+			if start == end {
+				return errors.New("watch class schedule start and end must differ")
+			}
+			if _, err := NormalizeWeeks(schedule.Weeks); err != nil {
+				return err
+			}
+			if strings.TrimSpace(schedule.Key) != "" {
+				if err := ValidateScheduleKey(schedule.Key); err != nil {
+					return err
+				}
+			}
+			if len([]rune(strings.TrimSpace(schedule.Room))) > 64 {
+				return errors.New("watch class schedule room is too long")
+			}
+			key := schedule.EffectiveKey()
+			if keys[key] {
+				return fmt.Errorf("watch class schedule key %q is duplicated", key)
+			}
+			keys[key] = true
 		}
 	}
 	return nil
 }
 
+// ValidateScheduleKey constrains the identity used by location bindings.
+func ValidateScheduleKey(key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" || len(key) > 128 {
+		return errors.New("watch schedule key must be between 1 and 128 bytes")
+	}
+	for _, r := range key {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.', r == ':':
+		default:
+			return errors.New("watch schedule key may contain only letters, digits, dot, dash, underscore and colon")
+		}
+	}
+	return nil
+}
+
+// EffectiveKey returns the stable schedule identity used by location
+// bindings. Explicit keys win; generated keys include the teaching-week
+// restriction so a regular Tuesday slot and a Tuesday guidance slot do not
+// collide.
+func (s Schedule) EffectiveKey() string {
+	if key := strings.TrimSpace(s.Key); key != "" {
+		return key
+	}
+	days := make([]string, 0, len(s.Days))
+	for _, day := range s.Days {
+		days = append(days, strings.TrimSpace(day))
+	}
+	sort.Slice(days, func(i, j int) bool {
+		ni, _ := dayNumber(days[i])
+		nj, _ := dayNumber(days[j])
+		return ni < nj
+	})
+	key := strings.Join(days, ",") + "-" + strings.TrimSpace(s.Start) + "-" + strings.TrimSpace(s.End)
+	if weeks, err := NormalizeWeeks(s.Weeks); err == nil && weeks != "" {
+		key += "-W" + strings.ReplaceAll(weeks, ",", ".")
+	}
+	return key
+}
+
+// NormalizeWeeks validates and canonicalizes a teaching-week restriction such
+// as "1-6", "7,13" or "13-16". Empty means every week.
+func NormalizeWeeks(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "*" {
+		return "", nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := map[[2]int]bool{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return "", errors.New("watch weeks contains an empty range")
+		}
+		bounds := strings.Split(part, "-")
+		if len(bounds) > 2 {
+			return "", errors.New("watch weeks must look like 1-6 or 7,13")
+		}
+		start, err := strconv.Atoi(strings.TrimSpace(bounds[0]))
+		if err != nil || start < 1 || start > 60 {
+			return "", errors.New("watch weeks must be between 1 and 60")
+		}
+		end := start
+		if len(bounds) == 2 {
+			end, err = strconv.Atoi(strings.TrimSpace(bounds[1]))
+			if err != nil || end < start || end > 60 {
+				return "", errors.New("watch week range is invalid")
+			}
+		}
+		pair := [2]int{start, end}
+		if seen[pair] {
+			continue
+		}
+		seen[pair] = true
+		if start == end {
+			out = append(out, strconv.Itoa(start))
+		} else {
+			out = append(out, strconv.Itoa(start)+"-"+strconv.Itoa(end))
+		}
+	}
+	if len(out) == 0 {
+		return "", errors.New("watch weeks is empty")
+	}
+	return strings.Join(out, ","), nil
+}
+
 func (r *Runner) Run(ctx context.Context) {
+	if !r.runStarted.CompareAndSwap(false, true) {
+		log.Print("activity watch already running; duplicate Run ignored")
+		return
+	}
+	defer r.runStarted.Store(false)
 	log.Printf("activity watch started: %d classes, interval %s (+/-%d%%), auto_sign=%t, auto_answer=%t", len(r.cfg.Classes), r.cfg.Interval, r.cfg.IntervalJitterPercent, r.cfg.AutoSign, r.cfg.AutoAnswer)
 	// Poll once immediately: a restart during class must not wait for the idle
 	// sleep cap before the first observation. Outside the window the tick is a
@@ -300,17 +489,24 @@ func (r *Runner) Metrics() Metrics {
 // tick is the supervision boundary for one polling cycle. A panic is logged,
 // counted and alerted, but must not terminate the long-running watcher.
 func (r *Runner) tick(ctx context.Context) {
+	started := r.now().UTC()
+	r.metricsMu.Lock()
+	r.metrics.LastTickStartedAt = started
+	r.metricsMu.Unlock()
 	defer func() {
 		if value := recover(); value != nil {
 			r.recordPanic(value)
 		}
+		// LastTickAt is a completion timestamp. Updating it at tick start
+		// makes a wedged loop look healthy to readiness checks.
+		r.metricsMu.Lock()
+		r.metrics.LastTickAt = r.now().UTC()
+		r.metricsMu.Unlock()
 	}()
-	now := r.now().UTC()
-	r.metricsMu.Lock()
-	r.metrics.LastTickAt = now
-	r.metricsMu.Unlock()
 	r.ticks.Add(1)
-	r.Tick(ctx)
+	tickCtx, cancel := context.WithTimeout(ctx, tickBudget)
+	defer cancel()
+	r.Tick(tickCtx)
 	r.metricsMu.Lock()
 	r.metrics.ConsecutivePanics = 0
 	r.metricsMu.Unlock()
@@ -368,11 +564,11 @@ func (r *Runner) nextDelay(now time.Time) time.Duration {
 		return 5 * time.Minute
 	}
 	for _, class := range r.cfg.Classes {
-		if classActive(now, class, r.cfg.Lead) {
+		if classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) {
 			return r.jitterInterval()
 		}
 	}
-	next := nextClassStart(now, r.cfg.Classes, r.cfg.Lead)
+	next := nextClassStart(now, r.cfg.Classes, r.cfg.PollBefore, r.cfg.TermStart)
 	if next <= 0 {
 		return 5 * time.Minute
 	}
@@ -398,12 +594,12 @@ func nextWindowOpen(t time.Time, spec string) time.Duration {
 	return 0
 }
 
-func nextClassStart(t time.Time, classes []Class, lead time.Duration) time.Duration {
+func nextClassStart(t time.Time, classes []Class, before time.Duration, termStart time.Time) time.Duration {
 	local := t.In(shanghai)
 	var best time.Time
 	for _, class := range classes {
 		if len(class.Schedule) == 0 {
-			return 0
+			continue
 		}
 		for day := 0; day <= 7; day++ {
 			dayStart := time.Date(local.Year(), local.Month(), local.Day()+day, 0, 0, 0, 0, shanghai)
@@ -411,11 +607,14 @@ func nextClassStart(t time.Time, classes []Class, lead time.Duration) time.Durat
 				if !scheduleDayActive(dayStart, schedule.Days) {
 					continue
 				}
+				if !scheduleWeekActive(dayStart, schedule.Weeks, termStart) {
+					continue
+				}
 				start, err := minuteOfDay(schedule.Start)
 				if err != nil {
 					continue
 				}
-				candidate := dayStart.Add(time.Duration(start)*time.Minute - lead)
+				candidate := dayStart.Add(time.Duration(start)*time.Minute - before)
 				if candidate.After(local) && (best.IsZero() || candidate.Before(best)) {
 					best = candidate
 				}
@@ -431,6 +630,8 @@ func nextClassStart(t time.Time, classes []Class, lead time.Duration) time.Durat
 // Tick polls only classes whose course schedule is active, attempts each new
 // signable activity at most once, and falls back to alerts for manual types.
 func (r *Runner) Tick(ctx context.Context) {
+	r.tickMu.Lock()
+	defer r.tickMu.Unlock()
 	now := r.now()
 	if !inWindow(now, r.cfg.Window) {
 		return
@@ -441,7 +642,7 @@ func (r *Runner) Tick(ctx context.Context) {
 	polledClasses := 0
 	for _, class := range r.cfg.Classes {
 		byCourseClass[class.CourseID+":"+class.ClassID] = class
-		if !classActive(now, class, r.cfg.Lead) {
+		if !classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) {
 			continue
 		}
 		if polledClasses > 0 && !r.wait(ctx, r.classPollDelay()) {
@@ -465,30 +666,31 @@ func (r *Runner) Tick(ctx context.Context) {
 			}
 		}
 	}
-	if groupSource, ok := r.source.(GroupActivitySource); ok {
-		// Course-group history is useful only while a watched class is active.
-		// Scanning it all day wastes upstream quota and creates a fixed request pattern.
-		if polledClasses == 0 {
-			return
-		}
-		if !r.wait(ctx, r.classPollDelay()) {
-			return
-		}
-		groupRows, err := groupSource.ListGroupActivities(ctx)
-		if err != nil {
-			log.Printf("activity watch: group feed: %s", upstream.SafeFault(err).Code)
-		} else if r.cfg.Capture {
-			r.captureActivities(ctx, groupRows, now)
-		}
-		for _, item := range groupRows {
-			class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
-			if !ok || !classActive(now, class, r.cfg.Lead) || !item.Signable {
-				continue
+	if groupSource, ok := r.source.(GroupActivitySource); ok && polledClasses > 0 {
+		// Course-group history is a fallback for cards missing from the class
+		// feed. Scan it on a slower cadence, and only while a watched class is
+		// active, so the primary sign-in loop stays fast and predictable.
+		if r.lastGroupScan.IsZero() || now.Sub(r.lastGroupScan) >= r.cfg.GroupScanInterval {
+			if !r.wait(ctx, r.classPollDelay()) {
+				return
 			}
-			k := key(item)
-			if _, exists := active[k]; !exists {
-				active[k] = item
-				classes[k] = class
+			r.lastGroupScan = now
+			groupRows, err := groupSource.ListGroupActivities(ctx)
+			if err != nil {
+				log.Printf("activity watch: group feed: %s", upstream.SafeFault(err).Code)
+			} else if r.cfg.Capture {
+				r.captureActivities(ctx, groupRows, now)
+			}
+			for _, item := range groupRows {
+				class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
+				if !ok || !classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) || !item.Signable {
+					continue
+				}
+				k := key(item)
+				if _, exists := active[k]; !exists {
+					active[k] = item
+					classes[k] = class
+				}
 			}
 		}
 	}
@@ -523,7 +725,8 @@ func (r *Runner) Tick(ctx context.Context) {
 			continue
 		}
 		if r.cfg.AutoSign && autoSignType(item, classes[k]) && (!seen || e.LastAttempt.IsZero()) {
-			changed = r.autoSign(ctx, classes[k], item, e) || changed
+			scheduleKey := activeScheduleKey(now, classes[k], r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart)
+			changed = r.autoSign(ctx, classes[k], item, e, scheduleKey) || changed
 			continue
 		}
 		if seen && e.Status == "signed" {
@@ -565,7 +768,7 @@ func (r *Runner) Tick(ctx context.Context) {
 		}
 	}
 	if r.cfg.Capture && (r.lastCapturePrune.IsZero() || now.Sub(r.lastCapturePrune) >= time.Hour) {
-		if err := r.cfg.CaptureStore.PruneActivityCaptures(ctx, now.Add(-r.cfg.CaptureRetention)); err != nil {
+		if err := r.cfg.CaptureStore.PruneActivityCaptures(ctx, r.cfg.CaptureAccount, now.Add(-r.cfg.CaptureRetention)); err != nil {
 			log.Printf("activity capture prune failed: %v", err)
 		} else {
 			r.lastCapturePrune = now
@@ -696,13 +899,13 @@ func (r *Runner) recordAnswerReview(ctx context.Context, item upstream.Activity,
 	return true
 }
 
-func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activity, e entry) bool {
+func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activity, e entry, scheduleKey string) bool {
 	if delay := r.autoSignDelay(); delay > 0 && !r.wait(ctx, delay) {
 		return false
 	}
 	req := upstream.SignRequest{CourseID: item.CourseID, ClassID: item.ClassID, ActivityID: item.ID}
 	if r.cfg.LocationResolver != nil {
-		loc, resolveErr := r.cfg.LocationResolver.Resolve(ctx, item.CourseID, item.ClassID, activeScheduleKey(r.now(), class))
+		loc, resolveErr := r.cfg.LocationResolver.Resolve(ctx, item.CourseID, item.ClassID, scheduleKey)
 		if resolveErr != nil {
 			now := r.now()
 			next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: "failed", Code: "LOCATION_RESOLVE_FAILED"}
@@ -760,44 +963,114 @@ func autoSignType(item upstream.Activity, class Class) bool {
 	}
 }
 
-func activeScheduleKey(t time.Time, class Class) string {
-	local := t.In(shanghai)
+func activeScheduleKey(t time.Time, class Class, before, after time.Duration, termStart time.Time) string {
 	for _, schedule := range class.Schedule {
-		if !scheduleDayActive(local, schedule.Days) {
-			continue
-		}
-		start, startErr := minuteOfDay(schedule.Start)
-		end, endErr := minuteOfDay(schedule.End)
-		if startErr != nil || endErr != nil {
-			continue
-		}
-		if start == end || (local.Hour()*60+local.Minute() >= int(start) && local.Hour()*60+local.Minute() <= int(end)) {
-			return strings.Join(schedule.Days, ",") + "-" + schedule.Start + "-" + schedule.End
+		if scheduleActiveAt(t, schedule, before, after, termStart) {
+			return schedule.EffectiveKey()
 		}
 	}
 	return ""
 }
 
-func classActive(t time.Time, class Class, lead time.Duration) bool {
+func classActive(t time.Time, class Class, before, after time.Duration, termStart time.Time) bool {
 	if len(class.Schedule) == 0 {
 		return true
 	}
-	local := t.In(shanghai)
-	nowSecond := local.Hour()*3600 + local.Minute()*60 + local.Second()
 	for _, schedule := range class.Schedule {
-		if !scheduleDayActive(local, schedule.Days) {
+		if scheduleActiveAt(t, schedule, before, after, termStart) {
+			return true
+		}
+	}
+	return false
+}
+
+func scheduleActiveAt(t time.Time, schedule Schedule, before, after time.Duration, termStart time.Time) bool {
+	if _, _, ok := scheduleIntervalAt(t, schedule, before, after, termStart); ok {
+		return true
+	}
+	return false
+}
+
+// scheduleIntervalAt evaluates a schedule against the local Beijing day. It
+// checks adjacent dates as well so pre-class padding and overnight sessions
+// that cross midnight remain visible.
+func scheduleIntervalAt(t time.Time, schedule Schedule, before, after time.Duration, termStart time.Time) (time.Time, time.Time, bool) {
+	local := t.In(shanghai)
+	day := localDate(local)
+	for offset := -1; offset <= 1; offset++ {
+		startDay := day.AddDate(0, 0, offset)
+		if !scheduleDayActive(startDay, schedule.Days) {
 			continue
 		}
-		start, _ := minuteOfDay(schedule.Start)
-		end, _ := minuteOfDay(schedule.End)
-		if start == end {
-			return true
+		if !scheduleWeekActive(startDay, schedule.Weeks, termStart) {
+			continue
 		}
-		startSecond, endSecond := start*60, end*60
-		if start < end && nowSecond >= startSecond-int(lead.Seconds()) && nowSecond < endSecond {
-			return true
+		start, end, ok := scheduleBounds(startDay, schedule)
+		if !ok {
+			continue
 		}
-		if start > end && (nowSecond >= startSecond-int(lead.Seconds()) || nowSecond < endSecond) {
+		activeStart, activeEnd := start.Add(-before), end.Add(after)
+		if !t.Before(activeStart) && t.Before(activeEnd) {
+			return start, end, true
+		}
+	}
+	return time.Time{}, time.Time{}, false
+}
+
+func scheduleBounds(dayStart time.Time, schedule Schedule) (time.Time, time.Time, bool) {
+	startMinute, startErr := minuteOfDay(schedule.Start)
+	endMinute, endErr := minuteOfDay(schedule.End)
+	if startErr != nil || endErr != nil || startMinute == endMinute {
+		return time.Time{}, time.Time{}, false
+	}
+	start := dayStart.Add(time.Duration(startMinute) * time.Minute)
+	end := dayStart.Add(time.Duration(endMinute) * time.Minute)
+	if endMinute < startMinute {
+		end = end.Add(24 * time.Hour)
+	}
+	return start, end, true
+}
+
+func localDate(t time.Time) time.Time {
+	local := t.In(shanghai)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, shanghai)
+}
+
+// teachingWeek returns the one-based teaching week, or zero before the term.
+// Both values are interpreted as Beijing calendar dates.
+func teachingWeek(now, termStart time.Time) int {
+	if termStart.IsZero() {
+		return 0
+	}
+	start := localDate(termStart.In(shanghai))
+	current := localDate(now.In(shanghai))
+	days := int(current.Sub(start).Hours() / 24)
+	if days < 0 {
+		return 0
+	}
+	return days/7 + 1
+}
+
+func scheduleWeekActive(now time.Time, weeks string, termStart time.Time) bool {
+	normalized, err := NormalizeWeeks(weeks)
+	if err != nil {
+		return false
+	}
+	if normalized == "" {
+		return true
+	}
+	week := teachingWeek(now, termStart)
+	if week < 1 {
+		return false
+	}
+	for _, part := range strings.Split(normalized, ",") {
+		bounds := strings.Split(part, "-")
+		start, _ := strconv.Atoi(bounds[0])
+		end := start
+		if len(bounds) == 2 {
+			end, _ = strconv.Atoi(bounds[1])
+		}
+		if week >= start && week <= end {
 			return true
 		}
 	}
@@ -1028,6 +1301,9 @@ func (r *Runner) load() error {
 		}
 		return err
 	}
+	if len(b) > maxWatchStateBytes {
+		return errors.New("watch state exceeds size limit")
+	}
 	var s stateFile
 	if json.Unmarshal(b, &s) != nil || s.Entries == nil || (s.Version != 1 && s.Version != 2) {
 		return errors.New("watch state is invalid")
@@ -1071,42 +1347,54 @@ type Window struct {
 	Start       time.Time `json:"start"`
 	End         time.Time `json:"end"`
 	ScheduleKey string    `json:"schedule_key,omitempty"`
+	Weeks       string    `json:"weeks,omitempty"`
+	Room        string    `json:"room,omitempty"`
 }
 
 // Windows projects the active intervals for every class between from and
 // until using the same predicate as the polling loop. Minutes are the smallest
 // granularity the schedule format supports.
-func Windows(classes []Class, lead time.Duration, from, until time.Time) []Window {
-	from, until = from.Truncate(time.Minute), until.Truncate(time.Minute)
+func Windows(classes []Class, before, after time.Duration, termStart, from, until time.Time) []Window {
+	from, until = from.In(shanghai).Truncate(time.Minute), until.In(shanghai).Truncate(time.Minute)
 	if until.Before(from) {
 		return nil
 	}
 	out := []Window{}
-	open := map[string]*Window{}
-	for t := from; !t.After(until); t = t.Add(time.Minute) {
-		for _, class := range classes {
-			key := class.CourseID + ":" + class.ClassID
-			active := classActive(t, class, lead)
-			window := open[key]
-			switch {
-			case active && window == nil:
-				open[key] = &Window{CourseID: class.CourseID, ClassID: class.ClassID, Start: t}
-			case !active && window != nil:
-				window.End = t
-				window.ScheduleKey = activeScheduleKey(window.Start.Add(lead), class)
-				out = append(out, *window)
-				delete(open, key)
+	for _, class := range classes {
+		if len(class.Schedule) == 0 {
+			if !until.Before(from) {
+				out = append(out, Window{CourseID: class.CourseID, ClassID: class.ClassID, Start: from, End: until})
+			}
+			continue
+		}
+		firstDay := localDate(from).AddDate(0, 0, -1)
+		lastDay := localDate(until).AddDate(0, 0, 1)
+		for day := firstDay; !day.After(lastDay); day = day.AddDate(0, 0, 1) {
+			for _, schedule := range class.Schedule {
+				if !scheduleDayActive(day, schedule.Days) || !scheduleWeekActive(day, schedule.Weeks, termStart) {
+					continue
+				}
+				start, end, ok := scheduleBounds(day, schedule)
+				if !ok {
+					continue
+				}
+				start, end = start.Add(-before), end.Add(after)
+				if start.Before(from) {
+					start = from
+				}
+				if end.After(until) {
+					end = until
+				}
+				if !end.After(start) {
+					continue
+				}
+				out = append(out, Window{
+					CourseID: class.CourseID, ClassID: class.ClassID,
+					Start: start, End: end,
+					ScheduleKey: schedule.EffectiveKey(), Weeks: schedule.Weeks, Room: schedule.Room,
+				})
 			}
 		}
-	}
-	for key, window := range open {
-		window.End = until.Add(time.Minute)
-		for _, class := range classes {
-			if class.CourseID+":"+class.ClassID == key {
-				window.ScheduleKey = activeScheduleKey(window.Start.Add(lead), class)
-			}
-		}
-		out = append(out, *window)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Start.Equal(out[j].Start) {
@@ -1114,5 +1402,21 @@ func Windows(classes []Class, lead time.Duration, from, until time.Time) []Windo
 		}
 		return out[i].Start.Before(out[j].Start)
 	})
-	return out
+	merged := make([]Window, 0, len(out))
+	for _, window := range out {
+		if len(merged) == 0 {
+			merged = append(merged, window)
+			continue
+		}
+		last := &merged[len(merged)-1]
+		if last.CourseID == window.CourseID && last.ClassID == window.ClassID &&
+			last.ScheduleKey == window.ScheduleKey && !window.Start.After(last.End) {
+			if window.End.After(last.End) {
+				last.End = window.End
+			}
+			continue
+		}
+		merged = append(merged, window)
+	}
+	return merged
 }

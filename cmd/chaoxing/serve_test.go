@@ -12,6 +12,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/notify"
 	"github.com/DeliciousBuding/chaoxing/internal/upstream"
 	"github.com/DeliciousBuding/chaoxing/internal/vault"
+	"github.com/DeliciousBuding/chaoxing/internal/watch"
 )
 
 func TestValidateTenants(t *testing.T) {
@@ -77,6 +78,19 @@ func TestWatchSenderBuildsIndependentChannels(t *testing.T) {
 	multi, ok := sender.(notify.Multi)
 	if !ok || len(multi) != 3 {
 		t.Fatalf("sender has type %T with length %d", sender, len(multi))
+	}
+}
+
+func TestWatchCoreConfigPreservesAutomationFlags(t *testing.T) {
+	cfg, err := watchCoreConfig(watchConfig{
+		AutoSign: true, AutoAnswer: true, IntervalSeconds: 60,
+		Classes: []watch.Class{{CourseID: "c", ClassID: "k"}},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoSign || !cfg.AutoAnswer {
+		t.Fatalf("automation flags were dropped: %+v", cfg)
 	}
 }
 

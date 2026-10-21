@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -41,8 +42,12 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+	st, err := os.Lstat(dir)
+	if err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("state directory %q unavailable", filepath.Base(dir))
+	}
+	if runtime.GOOS != "windows" && st.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("state directory permissions must be 0700 (got %04o)", st.Mode().Perm())
 	}
 	// Set permissions before SQLite creates WAL/SHM sidecars; never follow a
 	// database symlink or treat filename punctuation as URI parameters.
@@ -338,17 +343,38 @@ func (s *Store) SaveActivityPage(_ context.Context, accountKey, activityKey stri
 	return nil
 }
 
-// ListActivityCaptures returns newest-first sanitized captures for local
-// protocol analysis, including retained page evidence when present.
-func (s *Store) ListActivityCaptures(ctx context.Context, limit int) ([]capture.Activity, error) {
-	if limit < 1 || limit > 1000 {
-		return nil, errors.New("capture limit must be between 1 and 1000")
+// ListActivityCaptures returns newest-first sanitized captures scoped to one
+// account. Page evidence is only loaded when explicitly requested.
+func (s *Store) ListActivityCaptures(ctx context.Context, account, activityKey string, limit int, includePage bool) ([]capture.Activity, error) {
+	account = strings.TrimSpace(account)
+	activityKey = strings.TrimSpace(activityKey)
+	if account == "" {
+		return nil, errors.New("capture account is required")
+	}
+	if len(activityKey) > 512 {
+		return nil, errors.New("capture activity key is too long")
+	}
+	if limit < 1 || limit > 100 {
+		return nil, errors.New("capture limit must be between 1 and 100")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, `SELECT account_key, activity_key, course_id, class_id, activity_id,
+	pageColumn := "NULL"
+	if includePage {
+		pageColumn = "page_json"
+	}
+	query := fmt.Sprintf(`SELECT account_key, activity_key, course_id, class_id, activity_id,
 		kind, state, user_state, sign_type, source, first_seen_at, last_seen_at, update_count, activity_json,
-		page_json, page_error FROM activity_captures ORDER BY last_seen_at DESC LIMIT ?`, limit)
+		%s, page_error, CASE WHEN page_json IS NOT NULL THEN 1 ELSE 0 END
+		FROM activity_captures WHERE account_key=?`, pageColumn)
+	args := []any{account}
+	if activityKey != "" {
+		query += " AND activity_key=?"
+		args = append(args, activityKey)
+	}
+	query += " ORDER BY last_seen_at DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -358,9 +384,10 @@ func (s *Store) ListActivityCaptures(ctx context.Context, limit int) ([]capture.
 		var item capture.Activity
 		var first, last int64
 		var activityJSON, pageJSON, pageError sql.NullString
+		var hasPage int
 		if err := rows.Scan(&item.AccountKey, &item.ActivityKey, &item.CourseID, &item.ClassID, &item.ActivityID,
 			&item.Kind, &item.State, &item.UserState, &item.SignType, &item.Source, &first, &last, &item.UpdateCount,
-			&activityJSON, &pageJSON, &pageError); err != nil {
+			&activityJSON, &pageJSON, &pageError, &hasPage); err != nil {
 			return nil, err
 		}
 		if activityJSON.Valid {
@@ -371,16 +398,23 @@ func (s *Store) ListActivityCaptures(ctx context.Context, limit int) ([]capture.
 			item.PageJSON = []byte(pageJSON.String)
 		}
 		item.PageError = pageError.String
+		item.HasPage = hasPage != 0
 		out = append(out, item)
 	}
 	return out, rows.Err()
 }
 
-// PruneActivityCaptures removes captures not observed since cutoff.
-func (s *Store) PruneActivityCaptures(_ context.Context, cutoff time.Time) error {
+// PruneActivityCaptures removes one account's captures not observed since
+// cutoff. The account filter is mandatory so a tenant cannot delete another
+// tenant's evidence.
+func (s *Store) PruneActivityCaptures(_ context.Context, accountKey string, cutoff time.Time) error {
+	accountKey = strings.TrimSpace(accountKey)
+	if accountKey == "" {
+		return errors.New("capture prune requires an account")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, "DELETE FROM activity_captures WHERE last_seen_at < ?", cutoff.Unix())
+	_, err := s.db.ExecContext(ctx, "DELETE FROM activity_captures WHERE account_key=? AND last_seen_at < ?", accountKey, cutoff.Unix())
 	return err
 }
 

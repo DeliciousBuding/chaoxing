@@ -62,6 +62,24 @@ func TestResolveFallsBackToClassBinding(t *testing.T) {
 	}
 }
 
+func TestResolveUsesLegacyScheduleBindingForWeekQualifiedKey(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	preset, err := s.SavePreset(ctx, "root", location.Preset{Label: "Guidance room", Latitude: 39.9042, Longitude: 116.4074})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveBinding(ctx, "root", location.Binding{
+		CourseID: "course-1", ClassID: "class-1", ScheduleKey: "Tue-08:00-09:40", PresetID: preset.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := s.Resolve(ctx, "root", "course-1", "class-1", "Tue-08:00-09:40-W7.13")
+	if err != nil || resolved == nil || resolved.Latitude != preset.Latitude {
+		t.Fatal(resolved, err)
+	}
+}
+
 func TestLocationPresetValidation(t *testing.T) {
 	s, _ := open(t)
 	if _, err := s.SavePreset(context.Background(), "root", location.Preset{Latitude: 39.9, Longitude: 116.4}); err == nil {

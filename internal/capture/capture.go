@@ -33,6 +33,7 @@ type Activity struct {
 	ActivityJSON json.RawMessage
 	PageJSON     json.RawMessage
 	PageError    string
+	HasPage      bool
 }
 
 type SaveResult struct {
@@ -42,7 +43,7 @@ type SaveResult struct {
 type Store interface {
 	SaveActivityCapture(ctx context.Context, item Activity) (SaveResult, error)
 	SaveActivityPage(ctx context.Context, accountKey, activityKey string, pageJSON []byte, pageError string) error
-	PruneActivityCaptures(ctx context.Context, cutoff time.Time) error
+	PruneActivityCaptures(ctx context.Context, accountKey string, cutoff time.Time) error
 }
 
 func Key(courseID, classID, activityID string) string {

@@ -28,6 +28,17 @@ func TestSealedCredentials(t *testing.T) {
 		t.Fatal("tamper accepted")
 	}
 }
+
+func TestExistingKeyMustRemainPrivate(t *testing.T) {
+	d := t.TempDir()
+	keyPath := filepath.Join(d, "k")
+	if err := os.WriteFile(keyPath, bytes.Repeat([]byte{1}, 32), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenData(filepath.Join(d, "session"), keyPath); err == nil {
+		t.Fatal("world-readable encryption key was accepted")
+	}
+}
 func TestSessionPurposeIsolation(t *testing.T) {
 	d := t.TempDir()
 	p, k := filepath.Join(d, "s"), filepath.Join(d, "k")

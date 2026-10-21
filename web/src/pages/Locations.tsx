@@ -1,5 +1,5 @@
 import * as React from "react";
-import { api, type LocationBinding, type LocationPreset, type MapConfig } from "../lib/api";
+import { api, type LocationBinding, type LocationPreset, type MapConfig, type WatchSchedule } from "../lib/api";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -49,6 +49,7 @@ export function Locations() {
   const [presets, setPresets] = React.useState<LocationPreset[]>([]);
   const [bindings, setBindings] = React.useState<LocationBinding[]>([]);
   const [courses, setCourses] = React.useState<CourseRow[]>([]);
+  const [schedules, setSchedules] = React.useState<WatchSchedule[]>([]);
   const [form, setForm] = React.useState<LocationPreset>({
     label: "",
     address: "",
@@ -71,15 +72,17 @@ export function Locations() {
     setBusy(true);
     setError("");
     try {
-      const [mapValue, presetValue, bindingValue, courseValue] = await Promise.all([
+      const [mapValue, presetValue, bindingValue, courseValue, scheduleValue] = await Promise.all([
         api.mapConfig(),
         api.locations(),
         api.locationBindings(),
-        api.call("list_courses")
+        api.call("list_courses"),
+        api.watchSchedules()
       ]);
       setConfig(mapValue);
       setPresets(presetValue.items ?? []);
       setBindings(bindingValue.items ?? []);
+      setSchedules(scheduleValue.items ?? []);
       const rows = ((courseValue.data as any)?.result ?? []) as CourseRow[];
       setCourses(rows);
     } catch (err) {
@@ -104,7 +107,7 @@ export function Locations() {
       map.addEventListener("click", (event: any) => {
         const point = event.latlng ?? event.point;
         if (!point || typeof point.lat !== "number" || typeof point.lng !== "number") return;
-        setForm((current) => ({ ...current, latitude: point.lat, longitude: point.lng }));
+        setForm((current) => ({ ...current, latitude: point.lat, longitude: point.lng, coordinate_system: "bd09" }));
       });
       mapRef.current = map;
     }).catch((err) => {
@@ -124,7 +127,7 @@ export function Locations() {
       markerRef.current.addEventListener("dragend", (event: any) => {
         const dragged = event.latlng ?? event.point;
         if (!dragged) return;
-        setForm((current) => ({ ...current, latitude: dragged.lat, longitude: dragged.lng }));
+        setForm((current) => ({ ...current, latitude: dragged.lat, longitude: dragged.lng, coordinate_system: "bd09" }));
       });
       mapRef.current.addOverlay(markerRef.current);
     } else {
@@ -151,7 +154,7 @@ export function Locations() {
     setBusy(true);
     setError("");
     try {
-      const result = await api.reverseGeocode(form.latitude, form.longitude);
+      const result = await api.reverseGeocode(form.latitude, form.longitude, form.coordinate_system ?? "bd09");
       setForm((current) => ({ ...current, address: result.address }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -168,7 +171,7 @@ export function Locations() {
     setError("");
     try {
       const result = await api.geocode(address);
-      setForm((current) => ({ ...current, latitude: result.latitude, longitude: result.longitude, address }));
+      setForm((current) => ({ ...current, latitude: result.latitude, longitude: result.longitude, address, coordinate_system: "bd09" }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally { setBusy(false); }
@@ -244,8 +247,22 @@ export function Locations() {
   const bindingRows = bindings.map((binding) => {
     const preset = presets.find((item) => item.id === binding.preset_id);
     const course = courses.find((item) => item.course_id === binding.course_id && item.class_id === binding.class_id);
-    return { binding, preset, course };
+    const schedule = schedules.find((item) =>
+      item.course_id === binding.course_id &&
+      item.class_id === binding.class_id &&
+      item.key === binding.schedule_key
+    );
+    return { binding, preset, course, schedule };
   });
+  const availableSchedules = selectedCourse
+    ? schedules.filter((item) => item.course_id === selectedCourse.course_id && item.class_id === selectedCourse.class_id)
+    : [];
+  const selectedSchedule = availableSchedules.find((item) => item.key === scheduleKey);
+  const scheduleLabel = (item: WatchSchedule) => {
+    const weeks = item.weeks ? ` · 第${item.weeks}周` : " · 每周";
+    const room = item.room ? ` · ${item.room}` : "";
+    return `${item.days.join("/")} ${item.start}-${item.end}${weeks}${room}`;
+  };
 
   return (
     <div className="space-y-5">
@@ -261,7 +278,7 @@ export function Locations() {
           <Card>
             <CardHeader>
               <CardTitle>地图选点</CardTitle>
-              <CardDescription>点击地图或拖拽 marker 选择位置，坐标按 BD-09 保存。</CardDescription>
+              <CardDescription>地图点击与拖拽使用 BD-09；手输支持 BD-09 / GCJ-02 / WGS-84，保存时统一归一化为 BD-09。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               {config.enabled ? (
@@ -359,15 +376,33 @@ export function Locations() {
                 <Select value={selectedCourse ? String(courses.findIndex((item) => item.course_id === selectedCourse.course_id && item.class_id === selectedCourse.class_id)) : ""} onChange={(event) => {
                   const index = Number(event.target.value);
                   setSelectedCourse(Number.isInteger(index) && index >= 0 ? courses[index] ?? null : null);
+                  setScheduleKey("");
                 }}>
                   <option value="">请选择</option>
                   {courses.map((course, index) => <option key={`${course.course_id}:${course.class_id}`} value={String(index)}>{course.name} / {course.class ?? course.class_id}</option>)}
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>时段键（可选）</Label>
-                <Input value={scheduleKey} onChange={(event) => setScheduleKey(event.target.value)} placeholder="例如 Tue-08:00-09:40" />
-                <div className="text-xs text-muted-foreground">留空表示课程级默认位置；填写后仅在该 watch 时段使用此位置。</div>
+                <Label>独立时段（可选）</Label>
+                {availableSchedules.length > 0 ? (
+                  <Select value={scheduleKey} onChange={(event) => setScheduleKey(event.target.value)}>
+                    <option value="">课程默认（未单独绑定的时段）</option>
+                    {availableSchedules.map((item) => <option key={item.key} value={item.key}>{scheduleLabel(item)}</option>)}
+                    {scheduleKey && !selectedSchedule ? <option value={scheduleKey}>{scheduleKey}（历史配置）</option> : null}
+                  </Select>
+                ) : (
+                  <Input value={scheduleKey} onChange={(event) => setScheduleKey(event.target.value)} placeholder="例如 arch-tue-guidance" />
+                )}
+                <div className="text-xs text-muted-foreground">
+                  每个时段可以绑定不同位置。例如体系结构周二普通课用复临舍，第 7/13 周指导课独立绑定中楼 303。
+                </div>
+                {selectedSchedule && (
+                  <div className="rounded-xl border bg-muted/40 p-3 text-xs text-muted-foreground">
+                    稳定 key：<span className="font-mono text-foreground">{selectedSchedule.key}</span>
+                    {selectedSchedule.room ? ` · 教室 ${selectedSchedule.room}` : ""}
+                    {selectedSchedule.weeks ? ` · 第 ${selectedSchedule.weeks} 周` : " · 每周"}
+                  </div>
+                )}
               </div>
               <Button size="sm" onClick={() => void bindCourse()} disabled={busy || !selectedPreset || !selectedCourse}>绑定</Button>
             </CardContent>
@@ -384,7 +419,7 @@ export function Locations() {
               {busy && presets.length === 0 ? <Loading /> : presets.length === 0 ? <EmptyState title="暂无位置" /> : (
                 <Table>
                   <TableHeader>
-                    <TableRow><TableHead>名称</TableHead><TableHead>地址</TableHead><TableHead>纬度</TableHead><TableHead>经度</TableHead><TableHead>操作</TableHead></TableRow>
+                    <TableRow><TableHead>名称</TableHead><TableHead>地址</TableHead><TableHead>纬度</TableHead><TableHead>经度</TableHead><TableHead>坐标系</TableHead><TableHead>操作</TableHead></TableRow>
                   </TableHeader>
                   <TableBody>
                     {presets.map((preset) => (
@@ -393,6 +428,7 @@ export function Locations() {
                         <TableCell>{preset.address || "—"}</TableCell>
                         <TableCell className="font-mono text-xs">{preset.latitude.toFixed(6)}</TableCell>
                         <TableCell className="font-mono text-xs">{preset.longitude.toFixed(6)}</TableCell>
+                          <TableCell><Badge variant="secondary">{preset.coordinate_system === "bd09" ? "BD-09" : preset.coordinate_system ?? "BD-09"}</Badge></TableCell>
                         <TableCell>
                           <div className="flex gap-2">
                             <Button size="sm" variant="outline" onClick={() => { setSelectedPreset(preset); setForm({ ...preset }); }}>编辑</Button>
@@ -419,11 +455,14 @@ export function Locations() {
                     <TableRow><TableHead>课程</TableHead><TableHead>班级</TableHead><TableHead>时段</TableHead><TableHead>位置</TableHead><TableHead>操作</TableHead></TableRow>
                   </TableHeader>
                   <TableBody>
-                    {bindingRows.map(({ binding, preset, course }) => (
+                    {bindingRows.map(({ binding, preset, course, schedule }) => (
                       <TableRow key={`${binding.course_id}:${binding.class_id}:${binding.schedule_key ?? ""}`}>
                         <TableCell>{course?.name ?? binding.course_id}</TableCell>
                         <TableCell>{course?.class ?? binding.class_id}</TableCell>
-                        <TableCell className="font-mono text-xs">{binding.schedule_key || "课程默认"}</TableCell>
+                        <TableCell className="text-xs">
+                          <div className="font-mono">{binding.schedule_key || "课程默认"}</div>
+                          {schedule && <div className="mt-1 text-muted-foreground">{scheduleLabel(schedule)}</div>}
+                        </TableCell>
                         <TableCell><Badge>{preset?.label ?? "已删除"}</Badge></TableCell>
                         <TableCell><Button size="sm" variant="outline" onClick={() => void unbind(binding)}>解除</Button></TableCell>
                       </TableRow>

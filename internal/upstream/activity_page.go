@@ -33,6 +33,17 @@ type activityPageForm struct {
 // activity feed. It returns structure useful for protocol reconstruction while
 // withholding hidden input values and raw page bytes.
 func (c *Client) ActivityPage(ctx context.Context, args map[string]any) (any, error) {
+	if err := c.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer c.queries.Release()
+	return c.activityPageLocked(ctx, args)
+}
+
+// activityPageLocked is the account-scoped implementation. The caller must
+// hold the client query gate; this keeps the shared cookie/cache state
+// serialized with Call and the sign-in/answer paths.
+func (c *Client) activityPageLocked(ctx context.Context, args map[string]any) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	courseID, classID, activityID := str(args, "course_id"), str(args, "class_id"), str(args, "activity_id")

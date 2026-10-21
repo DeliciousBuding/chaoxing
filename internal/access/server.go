@@ -777,7 +777,15 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 			protected.ServeHTTP(w, r)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		// Authenticated calls go straight to bearer verification. Only small
+		// anonymous discovery envelopes are buffered before authentication, so
+		// an unauthenticated 64 KiB request cannot consume the MCP budget.
+		if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+			r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+			protected.ServeHTTP(w, r)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			oauthError(w, 413, "invalid_request")

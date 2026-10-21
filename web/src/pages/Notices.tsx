@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { EmptyState, ErrorBanner, Loading, MetaSummary } from "../components/common";
+import { formatBeijing } from "../lib/time";
 
 export function Notices() {
   const [data, setData] = React.useState<any>(null);
@@ -38,7 +39,7 @@ export function Notices() {
                   <div className="font-medium">{row.title || "无标题"}</div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Badge variant="secondary">{row.source_type || "notice"}</Badge>
-                    {row.send_time && <span>{new Date(row.send_time).toLocaleString()}</span>}
+                    {row.send_time && <span>{formatBeijing(row.send_time)}</span>}
                   </div>
                 </div>
                 <div className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{row.content || "—"}</div>

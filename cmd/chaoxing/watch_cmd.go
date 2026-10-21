@@ -45,6 +45,9 @@ func watchCommand(configPath string, args []string) error {
 		days := fs.String("days", "", "comma-separated days, e.g. Tue,Thu")
 		start := fs.String("start", "", "start time HH:MM")
 		end := fs.String("end", "", "end time HH:MM")
+		weeks := fs.String("weeks", "", "optional teaching weeks, e.g. 1-6 or 7,13")
+		key := fs.String("key", "", "optional stable schedule key for location bindings")
+		room := fs.String("room", "", "optional room label, e.g. 中303")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -58,10 +61,14 @@ func watchCommand(configPath string, args []string) error {
 		if err := validateClock(*end); err != nil {
 			return err
 		}
-		if *start >= *end {
-			return errors.New("start must be before end")
+		if *start == *end {
+			return errors.New("start and end must differ")
 		}
-		if err := addWatchClass(root, *course, *class, dayList, *start, *end); err != nil {
+		normalizedWeeks, err := watch.NormalizeWeeks(*weeks)
+		if err != nil {
+			return err
+		}
+		if err := addWatchClass(root, *course, *class, dayList, *start, *end, normalizedWeeks, *key, *room); err != nil {
 			return err
 		}
 	case "remove":
@@ -72,6 +79,8 @@ func watchCommand(configPath string, args []string) error {
 		days := fs.String("days", "", "optional: remove only this schedule")
 		start := fs.String("start", "", "optional: remove only this schedule")
 		end := fs.String("end", "", "optional: remove only this schedule")
+		weeks := fs.String("weeks", "", "optional: remove only this exact week range")
+		key := fs.String("key", "", "optional: remove only this schedule key")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -87,7 +96,7 @@ func watchCommand(configPath string, args []string) error {
 				return err
 			}
 		}
-		if err := removeWatchClass(root, *course, *class, dayList, *start, *end); err != nil {
+		if err := removeWatchClass(root, *course, *class, dayList, *start, *end, *weeks, *key); err != nil {
 			return err
 		}
 	default:
@@ -132,20 +141,27 @@ func watchWindows(configPath string, args []string) error {
 		}
 		from = parsed
 	}
-	lead := time.Duration(c.Watch.LeadSeconds) * time.Second
-	if lead == 0 {
-		lead = 2 * time.Minute
+	before, after, err := watch.Padding(
+		time.Duration(c.Watch.PollBeforeMinutes)*time.Minute,
+		time.Duration(c.Watch.PollAfterMinutes)*time.Minute,
+		time.Duration(c.Watch.LeadSeconds)*time.Second,
+	)
+	if err != nil {
+		return err
 	}
-	if lead > 10*time.Minute {
-		lead = 10 * time.Minute
+	termStart, err := parseWatchTermStart(c.Watch.TermStart)
+	if err != nil {
+		return err
 	}
-	windows := watch.Windows(c.Watch.Classes, lead, from, from.Add(time.Duration(*days)*24*time.Hour))
+	windows := watch.Windows(c.Watch.Classes, before, after, termStart, from, from.Add(time.Duration(*days)*24*time.Hour))
 	type row struct {
 		CourseID    string `json:"course_id"`
 		ClassID     string `json:"class_id"`
 		Start       string `json:"start"`
 		End         string `json:"end"`
 		ScheduleKey string `json:"schedule_key,omitempty"`
+		Weeks       string `json:"weeks,omitempty"`
+		Room        string `json:"room,omitempty"`
 	}
 	out := make([]row, 0, len(windows))
 	for _, w := range windows {
@@ -154,14 +170,21 @@ func watchWindows(configPath string, args []string) error {
 			Start:       w.Start.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04 MST"),
 			End:         w.End.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04 MST"),
 			ScheduleKey: w.ScheduleKey,
+			Weeks:       w.Weeks,
+			Room:        w.Room,
 		})
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
-		"ok": true, "lead_seconds": int(lead.Seconds()), "count": len(out), "windows": out,
+		"ok": true, "timezone": "Asia/Shanghai",
+		"poll_before_seconds": int(before.Seconds()), "poll_after_seconds": int(after.Seconds()),
+		"term_start": c.Watch.TermStart, "count": len(out), "windows": out,
 	})
 }
 
 func loadConfigMap(path string) (map[string]any, error) {
+	if err := checkPrivateFile(path); err != nil {
+		return nil, err
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, errors.New("configuration unavailable")
@@ -204,10 +227,19 @@ func watchClasses(root map[string]any) []any {
 	return classes
 }
 
-func addWatchClass(root map[string]any, course, class string, days []string, start, end string) error {
+func addWatchClass(root map[string]any, course, class string, days []string, start, end, weeks, key, room string) error {
 	course, class = strings.TrimSpace(course), strings.TrimSpace(class)
 	if course == "" || class == "" {
 		return errors.New("--course and --class are required")
+	}
+	key, room = strings.TrimSpace(key), strings.TrimSpace(room)
+	if key != "" {
+		if err := watch.ValidateScheduleKey(key); err != nil {
+			return err
+		}
+	}
+	if len([]rune(room)) > 64 {
+		return errors.New("--room is too long")
 	}
 	watch, ok := root["watch"].(map[string]any)
 	if !ok {
@@ -216,6 +248,15 @@ func addWatchClass(root map[string]any, course, class string, days []string, sta
 	}
 	classes, _ := watch["classes"].([]any)
 	schedule := map[string]any{"days": stringSlice(days), "start": start, "end": end}
+	if weeks != "" {
+		schedule["weeks"] = weeks
+	}
+	if key != "" {
+		schedule["key"] = key
+	}
+	if room != "" {
+		schedule["room"] = room
+	}
 	for _, raw := range classes {
 		item, ok := raw.(map[string]any)
 		if !ok || stringField(item, "course_id") != course || stringField(item, "class_id") != class {
@@ -239,7 +280,7 @@ func addWatchClass(root map[string]any, course, class string, days []string, sta
 	return nil
 }
 
-func removeWatchClass(root map[string]any, course, class string, days []string, start, end string) error {
+func removeWatchClass(root map[string]any, course, class string, days []string, start, end, weeks, key string) error {
 	course, class = strings.TrimSpace(course), strings.TrimSpace(class)
 	if course == "" || class == "" {
 		return errors.New("--course and --class are required")
@@ -262,7 +303,10 @@ func removeWatchClass(root map[string]any, course, class string, days []string, 
 		remaining := make([]any, 0, len(list))
 		for _, existing := range list {
 			schedule, _ := existing.(map[string]any)
-			if schedule != nil && stringField(schedule, "start") == start && stringField(schedule, "end") == end && daysEqual(schedule["days"], days) {
+			if schedule != nil && stringField(schedule, "start") == start && stringField(schedule, "end") == end &&
+				daysEqual(schedule["days"], days) &&
+				(weeks == "" || stringField(schedule, "weeks") == weeks) &&
+				(key == "" || stringField(schedule, "key") == key) {
 				continue
 			}
 			remaining = append(remaining, existing)
@@ -345,6 +389,9 @@ func scheduleEqual(existing any, schedule map[string]any) bool {
 	}
 	return stringField(item, "start") == stringField(schedule, "start") &&
 		stringField(item, "end") == stringField(schedule, "end") &&
+		stringField(item, "weeks") == stringField(schedule, "weeks") &&
+		stringField(item, "key") == stringField(schedule, "key") &&
+		stringField(item, "room") == stringField(schedule, "room") &&
 		daysEqual(item["days"], toStrings(schedule["days"]))
 }
 

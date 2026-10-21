@@ -10,7 +10,7 @@ import (
 )
 
 func TestSpecialFilenamePragmasAndConcurrentAccess(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "health # & %.db")
+	path := filepath.Join(privateDir(t), "health # & %.db")
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestDatabaseSymlinkRejected(t *testing.T) {
 }
 
 func BenchmarkProxyHealthWAL(b *testing.B) {
-	s, err := Open(filepath.Join(b.TempDir(), "health.db"))
+	s, err := Open(filepath.Join(privateDir(b), "health.db"))
 	if err != nil {
 		b.Fatal(err)
 	}

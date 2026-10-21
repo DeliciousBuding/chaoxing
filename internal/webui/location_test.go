@@ -2,13 +2,13 @@ package webui
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
-
 	"github.com/DeliciousBuding/chaoxing/internal/location"
-	"strconv"
 )
 
 type fakeLocationStore struct {
@@ -106,7 +106,16 @@ func newLocationTestServer(t *testing.T) (*http.ServeMux, *fakeLocationStore) {
 		Version: "test", Issuer: "https://mcp.example.com", OwnerPasswordHash: hash,
 		Location: store, Map: &location.MapConfig{Enabled: true, AK: "synthetic-ak", CenterLat: 39.9042, CenterLng: 116.4074, Zoom: 17},
 		Geocoder: fakeGeocoder{},
-		Execute:  func(context.Context, string, string, map[string]any) (any, error) { return nil, nil },
+		Schedules: func(account string) []ScheduleView {
+			if account != "root" {
+				return nil
+			}
+			return []ScheduleView{{
+				CourseID: "c", ClassID: "k", Key: "arch-tue-guidance",
+				Days: []string{"Tue"}, Start: "08:00", End: "09:40", Weeks: "7,13", Room: "中303",
+			}}
+		},
+		Execute: func(context.Context, string, string, map[string]any) (any, error) { return nil, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +131,9 @@ func TestLocationRoutesRequireLoginAndCSRF(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	if w := do(t, mux, "GET", "/api/map/config", ""); w.Code != http.StatusUnauthorized {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := do(t, mux, "GET", "/api/watch/schedules", ""); w.Code != http.StatusUnauthorized {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	w := do(t, mux, "GET", "/api/auth/session", "")
@@ -175,6 +187,19 @@ func TestLocationRoutesSaveResolveAndMapConfig(t *testing.T) {
 	value = jsonMap(t, w)
 	if value["enabled"] != true || value["ak"] != "synthetic-ak" {
 		t.Fatal(value)
+	}
+	w = do(t, mux, "GET", "/api/watch/schedules", "", csrfCookie, session)
+	if w.Code != http.StatusOK {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var schedules struct {
+		Items []ScheduleView `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &schedules); err != nil {
+		t.Fatal(err)
+	}
+	if len(schedules.Items) != 1 || schedules.Items[0].Key != "arch-tue-guidance" || schedules.Items[0].Room != "中303" {
+		t.Fatalf("schedules=%+v", schedules.Items)
 	}
 	item, err := store.Resolve(context.Background(), "root", "c", "k", "Tue-08:00-09:40")
 	if err != nil || item == nil {

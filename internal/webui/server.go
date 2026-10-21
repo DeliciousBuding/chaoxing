@@ -75,7 +75,21 @@ type cachedAsset struct {
 
 type Execute func(ctx context.Context, account, tool string, arguments map[string]any) (any, error)
 type Status func() any
-type CaptureList func(ctx context.Context, limit int) ([]capture.Activity, error)
+type CaptureList func(ctx context.Context, account, activityKey string, limit int, includePage bool) ([]capture.Activity, error)
+type ScheduleList func(account string) []ScheduleView
+
+// ScheduleView is the authenticated, read-only projection used by the
+// location-binding editor. It never contains coordinates or credentials.
+type ScheduleView struct {
+	CourseID string   `json:"course_id"`
+	ClassID  string   `json:"class_id"`
+	Key      string   `json:"key"`
+	Days     []string `json:"days"`
+	Start    string   `json:"start"`
+	End      string   `json:"end"`
+	Weeks    string   `json:"weeks,omitempty"`
+	Room     string   `json:"room,omitempty"`
+}
 
 type Config struct {
 	Version           string
@@ -86,6 +100,7 @@ type Config struct {
 	Execute           Execute
 	Status            Status
 	Captures          CaptureList
+	Schedules         ScheduleList
 	Location          location.Service
 	Map               *location.MapConfig
 	Geocoder          location.Geocoder
@@ -114,6 +129,7 @@ type Server struct {
 	attempts       []loginAttempt
 	now            func() time.Time
 	sem            chan struct{}
+	loginSem       chan struct{}
 	indexHTML      []byte
 	assets         map[string]cachedAsset
 }
@@ -163,7 +179,8 @@ func New(cfg Config) (*Server, error) {
 	return &Server{
 		cfg: cfg, issuerHost: issuer.Host, trustedProxies: trusted,
 		sessions: map[string]webSession{}, now: time.Now,
-		sem: make(chan struct{}, 8), indexHTML: index, assets: assets,
+		sem: make(chan struct{}, 8), loginSem: make(chan struct{}, 1),
+		indexHTML: index, assets: assets,
 	}, nil
 }
 
@@ -242,6 +259,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/tools", s.bounded(s.authenticated(s.tools)))
 	mux.Handle("POST /api/tools/call", s.bounded(s.authenticated(s.call)))
 	s.registerLocationRoutes(mux)
+	s.registerScheduleRoutes(mux)
 }
 
 func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
@@ -487,6 +505,14 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 429, "LOGIN_RATE_LIMITED", "too many login attempts")
 		return
 	}
+	select {
+	case s.loginSem <- struct{}{}:
+		defer func() { <-s.loginSem }()
+	default:
+		w.Header().Set("Retry-After", "2")
+		writeError(w, 429, "LOGIN_BUSY", "another login verification is in progress")
+		return
+	}
 	if !access.VerifyPassword(s.cfg.OwnerPasswordHash, req.Password) {
 		writeError(w, 401, "LOGIN_FAILED", "owner password is incorrect")
 		return
@@ -530,7 +556,11 @@ func (s *Server) allowLogin(ip string) bool {
 			}
 		}
 	}
-	s.attempts = append(kept, loginAttempt{at: now, ip: ip})
+	kept = append(kept, loginAttempt{at: now, ip: ip})
+	if len(kept) > 1024 {
+		kept = kept[len(kept)-1024:]
+	}
+	s.attempts = kept
 	return perMinute < loginMinuteIP && perQuarter < loginQuarterIP
 }
 
@@ -592,11 +622,16 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) captures(w http.ResponseWriter, r *http.Request) {
-	limit := 50
+	account, ok := s.sessionAccount(r)
+	if !ok {
+		writeError(w, 401, "UNAUTHENTICATED", "login required")
+		return
+	}
+	limit := 20
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 || parsed > 200 {
-			writeError(w, 400, "INVALID_ARGUMENT", "limit must be 1..200")
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, 400, "INVALID_ARGUMENT", "limit must be 1..100")
 			return
 		}
 		limit = parsed
@@ -619,28 +654,32 @@ func (s *Server) captures(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_ARGUMENT", "capture filters are too long")
 		return
 	}
+	if accountFilter != "" && accountFilter != account {
+		writeError(w, 403, "ACCOUNT_SCOPE_DENIED", "captures are scoped to the current account")
+		return
+	}
+	if includePage && activityFilter == "" {
+		writeError(w, 400, "INVALID_ARGUMENT", "include_page requires an exact activity_key")
+		return
+	}
 	if s.cfg.Captures == nil {
 		writeJSON(w, 200, map[string]any{"items": []map[string]any{}})
 		return
 	}
-	rows, err := s.cfg.Captures(r.Context(), limit)
+	rows, err := s.cfg.Captures(r.Context(), account, activityFilter, limit, includePage)
 	if err != nil {
 		writeError(w, 502, "CAPTURE_UNAVAILABLE", upstream.SafeFault(err).Message)
 		return
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		if (accountFilter != "" && row.AccountKey != accountFilter) ||
-			(activityFilter != "" && row.ActivityKey != activityFilter) {
-			continue
-		}
 		items = append(items, map[string]any{
 			"account": row.AccountKey, "activity_key": row.ActivityKey, "course_id": row.CourseID,
 			"class_id": row.ClassID, "activity_id": row.ActivityID, "kind": row.Kind, "state": row.State,
 			"user_state": row.UserState, "sign_type": row.SignType, "source": row.Source,
 			"first_seen_at": row.FirstSeenAt.Format(time.RFC3339), "last_seen_at": row.LastSeenAt.Format(time.RFC3339),
 			"update_count": row.UpdateCount, "activity_json": json.RawMessage(row.ActivityJSON),
-			"has_page": len(row.PageJSON) > 0, "page_error": row.PageError,
+			"has_page": row.HasPage, "page_error": row.PageError,
 		})
 		if includePage && len(row.PageJSON) > 0 {
 			items[len(items)-1]["page_json"] = json.RawMessage(row.PageJSON)
