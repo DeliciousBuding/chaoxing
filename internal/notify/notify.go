@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -36,6 +37,71 @@ func (m Multi) Send(ctx context.Context, msg Message) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// sharedTransport is tuned for home-router deployments. TLS handshakes to
+// CDN-fronted push providers intermittently exceed Go's default ten-second
+// timer on consumer uplinks, so alarms would otherwise be lost exactly when
+// the deployment is already unhealthy.
+var sharedTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          4,
+	MaxIdleConnsPerHost:   2,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   20 * time.Second,
+	ResponseHeaderTimeout: 20 * time.Second,
+	ExpectContinueTimeout: time.Second,
+}
+
+func sharedClient(timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return &http.Client{Timeout: timeout, Transport: sharedTransport}
+}
+
+// Retry re-sends one alert up to Attempts times with linear backoff. It is
+// meant for alarm paths (crash, panic) where a missed message is worse than a
+// duplicate; ordinary activity notifications keep a single attempt because the
+// watcher already retries them on the next tick.
+type Retry struct {
+	Sender   Sender
+	Attempts int
+	Delay    time.Duration
+}
+
+func (r Retry) Send(ctx context.Context, m Message) error {
+	if r.Sender == nil {
+		return nil
+	}
+	attempts := r.Attempts
+	if attempts <= 0 {
+		attempts = 3
+	}
+	delay := r.Delay
+	if delay <= 0 {
+		delay = 2 * time.Second
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(delay * time.Duration(attempt))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return errors.Join(lastErr, ctx.Err())
+			case <-timer.C:
+			}
+		}
+		if err := r.Sender.Send(ctx, m); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 func (m Message) priority() int {
@@ -95,7 +161,7 @@ func (f Feishu) client() *http.Client {
 	if f.Client != nil {
 		return f.Client
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return sharedClient(15 * time.Second)
 }
 
 type Ntfy struct {
@@ -152,7 +218,7 @@ func (g Gotify) client() *http.Client {
 	if g.Client != nil {
 		return g.Client
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return sharedClient(30 * time.Second)
 }
 
 func (n Ntfy) Send(ctx context.Context, m Message) error {
@@ -187,5 +253,5 @@ func (n Ntfy) client() *http.Client {
 	if n.Client != nil {
 		return n.Client
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return sharedClient(30 * time.Second)
 }

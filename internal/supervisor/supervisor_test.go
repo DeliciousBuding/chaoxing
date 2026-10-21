@@ -47,7 +47,7 @@ func TestFirstStartIsClean(t *testing.T) {
 	path := filepath.Join(d, "supervisor-state.json")
 	now := time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC)
 	sender := &recordingSender{}
-	s, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(now), ProcessID: 101})
+	s, err := Start(Config{Path: path, Sender: sender, AlertRetryDelay: time.Millisecond, Now: fixedClock(now), ProcessID: 101})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,11 +69,11 @@ func TestAbruptRestartCountsAndAlerts(t *testing.T) {
 	path := filepath.Join(d, "supervisor-state.json")
 	base := time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC)
 	sender := &recordingSender{}
-	if _, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base), ProcessID: 101}); err != nil {
+	if _, err := Start(Config{Path: path, Sender: sender, AlertRetryDelay: time.Millisecond, Now: fixedClock(base), ProcessID: 101}); err != nil {
 		t.Fatal(err)
 	}
 	crashAt := base.Add(time.Minute)
-	s, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(crashAt), ProcessID: 102})
+	s, err := Start(Config{Path: path, Sender: sender, AlertRetryDelay: time.Millisecond, Now: fixedClock(crashAt), ProcessID: 102})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestAbruptRestartCountsAndAlerts(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanAt := base.Add(2 * time.Minute)
-	s, err = Start(Config{Path: path, Sender: sender, Now: fixedClock(cleanAt), ProcessID: 103})
+	s, err = Start(Config{Path: path, Sender: sender, AlertRetryDelay: time.Millisecond, Now: fixedClock(cleanAt), ProcessID: 103})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestThirdConsecutiveCrashUsesMaximumPriority(t *testing.T) {
 	sender := &recordingSender{}
 	var current *Supervisor
 	for i := 0; i < 4; i++ {
-		s, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base.Add(time.Duration(i) * time.Minute)), ProcessID: 110 + i})
+		s, err := Start(Config{Path: path, Sender: sender, AlertRetryDelay: time.Millisecond, Now: fixedClock(base.Add(time.Duration(i) * time.Minute)), ProcessID: 110 + i})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -135,10 +135,10 @@ func TestSlowNotifierDoesNotBlockStartup(t *testing.T) {
 	path := filepath.Join(d, "supervisor-state.json")
 	base := time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC)
 	sender := &slowSender{}
-	if _, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base), ProcessID: 140}); err != nil {
+	if _, err := Start(Config{Path: path, Sender: sender, AlertRetryDelay: time.Millisecond, Now: fixedClock(base), ProcessID: 140}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base.Add(time.Minute)), ProcessID: 141})
+	s, err := Start(Config{Path: path, Sender: sender, AlertRetryDelay: time.Millisecond, Now: fixedClock(base.Add(time.Minute)), ProcessID: 141})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,23 +174,36 @@ func TestNotificationFailureDoesNotBlockStartup(t *testing.T) {
 	path := filepath.Join(d, "supervisor-state.json")
 	base := time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC)
 	sender := &recordingSender{err: errors.New("network unavailable")}
-	if _, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base), ProcessID: 120}); err != nil {
+	if _, err := Start(Config{Path: path, Sender: sender, AlertRetryDelay: time.Millisecond, Now: fixedClock(base), ProcessID: 120}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Start(Config{Path: path, Sender: sender, Now: fixedClock(base.Add(time.Minute)), ProcessID: 121})
+	s, err := Start(Config{Path: path, Sender: sender, AlertRetryDelay: time.Millisecond, Now: fixedClock(base.Add(time.Minute)), ProcessID: 121})
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitForAlert(t, s)
 }
 
-func TestInvalidStateIsRejected(t *testing.T) {
+func TestInvalidStateDegradesInsteadOfBlockingStartup(t *testing.T) {
 	d := t.TempDir()
 	path := filepath.Join(d, "supervisor-state.json")
 	if err := os.WriteFile(path, []byte(`{"version":2,"status":"running","pid":1}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Start(Config{Path: path, Now: fixedClock(time.Now().UTC()), ProcessID: 130}); err == nil {
-		t.Fatal("invalid state accepted")
+	s, err := Start(Config{Path: path, AlertRetryDelay: time.Millisecond, Now: fixedClock(time.Now().UTC()), ProcessID: 130})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := s.Metrics()
+	if !m.Degraded || m.ConsecutiveCrashes != 0 {
+		t.Fatal(m)
+	}
+	// The corrupt marker is replaced by a valid running marker.
+	next, err := Start(Config{Path: path, AlertRetryDelay: time.Millisecond, Now: fixedClock(time.Now().UTC().Add(time.Minute)), ProcessID: 131})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := next.Metrics().ConsecutiveCrashes; got != 1 {
+		t.Fatalf("replacement marker was not persisted: %d", got)
 	}
 }

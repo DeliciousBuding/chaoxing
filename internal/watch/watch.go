@@ -128,6 +128,7 @@ type Runner struct {
 	signer           Signer
 	answerer         AnswerActivitySource
 	sender           notify.Sender
+	alertSender      notify.Sender
 	state            map[string]entry
 	now              func() time.Time
 	random           func() float64
@@ -218,8 +219,11 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 	}
 	r := &Runner{
 		cfg: cfg, source: source, signer: signer, sender: sender,
-		answerer: answerSource,
-		state:    map[string]entry{}, now: time.Now, random: rand.Float64, wait: waitContext,
+		// Panic alerts are retried; ordinary activity notifications keep one
+		// attempt because the watcher already re-sends them on the next tick.
+		alertSender: notify.Retry{Sender: sender, Attempts: 3, Delay: 2 * time.Second},
+		answerer:    answerSource,
+		state:       map[string]entry{}, now: time.Now, random: rand.Float64, wait: waitContext,
 		metrics: Metrics{StartedAt: time.Now().UTC()},
 	}
 	if loadErr := r.load(); loadErr != nil {
@@ -314,13 +318,13 @@ func (r *Runner) recordPanic(value any) {
 	r.metricsMu.Unlock()
 	log.Printf("activity watch panic recovered (%d consecutive): %s\n%s", count, kind, debug.Stack())
 
-	notifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	notifyCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	body := fmt.Sprintf(
 		"连续 panic：%d\n最近类型：%s\nlast_tick：%s\nTick 已恢复，进程未退出；如持续增加请立即检查。",
 		count, kind, now.Format(time.RFC3339),
 	)
-	if err := r.sender.Send(notifyCtx, notify.Message{Title: "🚨 学习通 Watcher panic 已恢复", Body: body, Priority: 9}); err != nil {
+	if err := r.alertSender.Send(notifyCtx, notify.Message{Title: "🚨 学习通 Watcher panic 已恢复", Body: body, Priority: 9}); err != nil {
 		log.Printf("activity watch panic alert failed: %v", err)
 	}
 }

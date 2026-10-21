@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFeishuSendsTextCard(t *testing.T) {
@@ -119,5 +120,53 @@ func TestMultiReportsFailure(t *testing.T) {
 	defer srv.Close()
 	if err := (Multi{Ntfy{BaseURL: srv.URL, Topic: "t", Client: srv.Client()}}).Send(context.Background(), Message{}); err == nil {
 		t.Fatal("failure hidden")
+	}
+}
+
+type flakySender struct {
+	failures int
+	calls    int
+}
+
+func (f *flakySender) Send(context.Context, Message) error {
+	f.calls++
+	if f.calls <= f.failures {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+
+func TestRetryRecoversFromTransientFailure(t *testing.T) {
+	inner := &flakySender{failures: 2}
+	r := Retry{Sender: inner, Attempts: 3, Delay: time.Millisecond}
+	if err := r.Send(context.Background(), Message{Title: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if inner.calls != 3 {
+		t.Fatal(inner.calls)
+	}
+}
+
+func TestRetryStopsAtAttemptLimit(t *testing.T) {
+	inner := &flakySender{failures: 10}
+	r := Retry{Sender: inner, Attempts: 2, Delay: time.Millisecond}
+	if err := r.Send(context.Background(), Message{}); err == nil {
+		t.Fatal("persistent failure was reported as delivered")
+	}
+	if inner.calls != 2 {
+		t.Fatal(inner.calls)
+	}
+}
+
+func TestRetryHonoursCancellation(t *testing.T) {
+	inner := &flakySender{failures: 10}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := Retry{Sender: inner, Attempts: 5, Delay: time.Hour}
+	if err := r.Send(ctx, Message{}); err == nil {
+		t.Fatal("cancelled context was reported as delivered")
+	}
+	if inner.calls != 1 {
+		t.Fatal(inner.calls)
 	}
 }

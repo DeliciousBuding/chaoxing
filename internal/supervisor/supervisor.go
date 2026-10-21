@@ -45,6 +45,9 @@ type Metrics struct {
 	ConsecutiveCrashes int       `json:"consecutive_crashes"`
 	LastCrashAt        time.Time `json:"last_crash_at,omitempty"`
 	LastRunningAt      time.Time `json:"last_running_at,omitempty"`
+	LastAlertAt        time.Time `json:"last_alert_at,omitempty"`
+	LastAlertError     string    `json:"last_alert_error,omitempty"`
+	Degraded           bool      `json:"degraded,omitempty"`
 }
 
 type Config struct {
@@ -53,6 +56,8 @@ type Config struct {
 	Sender        notify.Sender
 	Now           func() time.Time
 	NotifyTimeout time.Duration
+	// AlertRetryDelay overrides the base backoff between alert attempts.
+	AlertRetryDelay time.Duration
 	// ProcessID is used by tests; zero means the current process.
 	ProcessID int
 }
@@ -65,6 +70,9 @@ type Supervisor struct {
 	notifyTimeout time.Duration
 	state         stateFile
 	alertDone     chan struct{}
+	degraded      bool
+	lastAlertAt   time.Time
+	lastAlertErr  string
 }
 
 func Start(cfg Config) (*Supervisor, error) {
@@ -81,12 +89,16 @@ func Start(cfg Config) (*Supervisor, error) {
 	}
 	timeout := cfg.NotifyTimeout
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 60 * time.Second
 	}
 
+	degraded := false
 	previous, existed, err := readState(cfg.Path)
 	if err != nil {
-		return nil, err
+		// A corrupt or unreadable marker must never stop the daemon; reset the
+		// crash history instead and report the degradation through metrics.
+		log.Printf("supervisor state reset: %v", err)
+		previous, existed, degraded = stateFile{}, false, true
 	}
 	state := stateFile{
 		Version: stateVersion, Status: statusRunning, PID: pid,
@@ -100,10 +112,20 @@ func Start(cfg Config) (*Supervisor, error) {
 		state.LastCrashAt = previous.LastCrashAt
 	}
 	if err := writeState(cfg.Path, state); err != nil {
-		return nil, err
+		log.Printf("supervisor state persistence degraded: %v", err)
+		degraded = true
+	}
+	sender := cfg.Sender
+	if sender != nil {
+		delay := cfg.AlertRetryDelay
+		if delay <= 0 {
+			delay = 2 * time.Second
+		}
+		sender = notify.Retry{Sender: sender, Attempts: 3, Delay: delay}
 	}
 	s := &Supervisor{
-		path: cfg.Path, sender: cfg.Sender, now: now, notifyTimeout: timeout, state: state,
+		path: cfg.Path, sender: sender, now: now, notifyTimeout: timeout, state: state,
+		degraded: degraded,
 	}
 	if state.ConsecutiveCrashes > 0 {
 		// Crash alerts are asynchronous: a slow push provider must not delay
@@ -172,7 +194,8 @@ func (s *Supervisor) Metrics() Metrics {
 	return Metrics{
 		PID: s.state.PID, StartedAt: s.state.StartedAt, UpdatedAt: s.state.UpdatedAt,
 		ConsecutiveCrashes: s.state.ConsecutiveCrashes, LastCrashAt: s.state.LastCrashAt,
-		LastRunningAt: s.state.LastRunningAt,
+		LastRunningAt: s.state.LastRunningAt, LastAlertAt: s.lastAlertAt,
+		LastAlertError: s.lastAlertErr, Degraded: s.degraded,
 	}
 }
 
@@ -210,5 +233,14 @@ func (s *Supervisor) sendCrashAlert(state stateFile) {
 	}
 	if err := s.sender.Send(ctx, message); err != nil {
 		log.Printf("supervisor crash alert failed: %v", err)
+		s.mu.Lock()
+		s.lastAlertErr = "delivery_failed"
+		s.mu.Unlock()
+		return
 	}
+	log.Printf("supervisor crash alert delivered (consecutive=%d)", state.ConsecutiveCrashes)
+	s.mu.Lock()
+	s.lastAlertAt = s.now().UTC()
+	s.lastAlertErr = ""
+	s.mu.Unlock()
 }
