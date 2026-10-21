@@ -21,32 +21,44 @@ type DiscoveredCourse struct {
 	Name     string `json:"name"`
 	Teacher  string `json:"teacher,omitempty"`
 	Status   string `json:"status,omitempty"`
+	Source   string `json:"source,omitempty"`
 }
 
 // DiscoverCourses reads the mooc2 course list. It is a read-only discovery
 // probe used to explain why an expected course is missing from
 // list_courses/backclazzdata; it never enters a course or starts an activity.
 func (c *Client) DiscoverCourses(ctx context.Context) ([]DiscoveredCourse, error) {
-	form := url.Values{
-		"courseType":     {"1"},
-		"courseFolderId": {"0"},
-		"query":          {""},
-		"superstarClass": {"0"},
-	}
-	b, err := c.authenticatedRead(ctx, http.MethodPost, courseListPage, form)
-	if err != nil {
-		return nil, err
-	}
-	rows := parseCourseListPage(string(b))
-	out := make([]DiscoveredCourse, 0, len(rows))
+	// courseType 1 is the "courses I take" tab; 0 returns the unfiltered tab
+	// set. Querying both is cheap and catches courses that only appear in one.
+	out := []DiscoveredCourse{}
 	seen := map[string]bool{}
-	for _, row := range rows {
-		key := row.CourseID + ":" + row.ClassID
-		if row.CourseID == "" || row.ClassID == "" || seen[key] {
+	var firstErr error
+	for _, courseType := range []string{"1", "0"} {
+		form := url.Values{
+			"courseType":     {courseType},
+			"courseFolderId": {"0"},
+			"query":          {""},
+			"superstarClass": {"0"},
+		}
+		b, err := c.authenticatedRead(ctx, http.MethodPost, courseListPage, form)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
-		seen[key] = true
-		out = append(out, row)
+		for _, row := range parseCourseListPage(string(b)) {
+			key := row.CourseID + ":" + row.ClassID
+			if row.CourseID == "" || row.ClassID == "" || seen[key] {
+				continue
+			}
+			row.Source = "courseType=" + courseType
+			seen[key] = true
+			out = append(out, row)
+		}
+	}
+	if len(out) == 0 && firstErr != nil {
+		return nil, firstErr
 	}
 	return out, nil
 }

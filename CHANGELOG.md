@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Extend `chaoxing courses discover` to query both mooc2 course tabs (`courseType=1` and `courseType=0`) and report the source of each row, so a course that only appears in the unfiltered tab is still found.
+- Add `chaoxing watch windows` to project the exact polling/sign-in windows (lead time included) from the live schedule, making it possible to compare configuration with the official timetable without waiting for a class.
 - Add `chaoxing courses discover`, a read-only probe of the mooc2 course-list page (`mooc2-ans/visit/courselistdata`) that marks each course as present in the legacy `backclazzdata` feed and as currently watched. It explains why a course that exists in the timetable may be absent from `list_courses` without entering the course.
 - Add `chaoxing watch classes list|add|remove` for the static watcher class list. It rewrites only `watch.classes`, preserves every other configuration field, validates days/times, caps the list at eight classes, keeps a timestamped backup and prints the resulting classes; the daemon must be restarted to apply.
 - Capture sanitized H5 evidence for classroom homework activities (type 19) in addition to practice (type 42), so later submission-protocol work has both page shapes.
