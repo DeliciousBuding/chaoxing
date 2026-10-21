@@ -262,6 +262,15 @@ func validateClasses(classes []Class) error {
 
 func (r *Runner) Run(ctx context.Context) {
 	log.Printf("activity watch started: %d classes, interval %s (+/-%d%%), auto_sign=%t, auto_answer=%t", len(r.cfg.Classes), r.cfg.Interval, r.cfg.IntervalJitterPercent, r.cfg.AutoSign, r.cfg.AutoAnswer)
+	// Poll once immediately: a restart during class must not wait for the idle
+	// sleep cap before the first observation. Outside the window the tick is a
+	// no-op, so this costs nothing on an idle deployment.
+	select {
+	case <-ctx.Done():
+		return
+	default:
+		r.tick(ctx)
+	}
 	for {
 		delay := r.nextDelay(r.now())
 		timer := time.NewTimer(delay)

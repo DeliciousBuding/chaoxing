@@ -720,3 +720,42 @@ func TestActiveScheduleKey(t *testing.T) {
 		t.Fatal("returned a key outside the schedule")
 	}
 }
+
+func TestRunPollsImmediatelyAfterStart(t *testing.T) {
+	called := make(chan struct{}, 4)
+	source := &countingSource{onCall: called}
+	runner, err := New(Config{
+		Interval: time.Minute, Classes: []Class{{
+			CourseID: "course", ClassID: "class",
+			Schedule: []Schedule{{Days: []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}, Start: "00:00", End: "23:59"}},
+		}}, Window: "00:00-23:59",
+	}, source, notifySenderFunc(func(context.Context, notify.Message) error { return nil }), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runner.Run(ctx)
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watcher did not poll immediately after start")
+	}
+	if runner.Metrics().Ticks < 1 {
+		t.Fatal("tick counter was not incremented")
+	}
+}
+
+type countingSource struct{ onCall chan struct{} }
+
+func (c *countingSource) ListClassActivities(context.Context, string, string) ([]upstream.Activity, error) {
+	select {
+	case c.onCall <- struct{}{}:
+	default:
+	}
+	return nil, nil
+}
+
+type notifySenderFunc func(context.Context, notify.Message) error
+
+func (f notifySenderFunc) Send(ctx context.Context, m notify.Message) error { return f(ctx, m) }
