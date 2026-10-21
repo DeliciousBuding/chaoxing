@@ -43,6 +43,7 @@ type config struct {
 	Location          *locationConfig      `json:"location,omitempty"`
 	Device            *deviceConfig        `json:"device,omitempty"`
 	RequestPacing     *requestPacingConfig `json:"request_pacing,omitempty"`
+	TrustedProxies    []string             `json:"trusted_proxies,omitempty"`
 	GroupActivities   bool                 `json:"group_activities,omitempty"`
 	// Proxies optionally routes upstream traffic through SOCKS5 endpoints;
 	// empty means direct egress. Tenants are additional isolated accounts

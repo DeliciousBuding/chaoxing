@@ -236,6 +236,9 @@ type easemobKeyValue struct {
 
 func parseEasemobMessage(meta []byte) (easemobMessage, bool) {
 	fields := parseProtobuf(meta)
+	if len(fields[6]) == 0 {
+		return easemobMessage{}, false
+	}
 	body, ok := fields[6][0].([]byte)
 	if !ok {
 		return easemobMessage{}, false
@@ -248,8 +251,17 @@ func parseEasemobMessage(meta []byte) (easemobMessage, bool) {
 			continue
 		}
 		keyValue := parseProtobuf(raw)
-		key, _ := keyValue[1][0].(string)
-		stringValue, _ := keyValue[6][0].(string)
+		var key, stringValue string
+		if len(keyValue[1]) > 0 {
+			if value, ok := keyValue[1][0].([]byte); ok {
+				key = string(value)
+			}
+		}
+		if len(keyValue[6]) > 0 {
+			if value, ok := keyValue[6][0].([]byte); ok {
+				stringValue = string(value)
+			}
+		}
 		if key == "attachment" && stringValue != "" {
 			out.Exts = append(out.Exts, easemobKeyValue{Key: key, StringValue: stringValue})
 		}

@@ -19,10 +19,14 @@ import (
 type fakeSource struct {
 	items []upstream.Activity
 	calls int
+	panic bool
 }
 
 func (f *fakeSource) ListClassActivities(context.Context, string, string) ([]upstream.Activity, error) {
 	f.calls++
+	if f.panic {
+		panic("synthetic watcher panic")
+	}
 	return f.items, nil
 }
 
@@ -145,6 +149,87 @@ func TestWatchAutoAnswersOnce(t *testing.T) {
 	}
 	if r.state[key(src.items[0])].Status != "answered" {
 		t.Fatalf("%+v", r.state)
+	}
+}
+
+func TestWatchTickRecoversPanicAndResetsCounter(t *testing.T) {
+	src := &fakeSource{panic: true}
+	snd := &fakeSender{}
+	r, err := New(Config{
+		Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, snd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
+
+	r.tick(context.Background())
+
+	metrics := r.Metrics()
+	if metrics.ConsecutivePanics != 1 || metrics.LastPanicKind != "explicit" || metrics.LastPanicAt.IsZero() {
+		t.Fatalf("%+v", metrics)
+	}
+	if len(snd.sent) != 1 || snd.sent[0].Title != "🚨 学习通 Watcher panic 已恢复" || !strings.Contains(snd.sent[0].Body, "连续 panic：1") {
+		t.Fatalf("%+v", snd.sent)
+	}
+
+	src.panic = false
+	r.tick(context.Background())
+
+	metrics = r.Metrics()
+	if metrics.ConsecutivePanics != 0 || len(snd.sent) != 1 {
+		t.Fatalf("%+v sent=%d", metrics, len(snd.sent))
+	}
+}
+
+func TestWatchNextDelayIdlesOutsideClassAndWakesBeforeStart(t *testing.T) {
+	r, err := New(Config{
+		Interval: time.Minute, Window: "07:30-22:30", Lead: 2 * time.Minute,
+		Classes: []Class{{
+			CourseID: "c", ClassID: "k",
+			Schedule: []Schedule{{Days: []string{"Tue"}, Start: "08:00", End: "09:40"}},
+		}},
+		StatePath: t.TempDir() + "/state.json",
+	}, &fakeSource{}, &fakeSender{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.random = func() float64 { return 0.5 }
+
+	if got := r.nextDelay(time.Date(2026, 10, 20, 10, 30, 0, 0, shanghai)); got != 5*time.Minute {
+		t.Fatalf("idle delay=%s", got)
+	}
+	if got := r.nextDelay(time.Date(2026, 10, 20, 23, 0, 0, 0, shanghai)); got != 5*time.Minute {
+		t.Fatalf("night delay=%s", got)
+	}
+	if got := r.nextDelay(time.Date(2026, 10, 20, 7, 27, 0, 0, shanghai)); got != 3*time.Minute {
+		t.Fatalf("pre-window delay=%s", got)
+	}
+	if got := r.nextDelay(time.Date(2026, 10, 20, 7, 58, 0, 0, shanghai)); got != time.Minute {
+		t.Fatalf("pre-class delay=%s", got)
+	}
+}
+
+func TestWatchSkipsGroupFeedWhenNoClassIsActive(t *testing.T) {
+	src := &fakeGroupSource{groupItems: []upstream.Activity{signIn("c", "k", "group-1", true)}}
+	r, err := New(Config{
+		Interval: time.Minute, Window: "07:30-22:30",
+		Classes: []Class{{
+			CourseID: "c", ClassID: "k",
+			Schedule: []Schedule{{Days: []string{"Tue"}, Start: "08:00", End: "09:40"}},
+		}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, &fakeSender{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return time.Date(2026, 10, 20, 10, 30, 0, 0, shanghai) }
+	r.Tick(context.Background())
+
+	if src.calls != 0 || src.groupCalls != 0 {
+		t.Fatalf("classCalls=%d groupCalls=%d", src.calls, src.groupCalls)
 	}
 }
 

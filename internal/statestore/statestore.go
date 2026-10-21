@@ -63,7 +63,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	u := url.URL{Scheme: "file", Path: "/" + strings.TrimPrefix(filepath.ToSlash(path), "/")}
-	q := url.Values{"_pragma": {"busy_timeout(1000)", "journal_mode(WAL)", "synchronous(NORMAL)", "foreign_keys(1)", "wal_autocheckpoint(256)", "journal_size_limit(4194304)"}}
+	q := url.Values{"_pragma": {"busy_timeout(1000)", "journal_mode(WAL)", "synchronous(NORMAL)", "foreign_keys(1)", "cache_size(-2048)", "wal_autocheckpoint(256)", "journal_size_limit(4194304)"}}
 	u.RawQuery = q.Encode()
 	db, err := sql.Open("sqlite", u.String())
 	if err != nil {

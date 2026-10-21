@@ -15,7 +15,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,12 +47,14 @@ func distFS() fs.FS {
 }
 
 const (
-	sessionCookie = "__Host-chaoxing_session"
-	csrfCookie    = "__Host-chaoxing_csrf"
-	sessionTTL    = 8 * time.Hour
-	idleTTL       = 30 * time.Minute
-	maxBodyBytes  = 128 << 10
-	maxSessions   = 128
+	sessionCookie  = "__Host-chaoxing_session"
+	csrfCookie     = "__Host-chaoxing_csrf"
+	sessionTTL     = 8 * time.Hour
+	idleTTL        = 30 * time.Minute
+	maxBodyBytes   = 128 << 10
+	maxSessions    = 32
+	loginMinuteIP  = 5
+	loginQuarterIP = 20
 )
 
 type Account struct {
@@ -65,6 +70,7 @@ type Config struct {
 	Version           string
 	Issuer            string
 	OwnerPasswordHash string
+	TrustedProxies    []string
 	Accounts          []Account
 	Execute           Execute
 	Status            Status
@@ -85,16 +91,19 @@ type webSession struct {
 
 type loginAttempt struct {
 	at time.Time
+	ip string
 }
 
 type Server struct {
-	cfg       Config
-	mu        sync.Mutex
-	sessions  map[string]webSession
-	attempts  []loginAttempt
-	now       func() time.Time
-	sem       chan struct{}
-	indexHTML []byte
+	cfg            Config
+	issuerHost     string
+	trustedProxies []netip.Prefix
+	mu             sync.Mutex
+	sessions       map[string]webSession
+	attempts       []loginAttempt
+	now            func() time.Time
+	sem            chan struct{}
+	indexHTML      []byte
 }
 
 func New(cfg Config) (*Server, error) {
@@ -103,6 +112,14 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Issuer == "" {
 		return nil, errors.New("webui issuer is required")
+	}
+	issuer, err := url.Parse(cfg.Issuer)
+	if err != nil || issuer.Scheme != "https" || issuer.Host == "" || issuer.User != nil || issuer.Path != "" || issuer.RawQuery != "" || issuer.Fragment != "" {
+		return nil, errors.New("webui issuer must be an HTTPS origin")
+	}
+	trusted, err := parseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.OwnerPasswordHash == "" {
 		return nil, errors.New("webui owner password hash is required")
@@ -128,9 +145,34 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("webui bundle is missing; run npm --prefix web run build")
 	}
 	return &Server{
-		cfg: cfg, sessions: map[string]webSession{}, now: time.Now,
+		cfg: cfg, issuerHost: issuer.Host, trustedProxies: trusted,
+		sessions: map[string]webSession{}, now: time.Now,
 		sem: make(chan struct{}, 8), indexHTML: index,
 	}, nil
+}
+
+func parseTrustedProxies(values []string) ([]netip.Prefix, error) {
+	if len(values) == 0 {
+		return []netip.Prefix{
+			netip.MustParsePrefix("127.0.0.0/8"),
+			netip.MustParsePrefix("::1/128"),
+		}, nil
+	}
+	out := make([]netip.Prefix, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(value))
+		if err != nil || !prefix.IsValid() {
+			return nil, fmt.Errorf("invalid trusted proxy CIDR %q", value)
+		}
+		prefix = prefix.Masked()
+		if seen[prefix.String()] {
+			return nil, fmt.Errorf("duplicate trusted proxy CIDR %q", value)
+		}
+		seen[prefix.String()] = true
+		out = append(out, prefix)
+	}
+	return out, nil
 }
 
 // Register mounts the management UI and its JSON API. It does not alter OAuth
@@ -165,6 +207,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 
 func (s *Server) bounded(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.hostOK(w, r) {
+			return
+		}
 		select {
 		case s.sem <- struct{}{}:
 			defer func() { <-s.sem }()
@@ -227,7 +272,7 @@ func (s *Server) currentSession(w http.ResponseWriter, r *http.Request) (string,
 	session, ok := s.sessions[id]
 	now := s.now()
 	if ok {
-		if session.remoteIP != remoteIP(r) || now.After(session.expires) || now.Sub(session.lastSeen) > idleTTL {
+		if session.remoteIP != s.remoteIP(r) || now.After(session.expires) || now.Sub(session.lastSeen) > idleTTL {
 			delete(s.sessions, id)
 			ok = false
 		} else {
@@ -308,7 +353,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	if !s.allowLogin() {
+	ip := s.remoteIP(r)
+	if !s.allowLogin(ip) {
 		w.Header().Set("Retry-After", "60")
 		writeError(w, 429, "LOGIN_RATE_LIMITED", "too many login attempts")
 		return
@@ -332,29 +378,32 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 429, "SESSION_LIMIT", "too many active management sessions")
 		return
 	}
-	s.sessions[id] = webSession{account: "root", csrf: s.csrfValue(w, r), created: now, lastSeen: now, expires: now.Add(sessionTTL), remoteIP: remoteIP(r)}
+	s.sessions[id] = webSession{account: "root", csrf: s.csrfValue(w, r), created: now, lastSeen: now, expires: now.Add(sessionTTL), remoteIP: s.remoteIP(r)}
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", MaxAge: int(sessionTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
 	writeJSON(w, 200, map[string]any{"authenticated": true, "account": "root", "expires_at": now.Add(sessionTTL).Format(time.RFC3339)})
 }
 
-func (s *Server) allowLogin() bool {
+func (s *Server) allowLogin(ip string) bool {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	kept := s.attempts[:0]
-	recentMinute, recentQuarter := 0, 0
+	kept := make([]loginAttempt, 0, len(s.attempts)+1)
+	perMinute, perQuarter := 0, 0
 	for _, attempt := range s.attempts {
-		if now.Sub(attempt.at) <= 15*time.Minute {
-			kept = append(kept, attempt)
-			recentQuarter++
+		if now.Sub(attempt.at) > 15*time.Minute {
+			continue
+		}
+		kept = append(kept, attempt)
+		if attempt.ip == ip {
+			perQuarter++
 			if now.Sub(attempt.at) <= time.Minute {
-				recentMinute++
+				perMinute++
 			}
 		}
 	}
-	s.attempts = append(kept, loginAttempt{at: now})
-	return recentMinute < 10 && recentQuarter < 30
+	s.attempts = append(kept, loginAttempt{at: now, ip: ip})
+	return perMinute < loginMinuteIP && perQuarter < loginQuarterIP
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -525,7 +574,7 @@ func (s *Server) call(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
-	if !s.sameOrigin(w, r) {
+	if !s.hostOK(w, r) || !s.sameOrigin(w, r) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -580,10 +629,65 @@ func digest(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func remoteIP(r *http.Request) string {
-	host := r.RemoteAddr
-	if index := strings.LastIndex(host, ":"); index > 0 {
-		host = host[:index]
+func (s *Server) hostOK(w http.ResponseWriter, r *http.Request) bool {
+	if strings.EqualFold(r.Host, s.issuerHost) {
+		return true
 	}
-	return host
+	writeError(w, 403, "INVALID_HOST", "request host is not the configured origin")
+	return false
+}
+
+// remoteIP returns a stable client network, not the immediate reverse-proxy
+// address. IPv4 sessions bind to /24 and IPv6 to /64 so mobile roaming does
+// not log the owner out while cross-network cookie theft remains bounded.
+func (s *Server) remoteIP(r *http.Request) string {
+	remote, ok := requestIP(r.RemoteAddr)
+	if !ok {
+		return "unknown"
+	}
+	if !trustedProxy(s.trustedProxies, remote) {
+		return clientNetwork(remote)
+	}
+	values := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(values) - 1; i >= 0; i-- {
+		candidate, err := netip.ParseAddr(strings.TrimSpace(values[i]))
+		if err != nil || !candidate.IsValid() {
+			continue
+		}
+		candidate = candidate.Unmap()
+		if trustedProxy(s.trustedProxies, candidate) {
+			continue
+		}
+		return clientNetwork(candidate)
+	}
+	return clientNetwork(remote)
+}
+
+func requestIP(remoteAddr string) (netip.Addr, bool) {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || !addr.IsValid() {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
+}
+
+func trustedProxy(prefixes []netip.Prefix, addr netip.Addr) bool {
+	for _, prefix := range prefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func clientNetwork(addr netip.Addr) string {
+	bits := 64
+	if addr.Is4() {
+		bits = 24
+	}
+	return netip.PrefixFrom(addr, bits).Masked().String()
 }

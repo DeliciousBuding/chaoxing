@@ -187,7 +187,7 @@ func New(c Config) (*Client, error) {
 	}
 	rt := c.Transport
 	if rt == nil {
-		rt = &http.Transport{Proxy: nil, MaxIdleConns: 4, MaxIdleConnsPerHost: 2, IdleConnTimeout: 60 * time.Second, TLSHandshakeTimeout: 10 * time.Second}
+		rt = &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, MaxIdleConns: 4, MaxIdleConnsPerHost: 2, IdleConnTimeout: 60 * time.Second, TLSHandshakeTimeout: 10 * time.Second}
 	}
 	if c.RequestMinInterval > 0 {
 		rt = newPacedTransport(rt, c.RequestMinInterval, c.RequestJitterPercent)

@@ -3,12 +3,56 @@ package upstream
 import (
 	"context"
 	"crypto/des"
+	"encoding/binary"
 	"encoding/hex"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+func lengthPrefixedField(field int, value []byte) []byte {
+	var length [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(length[:], uint64(len(value)))
+	out := []byte{byte(uint64(field)<<3 | 2)}
+	out = append(out, length[:n]...)
+	return append(out, value...)
+}
+
+func TestParseEasemobMessageExtractsAttachment(t *testing.T) {
+	attachment := `{"attachmentType":15,"att_chat_course":{"aid":9001,"atype":2}}`
+	keyValue := append(lengthPrefixedField(1, []byte("attachment")), lengthPrefixedField(6, []byte(attachment))...)
+	message := lengthPrefixedField(5, keyValue)
+	outer := lengthPrefixedField(6, message)
+
+	got, ok := parseEasemobMessage(outer)
+	if !ok {
+		t.Fatal("valid message rejected")
+	}
+	if len(got.Exts) != 1 || got.Exts[0].Key != "attachment" || got.Exts[0].StringValue != attachment {
+		t.Fatalf("%+v", got.Exts)
+	}
+}
+
+func TestParseEasemobMessageRejectsTruncatedAndIncompleteMessages(t *testing.T) {
+	inputs := [][]byte{
+		nil,
+		{0x32},
+		{0x32, 0x20, 0x01},
+	}
+	for i, input := range inputs {
+		if _, ok := parseEasemobMessage(input); ok {
+			t.Fatalf("input %d accepted", i)
+		}
+	}
+
+	keyValue := lengthPrefixedField(6, []byte("synthetic"))
+	message := lengthPrefixedField(5, keyValue)
+	outer := lengthPrefixedField(6, message)
+	if _, ok := parseEasemobMessage(outer); ok {
+		t.Fatal("key-value without attachment key accepted")
+	}
+}
 
 func TestParseIMAttachmentNormalizesSignCard(t *testing.T) {
 	item, ok := parseIMAttachment(`{"attachmentType":15,"att_chat_course":{"aid":9001,"atype":2,"atypeName":"密码签到","title":"课堂签到","subTitle":"","courseInfo":{"courseid":123,"classid":456,"coursename":"Synthetic Course"}}}`)

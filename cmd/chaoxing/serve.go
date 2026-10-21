@@ -428,6 +428,43 @@ func serve() error {
 	for _, tc := range c.Tenants {
 		uiAccounts = append(uiAccounts, webui.Account{ID: tc.ID, Name: tc.ID})
 	}
+
+	watcherMetrics := func() map[string]any {
+		watchers := map[string]any{}
+		if watcher != nil {
+			watchers["root"] = watcher.Metrics()
+		}
+		for _, tenant := range tenants {
+			if tenant.watch != nil {
+				watchers[tenant.cfg.ID] = tenant.watch.Metrics()
+			}
+		}
+		return watchers
+	}
+	watcherHealth := func() map[string]any {
+		detailed := watcherMetrics()
+		count, consecutive, ticks, active := len(detailed), 0, 0, 0
+		var lastTick, lastPanic time.Time
+		for _, value := range detailed {
+			m, ok := value.(watch.Metrics)
+			if !ok {
+				continue
+			}
+			consecutive += m.ConsecutivePanics
+			ticks += int(m.Ticks)
+			active += int(m.ActiveClassPolls)
+			if m.LastTickAt.After(lastTick) {
+				lastTick = m.LastTickAt
+			}
+			if m.LastPanicAt.After(lastPanic) {
+				lastPanic = m.LastPanicAt
+			}
+		}
+		return map[string]any{
+			"count": count, "consecutive_panics": consecutive, "last_tick_at": lastTick,
+			"last_panic_at": lastPanic, "ticks": ticks, "active_class_polls": active,
+		}
+	}
 	accountExecute := func(ctx context.Context, account, tool string, arguments map[string]any) (any, error) {
 		if account == "root" {
 			return rootExecute(ctx, tool, arguments)
@@ -454,10 +491,11 @@ func serve() error {
 		Version:           version,
 		Issuer:            c.Issuer,
 		OwnerPasswordHash: c.OwnerPasswordHash,
+		TrustedProxies:    c.TrustedProxies,
 		Accounts:          uiAccounts,
 		Execute:           accountExecute,
 		Status: func() any {
-			return map[string]any{"egress": pool.Status(), "tenants": tenantIDs}
+			return map[string]any{"egress": pool.Status(), "tenants": tenantIDs, "watchers": watcherMetrics()}
 		},
 		Captures: captureList,
 		Location: locations,
@@ -472,7 +510,8 @@ func serve() error {
 		return rootExecute(ctx, name, args)
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version, "watchers": watcherHealth()})
 	})
 	local := http.NewServeMux()
 	localAuth := func(w http.ResponseWriter, r *http.Request) bool {
@@ -488,9 +527,10 @@ func serve() error {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"version": version,
-			"egress":  pool.Status(),
-			"tenants": tenantIDs,
+			"version":  version,
+			"egress":   pool.Status(),
+			"tenants":  tenantIDs,
+			"watchers": watcherMetrics(),
 		})
 	})
 	local.HandleFunc("POST /call", func(w http.ResponseWriter, r *http.Request) {

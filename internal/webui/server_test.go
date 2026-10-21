@@ -318,10 +318,65 @@ func TestWebUILoginRateLimitWindow(t *testing.T) {
 	now := time.Now().UTC()
 	s.now = func() time.Time { return now }
 	for i := 0; i < 10; i++ {
-		s.attempts = append(s.attempts, loginAttempt{at: now.Add(-time.Duration(i) * time.Second)})
+		s.attempts = append(s.attempts, loginAttempt{at: now.Add(-time.Duration(i) * time.Second), ip: "192.0.2.0/24"})
 	}
-	if s.allowLogin() {
+	if s.allowLogin("192.0.2.0/24") {
 		t.Fatal("eleventh login attempt inside one minute was allowed")
+	}
+}
+
+func TestWebUIRejectsInvalidHost(t *testing.T) {
+	_, mux := newTestServer(t)
+	r := httptest.NewRequest("GET", "https://evil.example.com/api/auth/session", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 403 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	value := jsonMap(t, w)
+	if err, _ := value["error"].(map[string]any); err["code"] != "INVALID_HOST" {
+		t.Fatal(value)
+	}
+}
+
+func TestWebUIRemoteIPTrustsOnlyLoopbackProxies(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	r := httptest.NewRequest("GET", "https://mcp.example.com/api/status", nil)
+	r.RemoteAddr = "127.0.0.9:12345"
+	r.Header.Set("X-Forwarded-For", "203.0.113.10, 127.0.0.20")
+	if got := s.remoteIP(r); got != "203.0.113.0/24" {
+		t.Fatalf("trusted proxy client=%q", got)
+	}
+
+	r = httptest.NewRequest("GET", "https://mcp.example.com/api/status", nil)
+	r.RemoteAddr = "198.51.100.10:12345"
+	r.Header.Set("X-Forwarded-For", "203.0.113.10, 127.0.0.20")
+	if got := s.remoteIP(r); got != "198.51.100.0/24" {
+		t.Fatalf("untrusted direct client=%q", got)
+	}
+}
+
+func TestWebUISessionSurvivesIPv4AddressChangeInsideNetwork(t *testing.T) {
+	s, _ := newTestServer(t)
+	now := s.now()
+	s.sessions[digest(strings.Repeat("a", 64))] = webSession{
+		account: "root", csrf: "synthetic", created: now, lastSeen: now,
+		expires: now.Add(sessionTTL), remoteIP: "198.51.100.0/24",
+	}
+	value := strings.Repeat("a", 64)
+	r := httptest.NewRequest("GET", "https://mcp.example.com/api/status", nil)
+	r.RemoteAddr = "198.51.100.20:12345"
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: value})
+	w := httptest.NewRecorder()
+	if _, ok := s.currentSession(w, r); !ok {
+		t.Fatal("session was invalidated by another address in the same /24", w.Code, w.Body.String())
+	}
+
+	r.RemoteAddr = "203.0.113.20:12345"
+	w = httptest.NewRecorder()
+	if _, ok := s.currentSession(w, r); ok {
+		t.Fatal("session survived another /24 network")
 	}
 }
 

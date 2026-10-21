@@ -146,6 +146,7 @@ func transport(dial func(ctx context.Context, network, addr string) (net.Conn, e
 		DialContext:           dial,
 		MaxIdleConns:          4,
 		MaxIdleConnsPerHost:   2,
+		ForceAttemptHTTP2:     true,
 		IdleConnTimeout:       60 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,

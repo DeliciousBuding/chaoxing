@@ -10,9 +10,13 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/capture"
@@ -106,6 +110,18 @@ type stateFile struct {
 	Entries map[string]entry `json:"entries"`
 }
 
+// Metrics is safe to expose from the public health endpoint: it contains only
+// timing and counters, never course identities or upstream response bodies.
+type Metrics struct {
+	StartedAt         time.Time `json:"started_at"`
+	LastTickAt        time.Time `json:"last_tick_at"`
+	LastPanicAt       time.Time `json:"last_panic_at,omitempty"`
+	ConsecutivePanics int       `json:"consecutive_panics"`
+	LastPanicKind     string    `json:"last_panic_kind,omitempty"`
+	Ticks             uint64    `json:"ticks"`
+	ActiveClassPolls  uint64    `json:"active_class_polls"`
+}
+
 type Runner struct {
 	cfg              Config
 	source           ActivitySource
@@ -117,6 +133,10 @@ type Runner struct {
 	random           func() float64
 	wait             func(context.Context, time.Duration) bool
 	lastCapturePrune time.Time
+	metrics          Metrics
+	metricsMu        sync.RWMutex
+	ticks            atomic.Uint64
+	activePolls      atomic.Uint64
 }
 
 var shanghai = time.FixedZone("CST", 8*60*60)
@@ -200,6 +220,7 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 		cfg: cfg, source: source, signer: signer, sender: sender,
 		answerer: answerSource,
 		state:    map[string]entry{}, now: time.Now, random: rand.Float64, wait: waitContext,
+		metrics: Metrics{StartedAt: time.Now().UTC()},
 	}
 	if loadErr := r.load(); loadErr != nil {
 		return nil, loadErr
@@ -238,7 +259,7 @@ func validateClasses(classes []Class) error {
 func (r *Runner) Run(ctx context.Context) {
 	log.Printf("activity watch started: %d classes, interval %s (+/-%d%%), auto_sign=%t, auto_answer=%t", len(r.cfg.Classes), r.cfg.Interval, r.cfg.IntervalJitterPercent, r.cfg.AutoSign, r.cfg.AutoAnswer)
 	for {
-		delay := r.jitterInterval()
+		delay := r.nextDelay(r.now())
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -248,8 +269,70 @@ func (r *Runner) Run(ctx context.Context) {
 			log.Print("activity watch stopped")
 			return
 		case <-timer.C:
-			r.Tick(ctx)
+			r.tick(ctx)
 		}
+	}
+}
+
+// Metrics returns a safe snapshot for /healthz and the management dashboard.
+func (r *Runner) Metrics() Metrics {
+	r.metricsMu.RLock()
+	defer r.metricsMu.RUnlock()
+	out := r.metrics
+	out.Ticks = r.ticks.Load()
+	out.ActiveClassPolls = r.activePolls.Load()
+	return out
+}
+
+// tick is the supervision boundary for one polling cycle. A panic is logged,
+// counted and alerted, but must not terminate the long-running watcher.
+func (r *Runner) tick(ctx context.Context) {
+	defer func() {
+		if value := recover(); value != nil {
+			r.recordPanic(value)
+		}
+	}()
+	now := r.now().UTC()
+	r.metricsMu.Lock()
+	r.metrics.LastTickAt = now
+	r.metricsMu.Unlock()
+	r.ticks.Add(1)
+	r.Tick(ctx)
+	r.metricsMu.Lock()
+	r.metrics.ConsecutivePanics = 0
+	r.metricsMu.Unlock()
+}
+
+func (r *Runner) recordPanic(value any) {
+	now := r.now().UTC()
+	kind := panicKind(value)
+	r.metricsMu.Lock()
+	r.metrics.LastPanicAt = now
+	r.metrics.ConsecutivePanics++
+	r.metrics.LastPanicKind = kind
+	count := r.metrics.ConsecutivePanics
+	r.metricsMu.Unlock()
+	log.Printf("activity watch panic recovered (%d consecutive): %s\n%s", count, kind, debug.Stack())
+
+	notifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	body := fmt.Sprintf(
+		"连续 panic：%d\n最近类型：%s\nlast_tick：%s\nTick 已恢复，进程未退出；如持续增加请立即检查。",
+		count, kind, now.Format(time.RFC3339),
+	)
+	if err := r.sender.Send(notifyCtx, notify.Message{Title: "🚨 学习通 Watcher panic 已恢复", Body: body, Priority: 9}); err != nil {
+		log.Printf("activity watch panic alert failed: %v", err)
+	}
+}
+
+func panicKind(value any) string {
+	switch value.(type) {
+	case runtime.Error:
+		return "runtime"
+	case string:
+		return "explicit"
+	default:
+		return "unknown"
 	}
 }
 
@@ -259,6 +342,77 @@ func (r *Runner) jitterInterval() time.Duration {
 		return r.cfg.Interval
 	}
 	return r.cfg.Interval - spread + time.Duration(r.random()*float64(2*spread))
+}
+
+// nextDelay keeps the normal jittered interval in class, but sleeps toward
+// the next schedule boundary (capped at five minutes) when no class is active.
+// This avoids a 24/7 one-minute wake-up while never entering a class late.
+func (r *Runner) nextDelay(now time.Time) time.Duration {
+	if !inWindow(now, r.cfg.Window) {
+		if until := nextWindowOpen(now, r.cfg.Window); until > 0 && until < 5*time.Minute {
+			return until
+		}
+		return 5 * time.Minute
+	}
+	for _, class := range r.cfg.Classes {
+		if classActive(now, class, r.cfg.Lead) {
+			return r.jitterInterval()
+		}
+	}
+	next := nextClassStart(now, r.cfg.Classes, r.cfg.Lead)
+	if next <= 0 {
+		return 5 * time.Minute
+	}
+	if next < 5*time.Minute {
+		return next
+	}
+	return 5 * time.Minute
+}
+
+func nextWindowOpen(t time.Time, spec string) time.Duration {
+	w, err := parseWindow(spec)
+	if err != nil || !w.enabled {
+		return 0
+	}
+	local := t.In(shanghai)
+	for day := 0; day <= 1; day++ {
+		midnight := time.Date(local.Year(), local.Month(), local.Day()+day, 0, 0, 0, 0, shanghai)
+		candidate := midnight.Add(time.Duration(w.start) * time.Minute)
+		if candidate.After(local) {
+			return candidate.Sub(local)
+		}
+	}
+	return 0
+}
+
+func nextClassStart(t time.Time, classes []Class, lead time.Duration) time.Duration {
+	local := t.In(shanghai)
+	var best time.Time
+	for _, class := range classes {
+		if len(class.Schedule) == 0 {
+			return 0
+		}
+		for day := 0; day <= 7; day++ {
+			dayStart := time.Date(local.Year(), local.Month(), local.Day()+day, 0, 0, 0, 0, shanghai)
+			for _, schedule := range class.Schedule {
+				if !scheduleDayActive(dayStart, schedule.Days) {
+					continue
+				}
+				start, err := minuteOfDay(schedule.Start)
+				if err != nil {
+					continue
+				}
+				candidate := dayStart.Add(time.Duration(start)*time.Minute - lead)
+				if candidate.After(local) && (best.IsZero() || candidate.Before(best)) {
+					best = candidate
+				}
+			}
+		}
+	}
+	if best.IsZero() {
+		return 0
+	}
+	return best.Sub(local)
 }
 
 // Tick polls only classes whose course schedule is active, attempts each new
@@ -281,6 +435,7 @@ func (r *Runner) Tick(ctx context.Context) {
 			return
 		}
 		polledClasses++
+		r.activePolls.Add(1)
 		items, err := r.source.ListClassActivities(ctx, class.CourseID, class.ClassID)
 		if err != nil {
 			log.Printf("activity watch: class %s: %s", class.ClassID, upstream.SafeFault(err).Code)
@@ -298,7 +453,12 @@ func (r *Runner) Tick(ctx context.Context) {
 		}
 	}
 	if groupSource, ok := r.source.(GroupActivitySource); ok {
-		if polledClasses > 0 && !r.wait(ctx, r.classPollDelay()) {
+		// Course-group history is useful only while a watched class is active.
+		// Scanning it all day wastes upstream quota and creates a fixed request pattern.
+		if polledClasses == 0 {
+			return
+		}
+		if !r.wait(ctx, r.classPollDelay()) {
 			return
 		}
 		groupRows, err := groupSource.ListGroupActivities(ctx)

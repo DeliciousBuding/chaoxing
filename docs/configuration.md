@@ -69,11 +69,21 @@ Before use, verify that listeners are loopback-only, 8793 has no public route, a
 
 Open `https://mcp.example.com/` in a browser and log in with the same owner password used for OAuth login. The Web UI is embedded in the Go binary; no Node runtime is needed in production.
 
+If a non-loopback reverse proxy terminates the tunnel locally, declare only its exact CIDR in the private top-level config:
+
+```json
+{
+  "trusted_proxies": ["127.0.0.0/8", "::1/128"]
+}
+```
+
 - Session cookies use the `__Host-` prefix, `Secure`, `HttpOnly` and `SameSite=Strict`; sessions last eight hours absolutely and thirty minutes while idle.
-- Sessions are also bound to the login client address; a cookie replayed from a different remote address is rejected and invalidated.
-- Active sessions are capped at 128 and expired sessions are pruned during login.
+- Sessions are bound to the originating client network: IPv4 `/24` and IPv6 `/64`. A replay from another network is rejected and invalidated; a mobile address change inside the same network does not force a re-login.
+- All browser requests must use the configured issuer Host. Invalid Host headers are rejected with `INVALID_HOST`.
+- By default only `127.0.0.0/8` and `::1/128` are trusted proxies. A trusted immediate proxy may supply `X-Forwarded-For`; the service reads it right-to-left and ignores it for direct clients. Add a private top-level `trusted_proxies` array only for the exact reverse-proxy CIDRs in front of the listener.
+- Active sessions are capped at 32 and expired sessions are pruned during login.
 - Every write request uses CSRF double submission and an origin check.
-- Login is limited to ten attempts per minute and thirty per fifteen minutes.
+- Login is limited per client network to five attempts per minute and twenty per fifteen minutes.
 - The browser API reuses the operation allowlist. It cannot fetch arbitrary URLs, read arbitrary files, run commands or expose cookies.
 - The static bundle has no analytics or tracker. Its APIs are same-origin; the optional Baidu map page is the only opt-in third-party script and loads only when configured. Hashed assets are cached immutably; HTML and API responses are not cached.
 - Capture page evidence is omitted from list responses and fetched only through the explicit page-detail action.
@@ -177,6 +187,10 @@ Bounds and behavior:
 - Watch state persists in `<state_dir>/watch-state.json` (0600). It records the last alert/attempt time, result and safe fault code so a restart neither repeats a successful sign-in nor blindly retries a failed one. A failed attempt remains eligible for repeated manual alerts, but not another sign submission. Entries are pruned after 24 hours; no message bodies are stored.
 - `capture.enabled` stores sanitized activity observations in `<state_dir>/chaoxing.db`. `retention_hours` defaults to 168 (one week). `activity_pages` fetches a sanitized practice H5 page once through `get_activity_page`. Hidden values, cookies, credentials and raw HTML are never stored.
 - A tenant can contain its own `group_activities` and `watch` object. Its watcher uses that tenant's upstream client, private state directory, classes, sign codes and notification destinations. The default account remains controlled by the top-level `watch` object.
+- Outside the watch window, or when no watched schedule is active, the loop sleeps up to five minutes instead of using `interval_seconds`. It wakes at the next window/class boundary and still honors `lead_seconds`.
+- Each tick is panic-supervised. A panic is recovered, counted, logged and sent as a priority-9 notification; the next successful cycle resets the consecutive counter.
+- `/healthz` returns aggregate watcher counters (`last_tick_at`, `last_panic_at`, `consecutive_panics`, `ticks`, `active_class_polls`) without account IDs. The authenticated Web UI status shows the same metrics per root/tenant account.
+- Course-group history is read only while at least one watched class is active; idle deployments do not scan it every minute.
 
 The watcher logs class failures by safe fault code, continues with the other classes, and never exposes raw upstream bodies. Notification text contains course/activity identity and result; it is operator data and must not be treated as instructions.
 

@@ -46,7 +46,8 @@ Agent 拿到的是完整课程控制面，不是通用 shell、任意 URL fetche
 - 工具契约不返回原始上游 body、凭据、cookie、OAuth token 或验证码 challenge 密钥。
 - 同一账号的上游操作串行执行；进程级出站预算和公开 MCP admission 都有明确饱和行为。
 - 每个账号拥有独立凭据、cookie、缓存、OAuth 状态、watcher 状态和通知目的地；只有可信传输健康状态共享。
-- 内嵌 Web UI 不包含任何分析或 tracker，API 仅同源；可选百度地图页是唯一的显式第三方脚本，且只在配置后进入位置页时加载。
+- 内嵌 Web UI 不包含任何分析或 tracker，API 仅同源并强制配置 Host；可信代理才允许解析 `X-Forwarded-For`，会话绑定 IPv4 `/24` / IPv6 `/64` 客户端网络。
+- 可选百度地图页是唯一的显式第三方脚本，且只在配置后进入位置页时加载。
 
 全局作业 feed 仍不完整。按课程名查询会通过带签名的作业列表扫描匹配班级，分页结果与上游总数一致时可以返回 `complete: true`。这一标记只确认匹配班级的覆盖，不代表全账户完整。全局待交列表为空，不能证明所有作业都已提交。详见[工具与覆盖范围](docs/tools.md)。
 
@@ -88,7 +89,7 @@ printf '%s\n' '{"tool":"get_connection_status","arguments":{}}' | chaoxing call
 
 当前提供 32 个已验证工具，包括有界学业总览、行动项、学业摘要、抢答、答案生成、全局作业题目桥接、课堂 H5 证据采集、作业保存/提交、上传和人脸签到。`chaoxing capabilities` 查看能力和未支持范围，`chaoxing schema assignments.list` 查看契约。
 
-可选的课堂活动监视器会按课程时间轮询指定班级，合并课程群消息里的签到卡片，发送运维告警，并自动提交普通、位置，以及配置了签到码的密码/手势签到；也可用 `auto_answer` 对课堂抢答执行一次性抢占。内置班级预设坐标、私有位置绑定、持久化设备身份、轮询抖动和单次尝试状态。上游返回滑块验证码时，若配置了 solver，`sign_activity` 会自动完成一次有界识别与重试；未配置时 watcher 只告警一次，Agent 可人工完成手动链路；二维码签到接收运营者扫到的原始 payload；拍照签到使用路径受限上传后的 object ID；人脸签到使用独立 scope 授权的人脸模板。
+可选的课堂活动监视器会按课程时间轮询指定班级，合并课程群消息里的签到卡片，发送运维告警，并自动提交普通、位置，以及配置了签到码的密码/手势签到；也可用 `auto_answer` 对课堂抢答执行一次性抢占。内置班级预设坐标、私有位置绑定、持久化设备身份、轮询抖动和单次尝试状态。空闲时段最多五分钟低频轮询并在课表边界唤醒；每个 tick 有 panic 隔离与 Gotify/通知通道告警，`/healthz` 输出聚合的 `last_tick_at` / `consecutive_panics` 等安全指标。上游返回滑块验证码时，若配置了 solver，`sign_activity` 会自动完成一次有界识别与重试；未配置时 watcher 只告警一次，Agent 可人工完成手动链路；二维码签到接收运营者扫到的原始 payload；拍照签到使用路径受限上传后的 object ID；人脸签到使用独立 scope 授权的人脸模板。
 
 滑块识别通过 `captcha_solver` 配置。内置 local solver 使用背景图和缺口图且不访问网络；打码狗只接收背景图，key 保持私有。详见[配置文档](docs/configuration.md)。
 
