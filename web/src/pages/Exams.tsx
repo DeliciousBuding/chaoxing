@@ -40,7 +40,7 @@ export function Exams() {
           {data && <MetaSummary data={data} />}
         </CardHeader>
         <CardContent>
-          {busy && !data ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState title="没有考试数据" /> : (
+          {busy && !data ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState bare title="没有考试数据" /> : (
             <>
               <div className="space-y-2 lg:hidden">
                 {rows.map((row, index) => (

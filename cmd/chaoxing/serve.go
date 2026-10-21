@@ -837,9 +837,8 @@ func serve() error {
 		control := ui.ControlHealth()
 		auditConsecutive, _ := control["audit_consecutive_write_failures"].(uint64)
 		var signAuditConsecutive uint64
-		signAuditError := ""
 		if meter, ok := signAudits.(*signaudit.Metered); ok {
-			signAuditConsecutive, signAuditError = meter.Health()
+			signAuditConsecutive, _ = meter.Health()
 		}
 		ok := !stale && panics < 3 && !degraded && !stateDegraded && auditConsecutive < 3 && signAuditConsecutive < 3
 		watcherCount, _ := health["count"].(int)
@@ -856,8 +855,8 @@ func serve() error {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": ok, "stale": stale, "consecutive_panics": panics, "degraded": degraded,
 			"state_degraded": stateDegraded, "watcher_count": watcherCount, "ticks": ticks,
-			"sign_audit_consecutive_write_failures": signAuditConsecutive, "sign_audit_last_error": signAuditError,
-			"last_tick_at": lastTickText, "audit_write_failures": control["audit_write_failures"],
+			"sign_audit_consecutive_write_failures": signAuditConsecutive,
+			"last_tick_at":                          lastTickText, "audit_write_failures": control["audit_write_failures"],
 			"audit_consecutive_write_failures": auditConsecutive,
 		})
 	})

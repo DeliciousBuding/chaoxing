@@ -104,7 +104,7 @@ export function Audit() {
         </CardHeader>
         <CardContent>
           {loading ? <Loading label="正在读取审计日志" /> : items.length === 0 ? (
-            <EmptyState title="没有匹配的审计事件" />
+            <EmptyState bare title="没有匹配的审计事件" />
           ) : (
             <>
             <div className="space-y-2 lg:hidden">

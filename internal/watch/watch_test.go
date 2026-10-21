@@ -3,6 +3,7 @@ package watch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -674,6 +675,35 @@ func TestWatchSignDelayBudgetIsCappedPerTick(t *testing.T) {
 	}
 	if total != maxSignDelayPerTick {
 		t.Fatalf("total delay=%s want %s", total, maxSignDelayPerTick)
+	}
+}
+
+// A state file that crosses the load limit is quarantined on the next start,
+// which would also lose sign-in suppression. Pending alert bodies must be the
+// first thing dropped instead.
+func TestWatchSaveDropsAlertsBeforeExceedingStateLimit(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	r, err := New(Config{Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: path}, &fakeSource{}, &fakeSender{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.state["c:k:1"] = entry{Status: "signed", LastSent: time.Now()}
+	body := strings.Repeat("x", 100_000)
+	for i := 0; i < 30; i++ {
+		r.alerts[fmt.Sprintf("c:k:%d", i)] = pendingAlert{Title: "alert", Body: body, Priority: 6}
+	}
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.alerts) != 0 {
+		t.Fatalf("alerts kept: %d", len(r.alerts))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > maxWatchStateBytes {
+		t.Fatalf("state file %d exceeds limit", info.Size())
 	}
 }
 

@@ -79,9 +79,9 @@ export class PageErrorBoundary extends React.Component<ErrorBoundaryProps, Error
   }
 }
 
-export function EmptyState({ title, description }: { title: string; description?: string }) {
+export function EmptyState({ title, description, bare = false }: { title: string; description?: string; bare?: boolean }) {
   return (
-    <div className="rounded-card border border-border bg-card p-8 text-center">
+    <div className={cn("text-center", bare ? "py-8" : "rounded-card border border-border bg-card p-8")}>
       <div className="mx-auto mb-3 flex h-8 w-8 items-center justify-center rounded-control border border-border bg-muted text-muted-foreground">
         <Inbox className="h-4 w-4" />
       </div>
@@ -103,13 +103,13 @@ export function PageHeader({
   meta?: React.ReactNode;
 }) {
   return (
-    <header className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-end sm:justify-between">
-      <div className="min-w-0">
-        <h1 className="text-[19px] font-medium leading-6 tracking-[-0.025em]">{title}</h1>
-        {description && <p className="mt-1.5 max-w-3xl text-[12px] leading-5 text-muted-foreground">{description}</p>}
-        {meta && <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">{meta}</div>}
+    <header className={cn("border-b border-border pb-4", !actions && !description && !meta && "hidden sm:block")}>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <h1 className="sr-only text-[19px] font-medium leading-6 tracking-[-0.025em] sm:not-sr-only">{title}</h1>
+        {actions && <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
       </div>
-      {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+      {description && <p className="mt-1.5 max-w-3xl text-[12px] leading-5 text-muted-foreground">{description}</p>}
+      {meta && <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">{meta}</div>}
     </header>
   );
 }

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { BookOpen, UserRound } from "lucide-react";
+import { UserRound } from "lucide-react";
 import { api, type Course } from "../lib/api";
 import { Badge } from "./ui/badge";
 import { cn } from "../lib/utils";
@@ -36,12 +36,8 @@ export function CourseCover({
           onError={() => setFailed(true)}
         />
       ) : (
-        <div className="flex h-full w-full items-center justify-between gap-2 px-3 text-muted-foreground">
-          <div className="min-w-0">
-            <div className="truncate text-[16px] font-medium tracking-[-0.03em] text-foreground/70">{initials}</div>
-            <div className="mt-0.5 truncate text-[10px] uppercase tracking-[0.08em] opacity-55">课程封面</div>
-          </div>
-          <BookOpen className="h-4 w-4 shrink-0 opacity-45" />
+        <div className="flex h-full w-full items-center justify-center bg-muted/40">
+          <span className="text-[22px] font-medium tracking-[-0.04em] text-foreground/25">{initials}</span>
         </div>
       )}
     </div>
@@ -50,23 +46,21 @@ export function CourseCover({
 
 export function CourseCard({
   course,
-  showDetails = false,
   className
 }: {
   course: Course;
-  showDetails?: boolean;
   className?: string;
 }) {
   return (
     <article
       className={cn(
-        "group flex min-w-0 overflow-hidden rounded-card border border-border bg-card transition-colors hover:border-border-strong sm:block",
+        "group flex min-w-0 overflow-hidden rounded-card border border-border bg-card sm:block",
         className
       )}
     >
       <CourseCover
         course={course}
-        className="h-[74px] w-[86px] shrink-0 border-r border-border sm:aspect-[16/8.5] sm:h-auto sm:w-auto sm:border-b sm:border-r-0"
+        className="h-16 w-16 shrink-0 border-r border-border sm:aspect-[16/6] sm:h-auto sm:w-auto sm:border-b sm:border-r-0"
       />
       <div className="min-w-0 flex-1 p-3">
         <div className="flex min-w-0 items-start justify-between gap-2">
@@ -85,21 +79,6 @@ export function CourseCard({
         </div>
         {course.schools && (
           <div className="mt-1 truncate text-[11px] text-muted-foreground">{course.schools}</div>
-        )}
-        {showDetails && (
-          <details className="mt-2 hidden border-t border-border/70 pt-1 sm:block">
-            <summary className="flex min-h-8 cursor-pointer select-none items-center text-[11px] text-muted-foreground transition-colors hover:text-foreground">
-              内部标识
-            </summary>
-            <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 font-mono text-[11px] text-muted-foreground">
-              <dt>course</dt>
-              <dd className="truncate text-foreground/75">{course.course_id}</dd>
-              <dt>class</dt>
-              <dd className="truncate text-foreground/75">{course.class_id}</dd>
-              <dt>cpi</dt>
-              <dd className="truncate text-foreground/75">{course.cpi}</dd>
-            </dl>
-          </details>
         )}
       </div>
     </article>

@@ -413,7 +413,7 @@ export function Locations() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <EmptyState title="地图未启用" />
+                  <EmptyState bare title="地图未启用" />
                   <div className="grid grid-cols-2 gap-3">
                     <CoordinateField
                       id="location-latitude"
@@ -511,7 +511,7 @@ export function Locations() {
               </div>
             </CardHeader>
             <CardContent>
-              {busy && presets.length === 0 ? <Loading /> : presets.length === 0 ? <EmptyState title="暂无位置" /> : (
+              {busy && presets.length === 0 ? <Loading /> : presets.length === 0 ? <EmptyState bare title="暂无位置" /> : (
                 <>
                   <div className="space-y-2 lg:hidden">
                     {presets.map((preset) => (
@@ -567,7 +567,7 @@ export function Locations() {
               <CardTitle>课程绑定</CardTitle>
             </CardHeader>
             <CardContent>
-              {busy && bindingRows.length === 0 ? <Loading /> : bindingRows.length === 0 ? <EmptyState title="暂无绑定" /> : (
+              {busy && bindingRows.length === 0 ? <Loading /> : bindingRows.length === 0 ? <EmptyState bare title="暂无绑定" /> : (
                 <>
                   <div className="space-y-2 lg:hidden">
                     {bindingRows.map(({ binding, preset, course, schedule }) => (

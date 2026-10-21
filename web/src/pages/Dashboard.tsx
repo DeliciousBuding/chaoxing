@@ -204,7 +204,7 @@ export function Dashboard() {
   const serverNow = runtime.now ? new Date(runtime.now) : new Date();
   const clock = beijingClock(Number.isNaN(serverNow.getTime()) ? new Date() : serverNow);
   const currentWeek = teachingWeek(Number.isNaN(serverNow.getTime()) ? new Date() : serverNow, termStart);
-  const staleMs = 20 * 60 * 1000;
+  const staleMs = 15 * 60 * 1000;
 
   function isStale(row: Record<string, any>) {
     const reference = row.last_tick_at || row.started_at;
@@ -372,13 +372,18 @@ export function Dashboard() {
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(300px,1fr)]">
         <section className="min-w-0 overflow-hidden rounded-card border border-border bg-card">
-          <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border px-4 py-3.5 sm:px-5">
-            <div>
-              <div className="flex items-center gap-2">
-                <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
-                <h2 className="text-[13px] font-medium">今日课堂</h2>
+          <div className="border-b border-border px-4 py-3.5 sm:px-5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <CalendarDays className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <h2 className="truncate text-[13px] font-medium">今日课堂</h2>
               </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">
+              <Button size="sm" variant="ghost" className="-my-1 shrink-0 px-1.5 text-[11px]" onClick={() => setPage("study")}>
+                完整课表
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">
                 {dayLabels[clock.day]}
                 {activeSchedule
                   ? ` · 进行中 ${activeSchedule.course?.name || activeSchedule.course_id} 至 ${activeSchedule.end}`
@@ -387,11 +392,6 @@ export function Dashboard() {
                     : " · 今天没有待开始时段"}
                 {currentWeek > 0 ? ` · ${weekLabel(currentWeek)}` : ""}
               </p>
-            </div>
-            <Button size="sm" variant="ghost" onClick={() => setPage("study")}>
-              完整课表
-              <ArrowUpRight className="h-3.5 w-3.5" />
-            </Button>
           </div>
           {todaySchedules.length === 0 ? (
             <div className="flex items-start gap-2 px-4 py-6 text-[12px] text-muted-foreground sm:px-5">
@@ -412,7 +412,7 @@ export function Dashboard() {
                   >
                     <div className={cn("font-mono text-[11px]", active ? "text-foreground" : "text-muted-foreground")}>
                       <div>{row.start}</div>
-                      <div className="text-[11px] opacity-65">{row.end}</div>
+                      <div className="text-[11px] text-muted-foreground">{row.end}</div>
                     </div>
                     <div className="min-w-0">
                       <div className="flex min-w-0 items-center gap-2">

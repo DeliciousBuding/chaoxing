@@ -180,7 +180,7 @@ export function Activities({ tools }: { tools: any[] }) {
           {data && <MetaSummary data={data} />}
         </CardHeader>
         <CardContent className="space-y-4">
-          {busy && !data ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState title="当前没有活动" /> : (
+          {busy && !data ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState bare title="当前没有活动" /> : (
             <>
             <div className="space-y-3 lg:hidden">
               {rows.map((row, index) => (

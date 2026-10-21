@@ -115,7 +115,7 @@ export function Work({ tools }: { tools: any[] }) {
         <CardHeader><CardTitle>题目</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           {questions && <MetaSummary data={questions} />}
-          {busy && !questions ? <Loading /> : !questions ? <EmptyState title="选择作业后读取题目" /> : (
+          {busy && !questions ? <Loading /> : !questions ? <EmptyState bare title="选择作业后读取题目" /> : (
             <>
               <div className="space-y-2 lg:hidden">
                 {(questions.questions ?? []).map((question: any, index: number) => (
@@ -154,7 +154,7 @@ export function Work({ tools }: { tools: any[] }) {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader><CardTitle>本地草稿</CardTitle></CardHeader>
-          <CardContent>{drafts ? <JsonBlock value={drafts} /> : <EmptyState title="暂无草稿" />}</CardContent>
+          <CardContent>{drafts ? <JsonBlock value={drafts} /> : <EmptyState bare title="暂无草稿" />}</CardContent>
         </Card>
         <Card>
           <CardHeader><CardTitle>可执行工具</CardTitle></CardHeader>

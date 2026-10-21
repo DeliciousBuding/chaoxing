@@ -219,14 +219,14 @@ export function Members({ session }: { session: SessionInfo }) {
         </Alert>
       )}
 
-      <div className={cn("grid min-w-0 gap-5", formOpen && "2xl:grid-cols-[minmax(0,1fr)_390px]")}>
+      <div className={cn("grid min-w-0 gap-5", formOpen && "xl:grid-cols-[minmax(0,1fr)_390px]")}>
         <Card className="min-w-0">
           <CardHeader>
             <CardTitle>成员列表</CardTitle>
           </CardHeader>
           <CardContent>
             {loading ? <Loading label="正在读取成员" /> : users.length === 0 ? (
-              <EmptyState title="还没有平台成员" />
+              <EmptyState bare title="还没有平台成员" />
             ) : (
               <>
               <div className="space-y-2 lg:hidden">
@@ -358,7 +358,7 @@ export function Members({ session }: { session: SessionInfo }) {
                 <div className="space-y-2">
                   <Label htmlFor="member-password">{creating ? "初始密码" : "重置密码（留空不改）"}</Label>
                   <Input id="member-password" aria-describedby={targetIsOwner ? "member-password-hint" : undefined} type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength={12} maxLength={1024} required={creating} autoComplete="new-password" disabled={targetIsOwner} />
-                  {targetIsOwner && <p id="member-password-hint" className="text-[11px] text-muted-foreground">所有者密码由部署配置管理；修改需走 config/重启，避免与 MCP OAuth 密码分叉。</p>}
+                  {targetIsOwner && <p id="member-password-hint" className="text-[11px] text-muted-foreground">该账号密码由系统管理员维护。</p>}
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-2">
@@ -385,10 +385,9 @@ export function Members({ session }: { session: SessionInfo }) {
                       {accounts.map((account) => {
                         const checked = form.accounts.includes(account.id);
                         return (
-                          <label key={account.id} className="flex cursor-pointer items-center gap-2 rounded-control px-2 py-1.5 text-[13px] hover:bg-muted/60">
+                          <label key={account.id} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-control px-2 py-2.5 text-[13px] hover:bg-muted/60">
                             <Checkbox checked={checked} onChange={() => toggleAccount(account.id)} />
                             <span className="min-w-0 flex-1 truncate">{account.name}</span>
-                            <span className="font-mono text-[11px] text-muted-foreground">{account.id}</span>
                             {checked && <Check className="h-3.5 w-3.5 text-success" />}
                           </label>
                         );

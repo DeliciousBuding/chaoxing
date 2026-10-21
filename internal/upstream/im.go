@@ -428,7 +428,7 @@ func parseProtobuf(b []byte) map[int][]any {
 			i += 8
 		case 2:
 			length, n := protobufVarint(b[i:])
-			if n <= 0 || i+n+int(length) > len(b) {
+			if n <= 0 || length > uint64(len(b)) || i+n+int(length) > len(b) {
 				return out
 			}
 			i += n

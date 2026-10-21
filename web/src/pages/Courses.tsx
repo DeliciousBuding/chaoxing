@@ -116,7 +116,6 @@ export function Courses() {
             <CourseCard
               key={`${course.course_id}:${course.class_id}`}
               course={course}
-              showDetails
             />
           ))}
         </div>

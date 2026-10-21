@@ -125,8 +125,8 @@ export function StudyResources() {
         </CardHeader>
         <CardContent className="space-y-4">
           {chapters && <MetaSummary data={chapters} />}
-          {busy && !chapters ? <Loading /> : !chapters ? <EmptyState title="选择课程后读取章节" /> : chapterRows.length === 0 ? (
-            <EmptyState title="没有章节数据" />
+          {busy && !chapters ? <Loading /> : !chapters ? <EmptyState bare title="选择课程后读取章节" /> : chapterRows.length === 0 ? (
+            <EmptyState bare title="没有章节数据" />
           ) : (
             <>
             <div className="space-y-2 md:hidden">
@@ -180,7 +180,7 @@ export function StudyResources() {
                 {materials.text || "暂无资料文本"}
               </pre>
             ) : (
-              <EmptyState title="尚未读取资料" />
+              <EmptyState bare title="尚未读取资料" />
             )}
           </CardContent>
         </Card>
@@ -188,7 +188,7 @@ export function StudyResources() {
           <CardHeader>
             <CardTitle>教学周课表</CardTitle>
           </CardHeader>
-          <CardContent>{schedule ? <JsonBlock value={schedule} className="max-h-96" /> : <EmptyState title="尚未读取课表" />}</CardContent>
+          <CardContent>{schedule ? <JsonBlock value={schedule} className="max-h-96" /> : <EmptyState bare title="尚未读取课表" />}</CardContent>
         </Card>
       </div>
     </div>

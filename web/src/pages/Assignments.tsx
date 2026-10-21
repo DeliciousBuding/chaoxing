@@ -96,21 +96,24 @@ export function Assignments() {
         </CardHeader>
         <CardContent className="space-y-4">
           {actionItems && <MetaSummary data={actionItems} />}
-          {busy && !actionItems ? <Loading /> : !loaded ? null : actions.length === 0 ? <EmptyState title="当前没有明确待办" /> : (
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {busy && !actionItems ? <Loading /> : !loaded ? null : actions.length === 0 ? <EmptyState bare title="当前没有明确待办" /> : (
+            <div className="divide-y divide-border rounded-control border border-border">
               {actions.map((item, index) => (
-                <div key={index} className="rounded-control border border-border bg-muted/25 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <Badge variant={item.kind === "assignment" ? "warning" : "secondary"} title={item.kind}>
-                      {labelFor("actionKind", item.kind)}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground" title={item.action}>
+                <div key={index} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Badge variant={item.kind === "assignment" ? "warning" : "secondary"} title={item.kind}>
+                        {labelFor("actionKind", item.kind)}
+                      </Badge>
+                      <span className="truncate text-[13px] font-medium">{item.assignment?.title ?? item.exam?.title ?? item.notice?.title ?? "未命名"}</span>
+                    </div>
+                    <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                      {item.assignment?.course ?? item.exam?.course ?? "—"}
+                      <span aria-hidden="true"> · </span>
                       {labelFor("action", item.action)}
-                    </span>
+                    </div>
                   </div>
-                  <div className="mt-3 text-sm font-medium">{item.assignment?.title ?? item.exam?.title ?? item.notice?.title ?? "未命名"}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{item.assignment?.course ?? item.exam?.course ?? "—"}</div>
-                  {item.assignment?.remaining && <div className="mt-2 text-xs text-warning">{item.assignment.remaining}</div>}
+                  {item.assignment?.remaining && <div className="shrink-0 text-[11px] text-warning-text">{item.assignment.remaining}</div>}
                 </div>
               ))}
             </div>
@@ -122,7 +125,7 @@ export function Assignments() {
         <CardHeader><CardTitle>全部作业</CardTitle></CardHeader>
         <CardContent>
           {assignments && <MetaSummary data={assignments} />}
-          {busy && !assignments ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState title="没有作业数据" /> : (
+          {busy && !assignments ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState bare title="没有作业数据" /> : (
             <>
             <div className="space-y-3 lg:hidden">
               {rows.map((row, index) => (
@@ -144,7 +147,6 @@ export function Assignments() {
                       {labelFor("availability", row.availability_state)}
                     </Badge>
                   </div>
-                  <div className="mt-2 break-all font-mono text-[11px] text-muted-foreground">{row.id}</div>
                   <Button size="sm" variant="outline" className="mt-3 w-full" onClick={() => void loadQuestions(row)} disabled={busy}>读取题目</Button>
                 </article>
               ))}
@@ -152,7 +154,7 @@ export function Assignments() {
             <div className="hidden lg:block">
             <Table label="全部作业">
               <TableHeader>
-                <TableRow><TableHead>作业</TableHead><TableHead>课程</TableHead><TableHead>提交</TableHead><TableHead>可用性</TableHead><TableHead>ID</TableHead><TableHead>操作</TableHead></TableRow>
+                <TableRow><TableHead>作业</TableHead><TableHead>课程</TableHead><TableHead>提交</TableHead><TableHead>可用性</TableHead><TableHead>操作</TableHead></TableRow>
               </TableHeader>
               <TableBody>
                 {rows.map((row, index) => (
@@ -172,7 +174,6 @@ export function Assignments() {
                         {labelFor("availability", row.availability_state)}
                       </Badge>
                     </TableCell>
-                    <TableCell className="font-mono text-xs">{row.id}</TableCell>
                   <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent"><Button size="sm" variant="outline" onClick={() => void loadQuestions(row)} disabled={busy}>读取题目</Button></TableCell>
                   </TableRow>
                 ))}

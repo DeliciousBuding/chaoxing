@@ -52,7 +52,7 @@ export function Captures() {
       <Card>
         <CardHeader><CardTitle>活动捕获</CardTitle></CardHeader>
         <CardContent>
-          {busy && rows.length === 0 ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState title="暂无捕获" /> : (
+          {busy && rows.length === 0 ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState bare title="暂无捕获" /> : (
             <>
             <div className="space-y-3 lg:hidden">
               {rows.map((row, index) => (

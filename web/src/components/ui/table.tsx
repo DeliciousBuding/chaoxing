@@ -88,7 +88,7 @@ TableRow.displayName = "TableRow";
 
 const TableHead = React.forwardRef<HTMLTableCellElement, React.ThHTMLAttributes<HTMLTableCellElement>>(
   ({ className, scope = "col", ...props }, ref) => (
-    <th ref={ref} scope={scope} className={cn("h-8 whitespace-nowrap px-3 text-left align-middle text-[11px] font-medium text-muted-foreground first:rounded-l-control last:rounded-r-control", className)} {...props} />
+    <th ref={ref} scope={scope} className={cn("h-8 whitespace-nowrap px-3 text-left align-middle text-[12px] font-medium text-muted-foreground first:rounded-l-control last:rounded-r-control", className)} {...props} />
   )
 );
 TableHead.displayName = "TableHead";

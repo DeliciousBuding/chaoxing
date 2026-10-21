@@ -40,7 +40,7 @@ export function Notices() {
           {data && <MetaSummary data={data} />}
         </CardHeader>
         <CardContent>
-          {busy && !data ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState title="没有通知" /> : (
+          {busy && !data ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState bare title="没有通知" /> : (
             <div className="divide-y divide-border">
               {rows.map((row, index) => (
                 <article key={row.id ?? index} className="py-4 first:pt-1 last:pb-1">

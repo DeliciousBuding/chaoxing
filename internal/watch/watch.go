@@ -199,7 +199,10 @@ const (
 	maxAlertAttempts  = 6
 	alertRetryBase    = 30 * time.Second
 	alertRetryMax     = 5 * time.Minute
-	maxAlertsPerFlush = 4
+	maxAlertsPerFlush = 2
+	// A pending alert retry must never delay the discovery/sign-in path for
+	// long; a black-holed push endpoint is bounded by this shared budget.
+	alertFlushBudget = 6 * time.Second
 	// A sign-in burst must not spend the whole tick budget sleeping. The
 	// jitter stays, but all automatic sign-ins in one tick share this cap.
 	maxSignDelayPerTick = 30 * time.Second
@@ -726,6 +729,8 @@ func (r *Runner) flushAlerts(ctx context.Context, now time.Time) {
 	sort.Strings(keys)
 	attempted := 0
 	changed := false
+	flushCtx, cancel := context.WithTimeout(ctx, alertFlushBudget)
+	defer cancel()
 	for _, k := range keys {
 		if attempted >= maxAlertsPerFlush {
 			break
@@ -735,7 +740,7 @@ func (r *Runner) flushAlerts(ctx context.Context, now time.Time) {
 			continue
 		}
 		attempted++
-		err := r.notify(ctx, notify.Message{Title: alert.Title, Body: alert.Body, Priority: alert.Priority})
+		err := r.notify(flushCtx, notify.Message{Title: alert.Title, Body: alert.Body, Priority: alert.Priority})
 		if err == nil {
 			delete(r.alerts, k)
 			// A delivered retry counts as this activity's notification for
@@ -906,8 +911,10 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 			if seen && e.Status == "failed" {
 				priority = 8
 			}
-			if err := r.notify(ctx, notify.Message{Title: title, Body: body, Priority: priority}); err != nil {
+			message := notify.Message{Title: title, Body: body, Priority: priority}
+			if err := r.notify(ctx, message); err != nil {
 				log.Printf("activity watch: notify failed: %v", err)
+				r.queueAlert(k, message, now, err)
 				continue
 			}
 			r.state[k] = entry{
@@ -952,8 +959,10 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 				priority = 9
 			}
 		}
-		if err := r.notify(ctx, notify.Message{Title: title, Body: body, Priority: priority}); err != nil {
+		message := notify.Message{Title: title, Body: body, Priority: priority}
+		if err := r.notify(ctx, message); err != nil {
 			log.Printf("activity watch: notify failed: %v", err)
+			r.queueAlert(k, message, now, err)
 			continue
 		}
 		r.state[k] = entry{
@@ -1126,14 +1135,19 @@ func (r *Runner) autoAnswer(ctx context.Context, item upstream.Activity, e entry
 	if err != nil {
 		priority = 8
 	}
+	k := key(item)
+	// Persist the upstream outcome before the notification call: a crash while
+	// pushing must never make the next tick answer the same activity again.
+	r.state[k] = next
+	r.persistState()
 	message := notify.Message{Title: title, Body: body, Priority: priority}
 	if sendErr := r.notify(ctx, message); sendErr != nil {
 		log.Printf("activity watch: notify failed: %v", sendErr)
-		r.queueAlert(key(item), message, now, sendErr)
+		r.queueAlert(k, message, now, sendErr)
 	} else {
 		next.LastSent, next.Count = now, e.Count+1
+		r.state[k] = next
 	}
-	r.state[key(item)] = next
 	log.Printf("activity watch: auto answer %s: status=%s", item.ID, next.Status)
 	return true
 }
@@ -1692,6 +1706,20 @@ func (r *Runner) save() error {
 	b, err := json.Marshal(stateFile{Version: 2, Entries: entries, Alerts: alerts})
 	if err != nil {
 		return err
+	}
+	if len(b) > maxWatchStateBytes {
+		// Pending alert bodies are the only unbounded, reconstructable part of
+		// the state. Dropping them is safe; letting the file cross the load
+		// limit would quarantine the whole file on the next restart and lose
+		// sign-in suppression for every activity.
+		r.alerts = map[string]pendingAlert{}
+		b, err = json.Marshal(stateFile{Version: 2, Entries: entries})
+		if err != nil {
+			return err
+		}
+		if len(b) > maxWatchStateBytes {
+			return errors.New("watch state exceeds size limit")
+		}
 	}
 	return persist.Write(r.cfg.StatePath, b, 0o600)
 }

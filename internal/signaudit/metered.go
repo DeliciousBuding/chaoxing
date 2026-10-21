@@ -29,6 +29,7 @@ func (m *Metered) SaveSignAudit(ctx context.Context, record Record) error {
 		return err
 	}
 	m.consecutive.Store(0)
+	m.lastError.Store("")
 	return nil
 }
 

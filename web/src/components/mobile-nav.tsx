@@ -113,7 +113,7 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
                 onClick={() => selectPage(item.id as PageId)}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "relative flex min-w-0 flex-col items-center justify-center gap-1 px-1 text-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+                  "relative flex min-w-0 flex-col items-center justify-center gap-1 px-1 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
                   active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                 )}
               >
@@ -138,7 +138,7 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
             aria-expanded={open}
             aria-controls="mobile-page-sheet"
             className={cn(
-              "relative flex min-w-0 flex-col items-center justify-center gap-1 px-1 text-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+              "relative flex min-w-0 flex-col items-center justify-center gap-1 px-1 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
               !pageIsPrimary ? "text-foreground" : "text-muted-foreground hover:text-foreground"
             )}
           >
@@ -212,7 +212,7 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
                     <section key={group.id} className="mb-3 last:mb-0" aria-labelledby={`mobile-group-${group.id}`}>
                       <h3
                         id={`mobile-group-${group.id}`}
-                        className="px-2 pb-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground"
+                        className="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground"
                       >
                         {group.title}
                       </h3>
@@ -239,7 +239,7 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
                                 <Icon className="h-4 w-4" />
                               </span>
                               <span className="min-w-0 flex-1 truncate">{item.title}</span>
-                              {active && <span className="text-[10px] text-muted-foreground">当前</span>}
+                              {active && <span className="text-[11px] text-muted-foreground">当前</span>}
                               <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                             </button>
                           );

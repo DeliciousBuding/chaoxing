@@ -19,6 +19,12 @@
   --color-popover-foreground: #f4f5f6;
   --color-primary: #5e6ad2;
   --color-primary-foreground: #ffffff;
+  /* Status text tokens stay separate from fill colors so 11px labels keep
+     AA contrast on the dark card surface. */
+  --color-primary-text: #9aa4ff;
+  --color-success-text: #56d364;
+  --color-warning-text: #e3b341;
+  --color-destructive-text: #ff8589;
   --color-secondary: #17181b;
   --color-secondary-foreground: #d8dbe0;
   --color-muted: #131416;
@@ -61,6 +67,10 @@
   --color-popover-foreground: #1d1f23;
   --color-primary: #5e6ad2;
   --color-primary-foreground: #ffffff;
+  --color-primary-text: #4b55c9;
+  --color-success-text: #1a7f37;
+  --color-warning-text: #9a6700;
+  --color-destructive-text: #cf222e;
   --color-secondary: #f2f3f5;
   --color-secondary-foreground: #34373d;
   --color-muted: #f6f6f7;
