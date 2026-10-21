@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `chaoxing location` for private coordinate presets on the deployment host: `list`, `add`, `update`, `delete`, `bind`, `unbind` and `resolve` write only to the account's SQLite store, so real campus coordinates and building labels never enter the repository, MCP tools or Web UI payloads.
+- Add a staleness signal to operational health. `/healthz` now reports `stale` and `now`, and the authenticated dashboard marks a watcher whose polling loop has not advanced for twenty minutes (three times the idle sleep cap) while taking clock skew into account.
 - Add process-level crash supervision across procd restarts. A private 0600 marker distinguishes SIGTERM-initiated restarts from unexpected exits, persists consecutive crash count and last crash time, sends asynchronous priority 9/10 Gotify/ntfy/Feishu alerts (three bounded attempts) on every abnormal respawn, exposes safe process metrics through `/healthz` and the authenticated dashboard, and resets the consecutive chain only after a clean shutdown. A corrupt or unwritable marker degrades to in-memory counters instead of blocking startup.
 - Harden watcher supervision and idle polling: every polling tick is panic-recovered and counted, panic alerts carry consecutive counts, successful ticks reset the counter, polling sleeps up to five minutes outside active class windows, and course-group feeds are scanned only while a watched class is active.
 - Add strong ETags, `Vary: Accept-Encoding` and precompressed gzip responses for immutable embedded WebUI assets. Identity, HEAD and range requests still work through `http.ServeContent`; conditional requests now return empty 304 responses.

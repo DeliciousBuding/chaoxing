@@ -18,7 +18,8 @@ var errPartial = errors.New("partial result")
 var errHelp = errors.New("help displayed")
 
 func usage() error {
-	fmt.Fprintln(os.Stdout, "chaoxing version | configure | serve | call | query | capabilities | schema <operation>\nBusiness commands use the running local daemon; --json is accepted (JSON is the default).")
+	fmt.Fprintln(os.Stdout, "chaoxing version | configure | serve | call | query | capabilities | schema <operation> | location\nBusiness commands use the running local daemon; --json is accepted (JSON is the default).")
+	fmt.Fprintln(os.Stdout, locationUsage())
 	for _, d := range operation.All() {
 		fmt.Fprintf(os.Stdout, "  %s: %s\n", strings.ReplaceAll(d.ID, ".", " "), d.Description)
 	}

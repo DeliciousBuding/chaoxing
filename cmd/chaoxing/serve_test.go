@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/access"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
@@ -180,5 +181,24 @@ func TestTenantIsolationAndDiscovery(t *testing.T) {
 	mux.ServeHTTP(w, r)
 	if w.Code != 200 && w.Code != 201 {
 		t.Fatal("tenant register failed", w.Code, w.Body.String())
+	}
+}
+
+func TestWatcherStaleBoundaries(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	if watcherStale(now, now.Add(-time.Minute), time.Time{}) {
+		t.Fatal("fresh process flagged stale before its first tick")
+	}
+	if watcherStale(now, now.Add(-time.Hour), now.Add(-19*time.Minute)) {
+		t.Fatal("recent tick flagged stale")
+	}
+	if !watcherStale(now, now.Add(-time.Hour), now.Add(-21*time.Minute)) {
+		t.Fatal("wedged loop not flagged stale")
+	}
+	if !watcherStale(now, now.Add(-time.Hour), time.Time{}) {
+		t.Fatal("watcher that never ticked not flagged stale")
+	}
+	if watcherStale(now, now.Add(time.Minute), now.Add(time.Minute)) {
+		t.Fatal("clock skew flagged stale")
 	}
 }

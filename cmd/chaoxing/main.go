@@ -574,6 +574,12 @@ func run() error {
 			return e
 		}
 		return callDaemon(r)
+	case "location":
+		c, e := load()
+		if e != nil {
+			return e
+		}
+		return locationCommand(c.StateDir, os.Args[2:])
 	case "serve":
 		return serve()
 	default:

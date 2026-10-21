@@ -124,7 +124,16 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
       ...(value as Record<string, any>)
     }));
   const watcherPanics = watcherRows.reduce((sum, item) => sum + (Number(item.consecutive_panics) || 0), 0);
+  const watchersStale = watcherRows.some((item) => isStale(item));
   const process: Record<string, any> = runtime.process ?? {};
+  const serverNow = status?.runtime?.now ? new Date(status.runtime.now).getTime() : Date.now();
+  const STALE_MS = 20 * 60 * 1000;
+  const isStale = (row: Record<string, any>) => {
+    const reference = row.last_tick_at || row.started_at;
+    if (!reference) return false;
+    const at = new Date(reference).getTime();
+    return Number.isFinite(at) && serverNow - at > STALE_MS;
+  };
   const processCrashes = Number(process.consecutive_crashes) || 0;
   const processDegraded = Boolean(process.degraded);
 
@@ -158,7 +167,7 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
       id: "capabilities", title: "能力域", description: "以 capabilities 契约为准，不猜测接口", icon: Database,
       value: capabilityCount ?? "—", tone: "primary"
     }
-  }), [capabilityCount, connection?.meta?.status, egress.length, processCrashes, processDegraded]);
+  }), [capabilityCount, connection?.meta?.status, egress.length, processCrashes, processDegraded, watchersStale]);
 
   const order = React.useMemo(() => {
     const valid = dashboardOrder.filter((id): id is DashboardCardId => id in metrics);
@@ -257,7 +266,12 @@ export function Dashboard({ tools }: { tools: ToolDefinition[] }) {
                 {watcherRows.map((item) => (
                   <TableRow key={String(item.account)}>
                     <TableCell className="font-mono text-xs">{String(item.account)}</TableCell>
-                    <TableCell className="text-xs">{item.last_tick_at ? new Date(item.last_tick_at).toLocaleString() : "—"}</TableCell>
+                    <TableCell className="text-xs">
+                      <span className="inline-flex items-center gap-2">
+                        {item.last_tick_at ? new Date(item.last_tick_at).toLocaleString() : "—"}
+                        {isStale(item) && <Badge variant="destructive">停滞</Badge>}
+                      </span>
+                    </TableCell>
                     <TableCell>
                       <Badge variant={Number(item.consecutive_panics) > 0 ? "destructive" : "success"}>{Number(item.consecutive_panics) || 0}</Badge>
                     </TableCell>

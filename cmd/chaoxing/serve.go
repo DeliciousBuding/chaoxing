@@ -332,6 +332,24 @@ func newWatcher(c watchConfig, stateDir string, client *upstream.Client, capture
 	return watch.New(cfg, client, sender, client, answerer...)
 }
 
+// watcherStale flags a live process whose polling loop has not completed a
+// cycle for three times the idle sleep cap. Idle deployments still tick at
+// least every five minutes, so this only fires when the loop is wedged or the
+// watcher failed to start; a freshly started process is measured from its
+// start time rather than the zero last-tick value.
+const watchStaleAfter = 20 * time.Minute
+
+func watcherStale(now, startedAt, lastTick time.Time) bool {
+	reference := lastTick
+	if reference.IsZero() || startedAt.After(reference) {
+		reference = startedAt
+	}
+	if reference.IsZero() || now.Before(reference) {
+		return false
+	}
+	return now.Sub(reference) > watchStaleAfter
+}
+
 func watchCaptureEnabled(w *watchConfig) bool {
 	return w != nil && w.Capture != nil && w.Capture.Enabled
 }
@@ -472,6 +490,8 @@ func serve() error {
 		detailed := watcherMetrics()
 		count, consecutive, ticks, active := len(detailed), 0, 0, 0
 		var lastTick, lastPanic time.Time
+		stale := false
+		now := time.Now().UTC()
 		for _, value := range detailed {
 			m, ok := value.(watch.Metrics)
 			if !ok {
@@ -486,10 +506,14 @@ func serve() error {
 			if m.LastPanicAt.After(lastPanic) {
 				lastPanic = m.LastPanicAt
 			}
+			if watcherStale(now, m.StartedAt, m.LastTickAt) {
+				stale = true
+			}
 		}
 		return map[string]any{
 			"count": count, "consecutive_panics": consecutive, "last_tick_at": lastTick,
 			"last_panic_at": lastPanic, "ticks": ticks, "active_class_polls": active,
+			"stale": stale, "now": now,
 		}
 	}
 	accountExecute := func(ctx context.Context, account, tool string, arguments map[string]any) (any, error) {
@@ -522,7 +546,7 @@ func serve() error {
 		Accounts:          uiAccounts,
 		Execute:           accountExecute,
 		Status: func() any {
-			return map[string]any{"egress": pool.Status(), "process": sup.Metrics(), "tenants": tenantIDs, "watchers": watcherMetrics()}
+			return map[string]any{"egress": pool.Status(), "process": sup.Metrics(), "tenants": tenantIDs, "watchers": watcherMetrics(), "now": time.Now().UTC()}
 		},
 		Captures: captureList,
 		Location: locations,
