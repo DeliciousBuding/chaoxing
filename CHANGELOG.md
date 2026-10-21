@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0-rc.18 — 2026-10-21
+
+- Add an embedded SVG favicon and a hidden username field to the owner login form, removing avoidable browser 404/accessibility console noise.
+
 ## 0.5.0-rc.17 — 2026-10-21
 
 - Isolate the optional Baidu GL map in a sandboxed `/map` iframe with an opaque origin. The authenticated application CSP no longer trusts any third-party origin; the map receives only its AK and selected point over `postMessage`.

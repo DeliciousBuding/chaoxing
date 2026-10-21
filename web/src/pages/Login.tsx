@@ -45,6 +45,7 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={submit}>
+            <input type="text" name="username" autoComplete="username" value="owner" readOnly hidden />
             <div className="space-y-2">
               <Label htmlFor="password">所有者密码</Label>
               <div className="relative">
