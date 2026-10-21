@@ -9,6 +9,7 @@ import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
 import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader, statusVariant } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { labelFor } from "../lib/labels";
 
 export function StudyResources() {
   const [courses, setCourses] = React.useState<any[]>([]);
@@ -112,6 +113,26 @@ export function StudyResources() {
           {busy && !chapters ? <Loading /> : !chapters ? <EmptyState title="选择课程后读取章节" /> : chapterRows.length === 0 ? (
             <EmptyState title="没有章节数据" />
           ) : (
+            <>
+            <div className="space-y-2 md:hidden">
+              {chapterRows.map((row, index) => (
+                <article key={`${row.number}-${index}`} className="rounded-control border border-border bg-card p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-mono text-[11px] text-muted-foreground">{row.number}</div>
+                      <div className="mt-1 text-[13px] font-medium">{row.title}</div>
+                    </div>
+                    <Badge variant={statusVariant(row.state)} title={row.state} className="shrink-0">
+                      {labelFor("chapterState", row.state)}
+                    </Badge>
+                  </div>
+                  {row.pending_tasks != null && (
+                    <div className="mt-2 text-[11px] text-muted-foreground">待做任务点 {row.pending_tasks}</div>
+                  )}
+                </article>
+              ))}
+            </div>
+            <div className="hidden md:block">
             <Table label="章节任务">
               <TableHeader>
                 <TableRow><TableHead>章节</TableHead><TableHead>标题</TableHead><TableHead>状态</TableHead><TableHead>待做任务点</TableHead></TableRow>
@@ -121,12 +142,14 @@ export function StudyResources() {
                   <TableRow key={`${row.number}-${index}`}>
                     <TableCell className="font-mono text-xs">{row.number}</TableCell>
                     <TableCell className="font-medium">{row.title}</TableCell>
-                    <TableCell><Badge variant={statusVariant(row.state)}>{row.state}</Badge></TableCell>
+                    <TableCell><Badge variant={statusVariant(row.state)} title={row.state}>{labelFor("chapterState", row.state)}</Badge></TableCell>
                     <TableCell>{row.pending_tasks ?? "—"}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
+            </div>
+            </>
           )}
         </CardContent>
       </Card>

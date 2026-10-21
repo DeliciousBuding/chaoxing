@@ -106,6 +106,41 @@ export function Audit() {
           {loading ? <Loading label="正在读取审计日志" /> : items.length === 0 ? (
             <EmptyState title="没有匹配的审计事件" />
           ) : (
+            <>
+            <div className="space-y-2 lg:hidden">
+              {items.map((item) => (
+                <article key={item.id} className="rounded-control border border-border bg-card p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge variant="secondary">{categoryLabel(item.category)}</Badge>
+                        <span className="truncate font-mono text-[11px]">{item.action}</span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">
+                        {formatBeijing(item.created_at)} · {item.actor_username || "—"}
+                      </div>
+                    </div>
+                    <Badge variant={resultVariant(item.success)} className="shrink-0">
+                      {item.success ? "成功" : "失败"}
+                    </Badge>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                    {item.account_key && <span>账号 {item.account_key}</span>}
+                    {item.target && <span className="max-w-full truncate" title={item.target}>目标 {item.target}</span>}
+                    {item.ip && <span className="font-mono">{item.ip}</span>}
+                  </div>
+                  {item.details && Object.keys(item.details).length > 0 && (
+                    <details className="mt-2 border-t border-border pt-2">
+                      <summary className="cursor-pointer text-[11px] text-muted-foreground">详情</summary>
+                      <pre className="mt-1 max-h-52 overflow-auto rounded-control bg-muted/45 p-2 text-[11px] leading-relaxed">
+                        {JSON.stringify(item.details, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </article>
+              ))}
+            </div>
+            <div className="hidden lg:block">
             <Table label="控制面审计" className="min-w-[760px]">
                 <TableHeader>
                   <TableRow>
@@ -149,6 +184,8 @@ export function Audit() {
                   ))}
                 </TableBody>
             </Table>
+            </div>
+            </>
           )}
           <div className="mt-4 flex items-center justify-between gap-2">
             <div className="text-xs text-muted-foreground">第 {Math.floor(offset / limit) + 1} 页</div>

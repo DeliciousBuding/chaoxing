@@ -8,6 +8,7 @@ import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader, statusVariant } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { labelFor } from "../lib/labels";
 
 const signableTypes = ["normal_or_photo", "password", "gesture", "location", "qrcode", "photo"];
 
@@ -186,12 +187,14 @@ export function Activities({ tools }: { tools: any[] }) {
                         <div className="truncate text-[11px] text-muted-foreground">{row.course}</div>
                         <h2 className="mt-1 text-[14px] font-medium leading-5">{row.title}</h2>
                       </div>
-                      <Badge variant={statusVariant(row.user_state)}>{row.user_state}</Badge>
+                      <Badge variant={statusVariant(row.user_state)} title={row.user_state}>{labelFor("userState", row.user_state)}</Badge>
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                      <Badge>{row.kind}</Badge>
-                      <Badge variant={row.sign_type === "unknown" ? "secondary" : "warning"}>{row.sign_type}</Badge>
-                      <Badge variant={statusVariant(row.state)}>{row.state}</Badge>
+                      <Badge title={row.kind}>{labelFor("activityKind", row.kind)}</Badge>
+                      <Badge variant={row.sign_type === "unknown" ? "secondary" : "warning"} title={row.sign_type}>
+                        {labelFor("signType", row.sign_type)}
+                      </Badge>
+                      <Badge variant={statusVariant(row.state)} title={row.state}>{labelFor("activityState", row.state)}</Badge>
                     </div>
                     <div className="mt-3 flex gap-2">
                       <Button size="sm" variant="outline" className="flex-1" onClick={() => void page(row)}>页面证据</Button>
@@ -229,10 +232,14 @@ export function Activities({ tools }: { tools: any[] }) {
                     <TableRow>
                       <TableCell>{row.course}</TableCell>
                       <TableCell className="font-medium">{row.title}</TableCell>
-                      <TableCell><Badge>{row.kind}</Badge></TableCell>
-                      <TableCell><Badge variant={row.sign_type === "unknown" ? "secondary" : "warning"}>{row.sign_type}</Badge></TableCell>
-                      <TableCell><Badge variant={statusVariant(row.state)}>{row.state}</Badge></TableCell>
-                      <TableCell><Badge variant={statusVariant(row.user_state)}>{row.user_state}</Badge></TableCell>
+                      <TableCell><Badge title={row.kind}>{labelFor("activityKind", row.kind)}</Badge></TableCell>
+                      <TableCell>
+                        <Badge variant={row.sign_type === "unknown" ? "secondary" : "warning"} title={row.sign_type}>
+                          {labelFor("signType", row.sign_type)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell><Badge variant={statusVariant(row.state)} title={row.state}>{labelFor("activityState", row.state)}</Badge></TableCell>
+                      <TableCell><Badge variant={statusVariant(row.user_state)} title={row.user_state}>{labelFor("userState", row.user_state)}</Badge></TableCell>
                       <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent">
                         <div className="flex gap-2">
                           <Button size="sm" variant="outline" onClick={() => void page(row)}>页面证据</Button>

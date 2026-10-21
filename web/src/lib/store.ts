@@ -33,14 +33,12 @@ interface UIState {
   tools: ToolDefinition[];
   page: PageId;
   theme: Theme;
-  refreshToken: number;
   globalError: string;
   setSession: (session: SessionInfo) => void;
   setAccount: (account: AccountInfo | null) => void;
   setTools: (tools: ToolDefinition[]) => void;
   setPage: (page: PageId) => void;
   setTheme: (theme: Theme) => void;
-  refresh: () => void;
   setGlobalError: (error: string) => void;
   resetIdentity: () => void;
 }
@@ -53,7 +51,6 @@ export const useUIStore = create<UIState>()(
       tools: [],
       page: "dashboard",
       theme: "nova-dark",
-      refreshToken: 0,
       globalError: "",
       setSession: (session) => set({ session }),
       setAccount: (account) => set({ account }),
@@ -63,7 +60,6 @@ export const useUIStore = create<UIState>()(
         writePageURL(page);
       },
       setTheme: (theme) => set({ theme }),
-      refresh: () => set((state) => ({ refreshToken: state.refreshToken + 1, globalError: "" })),
       setGlobalError: (globalError) => set({ globalError }),
       resetIdentity: () => {
         set({ session: null, account: null, tools: [], page: "dashboard", globalError: "" });

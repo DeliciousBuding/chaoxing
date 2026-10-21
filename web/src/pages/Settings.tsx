@@ -95,6 +95,34 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
             ) : accountConfigs.length === 0 ? (
               <div className="text-sm text-muted-foreground">暂无账号策略摘要。</div>
             ) : (
+              <>
+              <div className="space-y-2 md:hidden">
+                {accountConfigs.map((item) => (
+                  <article key={item.id} className="rounded-control border border-border bg-card p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-[13px] font-medium">{item.name}</div>
+                        <div className="truncate font-mono text-[11px] text-muted-foreground">{item.id}</div>
+                      </div>
+                      <Badge variant={item.watch_enabled ? "success" : "secondary"}>
+                        {item.watch_enabled ? "轮询开启" : "轮询关闭"}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <Badge variant={item.auto_sign ? "warning" : "secondary"}>{item.auto_sign ? "自动签到" : "签到关闭"}</Badge>
+                      <Badge variant={item.auto_answer ? "warning" : "secondary"}>{item.auto_answer ? "自动答题" : "答题关闭"}</Badge>
+                      {item.notify_only && <Badge variant="success">通知优先</Badge>}
+                      <Badge variant={item.location_enabled ? "success" : "secondary"}>
+                        {item.location_enabled ? "位置已配置" : "位置未配置"}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 text-[11px] text-muted-foreground">
+                      课程 {item.classes} · 显式成员 {item.explicit_members}
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <div className="hidden md:block">
               <Table label="账号运行策略" className="min-w-[820px]">
                   <TableHeader>
                     <TableRow>
@@ -126,6 +154,8 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
                     ))}
                   </TableBody>
               </Table>
+              </div>
+              </>
             )}
           </CardContent>
         </Card>

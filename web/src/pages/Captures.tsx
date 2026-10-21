@@ -6,6 +6,7 @@ import { Badge } from "../components/ui/badge";
 import { EmptyState, ErrorBanner, JsonBlock, Loading, PageHeader } from "../components/common";
 import { formatBeijing } from "../lib/time";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { labelFor } from "../lib/labels";
 
 export function Captures() {
   const [rows, setRows] = React.useState<any[]>([]);
@@ -57,10 +58,10 @@ export function Captures() {
                       <div className="truncate font-mono text-[11px] text-muted-foreground">{row.account} · {row.course_id}</div>
                       <h2 className="mt-1 break-all font-mono text-[13px] font-medium">{row.activity_id}</h2>
                     </div>
-                    <Badge>{row.kind}</Badge>
+                    <Badge title={row.kind}>{labelFor("activityKind", row.kind)}</Badge>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-1.5">
-                    <Badge variant={row.state === "active" ? "warning" : "secondary"}>{row.state}</Badge>
+                    <Badge variant={row.state === "active" ? "warning" : "secondary"} title={row.state}>{labelFor("activityState", row.state)}</Badge>
                     <Badge variant={row.has_page ? "success" : "secondary"}>{row.has_page ? "已捕获页面" : "无页面证据"}</Badge>
                   </div>
                   <div className="mt-2 text-[11px] text-muted-foreground">{formatBeijing(row.last_seen_at)}</div>
@@ -77,8 +78,8 @@ export function Captures() {
                     <TableCell className="font-mono text-xs">{row.account}</TableCell>
                     <TableCell className="font-mono text-xs">{row.course_id}</TableCell>
                     <TableCell className="font-mono text-xs">{row.activity_id}</TableCell>
-                    <TableCell><Badge>{row.kind}</Badge></TableCell>
-                    <TableCell><Badge variant={row.state === "active" ? "warning" : "secondary"}>{row.state}</Badge></TableCell>
+                    <TableCell><Badge title={row.kind}>{labelFor("activityKind", row.kind)}</Badge></TableCell>
+                    <TableCell><Badge variant={row.state === "active" ? "warning" : "secondary"} title={row.state}>{labelFor("activityState", row.state)}</Badge></TableCell>
                     <TableCell><Badge variant={row.has_page ? "success" : "secondary"}>{row.has_page ? "已捕获" : "未捕获"}</Badge></TableCell>
                     <TableCell>{formatBeijing(row.last_seen_at)}</TableCell>
                     <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent"><Button size="sm" variant="outline" onClick={() => void view(row)} disabled={busy}>查看</Button></TableCell>

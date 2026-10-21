@@ -5,6 +5,7 @@ import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { labelFor } from "../lib/labels";
 
 export function Assignments() {
   const [actionItems, setActionItems] = React.useState<any>(null);
@@ -98,8 +99,12 @@ export function Assignments() {
               {actions.map((item, index) => (
                 <div key={index} className="rounded-control border border-border bg-muted/25 p-4">
                   <div className="flex items-center justify-between gap-3">
-                    <Badge variant={item.kind === "assignment" ? "warning" : "secondary"}>{item.kind}</Badge>
-                    <span className="text-xs text-muted-foreground">{item.action || "pending"}</span>
+                    <Badge variant={item.kind === "assignment" ? "warning" : "secondary"} title={item.kind}>
+                      {labelFor("actionKind", item.kind)}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground" title={item.action}>
+                      {labelFor("action", item.action)}
+                    </span>
                   </div>
                   <div className="mt-3 text-sm font-medium">{item.assignment?.title ?? item.exam?.title ?? item.notice?.title ?? "未命名"}</div>
                   <div className="mt-1 text-xs text-muted-foreground">{item.assignment?.course ?? item.exam?.course ?? "—"}</div>
@@ -125,11 +130,17 @@ export function Assignments() {
                       <div className="truncate text-[11px] text-muted-foreground">{row.course}</div>
                       <h2 className="mt-1 text-[14px] font-medium leading-5">{row.title}</h2>
                     </div>
-                    <Badge variant={row.submission_state === "pending" ? "warning" : row.submission_state === "submitted" ? "success" : "secondary"}>{row.submission_state}</Badge>
+                    <Badge
+                      variant={row.submission_state === "pending" ? "warning" : row.submission_state === "submitted" ? "success" : "secondary"}
+                      title={row.submission_state}
+                    >
+                      {labelFor("submission", row.submission_state)}
+                    </Badge>
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                    <Badge>{row.status ?? "unknown"}</Badge>
-                    <Badge variant={row.availability_state === "open" ? "success" : "secondary"}>{row.availability_state}</Badge>
+                    <Badge variant={row.availability_state === "open" ? "success" : "secondary"} title={row.availability_state}>
+                      {labelFor("availability", row.availability_state)}
+                    </Badge>
                   </div>
                   <div className="mt-2 break-all font-mono text-[11px] text-muted-foreground">{row.id}</div>
                   <Button size="sm" variant="outline" className="mt-3 w-full" onClick={() => void loadQuestions(row)} disabled={busy}>读取题目</Button>
@@ -139,16 +150,26 @@ export function Assignments() {
             <div className="hidden lg:block">
             <Table label="全部作业">
               <TableHeader>
-                <TableRow><TableHead>作业</TableHead><TableHead>课程</TableHead><TableHead>状态</TableHead><TableHead>提交</TableHead><TableHead>可用性</TableHead><TableHead>ID</TableHead><TableHead>操作</TableHead></TableRow>
+                <TableRow><TableHead>作业</TableHead><TableHead>课程</TableHead><TableHead>提交</TableHead><TableHead>可用性</TableHead><TableHead>ID</TableHead><TableHead>操作</TableHead></TableRow>
               </TableHeader>
               <TableBody>
                 {rows.map((row, index) => (
                   <TableRow key={row.id ?? index}>
                     <TableCell className="font-medium">{row.title}</TableCell>
                     <TableCell>{row.course}</TableCell>
-                    <TableCell><Badge>{row.status ?? "unknown"}</Badge></TableCell>
-                    <TableCell><Badge variant={row.submission_state === "pending" ? "warning" : row.submission_state === "submitted" ? "success" : "secondary"}>{row.submission_state}</Badge></TableCell>
-                    <TableCell><Badge variant={row.availability_state === "open" ? "success" : "secondary"}>{row.availability_state}</Badge></TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={row.submission_state === "pending" ? "warning" : row.submission_state === "submitted" ? "success" : "secondary"}
+                        title={row.submission_state}
+                      >
+                        {labelFor("submission", row.submission_state)}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={row.availability_state === "open" ? "success" : "secondary"} title={row.availability_state}>
+                        {labelFor("availability", row.availability_state)}
+                      </Badge>
+                    </TableCell>
                     <TableCell className="font-mono text-xs">{row.id}</TableCell>
                   <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent"><Button size="sm" variant="outline" onClick={() => void loadQuestions(row)} disabled={busy}>读取题目</Button></TableCell>
                   </TableRow>

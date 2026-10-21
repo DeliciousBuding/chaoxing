@@ -377,8 +377,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("POST /api/account/select", s.bounded(s.authenticated(s.selectAccount)))
 	mux.Handle("GET /api/status", s.bounded(s.authenticated(s.status)))
 	mux.Handle("GET /api/captures", s.heavyBounded(s.authenticated(s.captures)))
-	mux.Handle("GET /api/sign-audits", s.heavyBounded(s.authenticated(s.signAudits)))
-	mux.Handle("GET /api/profile", s.bounded(s.authenticated(s.profile)))
+	mux.Handle("GET /api/sign-audits", s.bounded(s.authenticated(s.signAudits)))
+	mux.Handle("GET /api/profile", s.heavyBounded(s.authenticated(s.profile)))
 	mux.Handle("GET /api/media/avatar", s.heavyBounded(s.authenticated(s.avatar)))
 	mux.Handle("GET /api/media/course-cover", s.heavyBounded(s.authenticated(s.courseCover)))
 	mux.Handle("GET /api/tools", s.bounded(s.authenticated(s.tools)))
@@ -501,6 +501,7 @@ func (s *Server) limited(limit chan struct{}, next http.HandlerFunc) http.Handle
 		case limit <- struct{}{}:
 			defer func() { <-limit }()
 		default:
+			w.Header().Set("Retry-After", "1")
 			writeError(w, 503, "TEMPORARILY_UNAVAILABLE", "management UI is busy")
 			return
 		}
@@ -1326,14 +1327,15 @@ func (s *Server) writeMedia(w http.ResponseWriter, r *http.Request, body []byte,
 	}
 	sum := sha256.Sum256(body)
 	etag := `"` + hex.EncodeToString(sum[:]) + `"`
+	w.Header().Set("Cache-Control", "private, max-age=21600")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Vary", "Cookie")
 	if etagMatch(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("Content-Type", detected)
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.Header().Set("Cache-Control", "private, max-age=21600")
-	w.Header().Set("ETag", etag)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")

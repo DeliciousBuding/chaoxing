@@ -28,7 +28,7 @@ func TestToolAuditRecorderAttributesMcpClient(t *testing.T) {
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := controlplane.Open(filepath.Join(dir, "control.db"), hash)
+	store, err := controlplane.Open(filepath.Join(dir, "control.db"), "owner", hash)
 	if err != nil {
 		t.Fatal(err)
 	}

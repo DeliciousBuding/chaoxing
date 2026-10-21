@@ -41,7 +41,7 @@ type UpdateUserInput struct {
 }
 
 func (s *Store) Authenticate(ctx context.Context, username, password string) (User, error) {
-	username = normalizeUsername(username)
+	username = NormalizeUsername(username)
 	if username == "" {
 		username = "owner"
 	}
@@ -189,7 +189,7 @@ func validateAccounts(accounts []string) ([]string, error) {
 }
 
 func (s *Store) CreateUser(ctx context.Context, input CreateUserInput) (User, error) {
-	username := normalizeUsername(input.Username)
+	username := NormalizeUsername(input.Username)
 	display := strings.TrimSpace(input.DisplayName)
 	if display == "" {
 		display = username

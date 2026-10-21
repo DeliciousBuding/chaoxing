@@ -570,7 +570,7 @@ func serve() error {
 		captures = store
 		signAudits = store
 	}
-	controlStore, e := controlplane.Open(filepath.Join(c.StateDir, "control.db"), c.OwnerPasswordHash)
+	controlStore, e := controlplane.Open(filepath.Join(c.StateDir, "control.db"), c.OwnerUsername, c.OwnerPasswordHash)
 	if e != nil {
 		return e
 	}

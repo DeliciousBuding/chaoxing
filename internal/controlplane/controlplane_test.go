@@ -23,7 +23,7 @@ func testStore(t *testing.T) *Store {
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := Open(filepath.Join(dir, "control.db"), hash)
+	store, err := Open(filepath.Join(dir, "control.db"), "owner", hash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,11 +37,50 @@ func TestBootstrapOwnerAndAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owner.Role != RoleOwner || owner.Username != "owner" || !owner.Active() {
+	if owner.Role != RoleOwner || owner.Username != "owner" || owner.DisplayName != "owner" || !owner.Active() {
 		t.Fatalf("unexpected owner: %+v", owner)
 	}
 	if _, err := store.Authenticate(context.Background(), "owner", "wrong-password"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("wrong password error=%v", err)
+	}
+}
+
+func TestBootstrapOwnerRenameAndPasswordRotation(t *testing.T) {
+	hash, err := access.HashPassword("bootstrap-owner-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "control")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "control.db")
+	store, err := Open(path, "owner", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	nextHash, err := access.HashPassword("rotated-owner-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path, "delicious233", nextHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	owner, err := store.Authenticate(context.Background(), "delicious233", "rotated-owner-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner.Username != "delicious233" || owner.DisplayName != "delicious233" || owner.Role != RoleOwner {
+		t.Fatalf("unexpected owner after rotation: %+v", owner)
+	}
+	if _, err := store.Authenticate(context.Background(), "owner", "rotated-owner-password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("old owner username survived rotation: %v", err)
 	}
 }
 

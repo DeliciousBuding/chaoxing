@@ -77,10 +77,19 @@ type Store struct {
 	path string
 }
 
-// Open creates or opens the control-plane database. bootstrapOwnerHash seeds
-// the single owner account only when the database has no users. The upstream
-// owner password is never stored separately here.
-func Open(path, bootstrapOwnerHash string) (*Store, error) {
+// Open creates or opens the control-plane database. bootstrapOwnerUsername and
+// bootstrapOwnerHash seed the single owner account when the database has no
+// users. On later starts they are reconciled onto the existing owner so the
+// deployment configuration remains the source of truth. The upstream owner
+// password is never stored separately here.
+func Open(path, bootstrapOwnerUsername, bootstrapOwnerHash string) (*Store, error) {
+	bootstrapOwnerUsername = NormalizeUsername(bootstrapOwnerUsername)
+	if bootstrapOwnerUsername == "" {
+		bootstrapOwnerUsername = "owner"
+	}
+	if !ValidUsername(bootstrapOwnerUsername) {
+		return nil, errors.New("bootstrap owner username is invalid")
+	}
 	if !access.ValidPasswordHash(bootstrapOwnerHash) {
 		return nil, errors.New("bootstrap owner password hash is invalid")
 	}
@@ -132,7 +141,7 @@ func Open(path, bootstrapOwnerHash string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if err := s.bootstrapOwner(bootstrapOwnerHash); err != nil {
+	if err := s.bootstrapOwner(bootstrapOwnerUsername, bootstrapOwnerHash); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -215,7 +224,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_account ON audit_events(account_key, create
 CREATE INDEX IF NOT EXISTS idx_audit_category ON audit_events(category, created_at DESC);
 `
 
-func (s *Store) bootstrapOwner(hash string) error {
+func (s *Store) bootstrapOwner(username, hash string) error {
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM admin_users`).Scan(&count); err != nil {
 		return err
@@ -224,7 +233,7 @@ func (s *Store) bootstrapOwner(hash string) error {
 		now := time.Now().Unix()
 		if _, err := s.db.Exec(`INSERT INTO admin_users
 			(username, display_name, password_hash, role, status, auth_version, created_at, updated_at)
-			VALUES ('owner', 'Owner', ?, 'owner', 'active', 1, ?, ?)`, hash, now, now); err != nil {
+			VALUES (?, ?, ?, 'owner', 'active', 1, ?, ?)`, username, username, hash, now, now); err != nil {
 			return err
 		}
 	} else {
@@ -233,11 +242,18 @@ func (s *Store) bootstrapOwner(hash string) error {
 		// hash also guards OAuth consent; keeping the two from diverging is more
 		// important than allowing an in-browser owner password reset.
 		var ownerID int64
-		err := s.db.QueryRow(`SELECT id FROM admin_users WHERE username='owner' AND role='owner'`).Scan(&ownerID)
+		err := s.db.QueryRow(`SELECT id FROM admin_users WHERE role='owner' ORDER BY id LIMIT 1`).Scan(&ownerID)
 		if err != nil {
 			return errors.New("control plane owner record is missing")
 		}
-		if _, err := s.db.Exec(`UPDATE admin_users SET password_hash=?, auth_version=auth_version+1, updated_at=? WHERE id=?`, hash, nowUnix(), ownerID); err != nil {
+		if _, err := s.db.Exec(`UPDATE admin_users
+			SET username=?,
+			    display_name=CASE WHEN display_name='' OR lower(display_name)='owner' THEN ? ELSE display_name END,
+			    password_hash=?, auth_version=auth_version+1, updated_at=?
+			WHERE id=?`, username, username, hash, nowUnix(), ownerID); err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "unique") {
+				return errors.New("control plane owner username is already in use")
+			}
 			return err
 		}
 	}
@@ -260,8 +276,14 @@ func unixTime(value int64) time.Time {
 	return time.Unix(value, 0).UTC()
 }
 
-func normalizeUsername(value string) string {
+// NormalizeUsername converts a login name to its canonical form.
+func NormalizeUsername(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+// ValidUsername reports whether value is a canonical platform login name.
+func ValidUsername(value string) bool {
+	return usernamePattern.MatchString(value)
 }
 
 func (s *Store) userAccounts(ctx context.Context, userID int64) ([]string, error) {

@@ -4,8 +4,7 @@ import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
 import {
   GraduationCap,
   LogOut,
-  Palette,
-  RefreshCw
+  Palette
 } from "lucide-react";
 import { canAccessPage, pageGroups, pages, visiblePages, type PageId } from "../lib/layout";
 import { useUIStore, themeLabels, themes, type Theme } from "../lib/store";
@@ -187,15 +186,13 @@ function Header({
   account,
   switchingAccount,
   onSwitchAccount,
-  onLogout,
-  onRefresh
+  onLogout
 }: {
   session: SessionInfo;
   account: AccountInfo | null;
   switchingAccount: boolean;
   onSwitchAccount: (id: string) => void;
   onLogout: () => void;
-  onRefresh: () => void;
 }) {
   const page = useUIStore((state) => state.page);
   const meta = pages.find((item) => item.id === page) ?? pages[0];
@@ -223,9 +220,6 @@ function Header({
               className="w-[168px] sm:w-[156px]"
             />
           </div>
-          <Button variant="ghost" size="icon" onClick={onRefresh} aria-label="刷新当前页面" title="刷新">
-            <RefreshCw className="h-3.5 w-3.5" />
-          </Button>
           <Button variant="ghost" size="icon" onClick={onLogout} aria-label="退出登录" title="退出登录">
             <LogOut className="h-3.5 w-3.5" />
           </Button>
@@ -241,7 +235,6 @@ export function AppShell({
   switchingAccount,
   onSwitchAccount,
   onLogout,
-  onRefresh,
   children
 }: {
   session: SessionInfo;
@@ -249,7 +242,6 @@ export function AppShell({
   switchingAccount: boolean;
   onSwitchAccount: (id: string) => void;
   onLogout: () => void;
-  onRefresh: () => void;
   children: React.ReactNode;
 }) {
   const page = useUIStore((state) => state.page);
@@ -285,7 +277,6 @@ export function AppShell({
         switchingAccount={switchingAccount}
         onSwitchAccount={onSwitchAccount}
         onLogout={onLogout}
-        onRefresh={onRefresh}
       />
       <main
         ref={mainRef}

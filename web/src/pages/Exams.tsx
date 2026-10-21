@@ -5,6 +5,7 @@ import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { EmptyState, ErrorBanner, Loading, MetaSummary, PageHeader } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { labelFor } from "../lib/labels";
 
 export function Exams() {
   const [data, setData] = React.useState<any>(null);
@@ -43,8 +44,16 @@ export function Exams() {
                   <TableRow key={index}>
                     <TableCell className="font-medium">{row.title}</TableCell>
                     <TableCell>{row.course}</TableCell>
-                    <TableCell><Badge variant={row.submission_state === "pending" ? "warning" : "secondary"}>{row.submission_state}</Badge></TableCell>
-                    <TableCell><Badge variant={row.availability_state === "open" ? "success" : "secondary"}>{row.availability_state}</Badge></TableCell>
+                    <TableCell>
+                      <Badge variant={row.submission_state === "pending" ? "warning" : "secondary"} title={row.submission_state}>
+                        {labelFor("submission", row.submission_state)}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={row.availability_state === "open" ? "success" : "secondary"} title={row.availability_state}>
+                        {labelFor("availability", row.availability_state)}
+                      </Badge>
+                    </TableCell>
                     <TableCell className="text-xs">{row.raw_status || "—"}</TableCell>
                   </TableRow>
                 ))}

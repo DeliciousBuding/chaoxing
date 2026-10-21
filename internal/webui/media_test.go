@@ -85,6 +85,9 @@ func TestProfileAndMediaProxyRequireSessionAndValidateInput(t *testing.T) {
 	if rec.Code != http.StatusNotModified {
 		t.Fatalf("etag status=%d", rec.Code)
 	}
+	if rec.Header().Get("ETag") != etag || rec.Header().Get("Cache-Control") != "private, max-age=21600" || rec.Header().Get("Vary") != "Cookie" {
+		t.Fatalf("304 media headers incomplete: %#v", rec.Header())
+	}
 
 	if w := do(t, mux, "GET", "/api/media/course-cover?course_id=x", "", csrfCookie, session); w.Code != 400 {
 		t.Fatalf("missing class_id status=%d", w.Code)

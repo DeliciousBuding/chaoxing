@@ -42,14 +42,12 @@ export default function App() {
   const tools = useUIStore((state) => state.tools);
   const page = useUIStore((state) => state.page);
   const theme = useUIStore((state) => state.theme);
-  const refreshToken = useUIStore((state) => state.refreshToken);
   const globalError = useUIStore((state) => state.globalError);
   const setSession = useUIStore((state) => state.setSession);
   const setAccount = useUIStore((state) => state.setAccount);
   const setTools = useUIStore((state) => state.setTools);
   const setGlobalError = useUIStore((state) => state.setGlobalError);
   const resetIdentity = useUIStore((state) => state.resetIdentity);
-  const refresh = useUIStore((state) => state.refresh);
   const effectivePage = canAccessPage(page, session?.capabilities) ? page : "dashboard";
   const [initializing, setInitializing] = React.useState(true);
   const [accountEpoch, setAccountEpoch] = React.useState(0);
@@ -222,11 +220,10 @@ export default function App() {
             switchingAccount={switchingAccount}
             onSwitchAccount={(id) => void switchAccount(id)}
             onLogout={() => void logout()}
-            onRefresh={refresh}
           >
             <div className="space-y-4">
               <ErrorBanner error={globalError} />
-              <PageErrorBoundary resetKey={`${effectivePage}:${refreshToken}:${accountEpoch}:${activeAccount}`}>
+              <PageErrorBoundary resetKey={`${effectivePage}:${accountEpoch}:${activeAccount}`}>
                 {hasNoAccountScope && effectivePage !== "settings" ? (
                   <EmptyState
                     title="尚未授权学习通账号"
@@ -234,7 +231,7 @@ export default function App() {
                   />
                 ) : (
                   <React.Suspense fallback={<PageSkeleton />}>
-                    <React.Fragment key={`${refreshToken}:${accountEpoch}:${activeAccount}`}>{content}</React.Fragment>
+                    <React.Fragment key={`${accountEpoch}:${activeAccount}`}>{content}</React.Fragment>
                   </React.Suspense>
                 )}
               </PageErrorBoundary>

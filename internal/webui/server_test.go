@@ -272,7 +272,7 @@ func TestWebUIServesEmbeddedBundleWithCSP(t *testing.T) {
 }
 
 func TestHeavyRequestsDoNotStarveLightControlPlane(t *testing.T) {
-	s, _ := newTestServer(t)
+	s, mux := newTestServer(t)
 	s.heavy <- struct{}{}
 	s.heavy <- struct{}{}
 	light := s.bounded(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
@@ -282,6 +282,14 @@ func TestHeavyRequestsDoNotStarveLightControlPlane(t *testing.T) {
 	}
 	if w := do(t, heavy, "GET", "/", ""); w.Code != 503 {
 		t.Fatalf("heavy capacity was not bounded: %d", w.Code)
+	} else if w.Header().Get("Retry-After") != "1" {
+		t.Fatalf("busy response missing Retry-After: %#v", w.Header())
+	}
+	if w := do(t, mux, "GET", "/api/sign-audits", ""); w.Code != 401 {
+		t.Fatalf("local sign audit should stay in the light pool: %d", w.Code)
+	}
+	if w := do(t, mux, "GET", "/api/profile", ""); w.Code != 503 {
+		t.Fatalf("upstream profile should use the heavy pool: %d", w.Code)
 	}
 }
 

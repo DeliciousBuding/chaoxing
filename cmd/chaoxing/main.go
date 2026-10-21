@@ -20,6 +20,7 @@ import (
 
 	"github.com/DeliciousBuding/chaoxing/internal/answer"
 	"github.com/DeliciousBuding/chaoxing/internal/captchasolver"
+	"github.com/DeliciousBuding/chaoxing/internal/controlplane"
 	"github.com/DeliciousBuding/chaoxing/internal/egress"
 	"github.com/DeliciousBuding/chaoxing/internal/location"
 	"github.com/DeliciousBuding/chaoxing/internal/operation"
@@ -37,6 +38,7 @@ type config struct {
 	Listen            string               `json:"listen"`
 	LocalListen       string               `json:"local_listen"`
 	LocalToken        string               `json:"local_token"`
+	OwnerUsername     string               `json:"owner_username,omitempty"`
 	OwnerPasswordHash string               `json:"owner_password_hash"`
 	Watch             *watchConfig         `json:"watch,omitempty"`
 	CaptchaSolver     *captchaSolverConfig `json:"captcha_solver,omitempty"`
@@ -640,6 +642,7 @@ func configure() error {
 	var input struct {
 		Phone         string `json:"phone"`
 		Password      string `json:"password"`
+		OwnerUsername string `json:"owner_username"`
 		OwnerPassword string `json:"owner_password"`
 	}
 	dec := json.NewDecoder(io.LimitReader(os.Stdin, 65536))
@@ -649,6 +652,13 @@ func configure() error {
 	}
 	if len(input.OwnerPassword) < 16 {
 		return errors.New("separate owner password must have >=16 characters")
+	}
+	ownerUsername := controlplane.NormalizeUsername(input.OwnerUsername)
+	if ownerUsername == "" {
+		ownerUsername = "owner"
+	}
+	if !controlplane.ValidUsername(ownerUsername) {
+		return errors.New("owner username must be 3..32 lowercase letters, digits, dot, dash or underscore")
 	}
 	// Refuse overwriting an installation accidentally; rotation will be explicit.
 	if _, e := os.Stat(configFile()); e == nil {
@@ -661,7 +671,7 @@ func configure() error {
 	if e != nil {
 		return e
 	}
-	c := config{StateDir: *state, KeyPath: *key, Issuer: *issuer, Listen: "127.0.0.1:8792", LocalListen: "127.0.0.1:8793", LocalToken: randomToken(), OwnerPasswordHash: hash}
+	c := config{StateDir: *state, KeyPath: *key, Issuer: *issuer, Listen: "127.0.0.1:8792", LocalListen: "127.0.0.1:8793", LocalToken: randomToken(), OwnerUsername: ownerUsername, OwnerPasswordHash: hash}
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if e = vault.Atomic(configFile(), b); e != nil {
 		return errors.New("config write failed")

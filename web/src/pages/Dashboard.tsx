@@ -133,6 +133,7 @@ export function Dashboard() {
   const requestEpoch = React.useRef(0);
   const canReadAudits = Boolean(session?.capabilities?.sensitive_read);
   const canManageAccounts = Boolean(session?.capabilities?.manage_accounts);
+  const accountID = account?.current ?? session?.account ?? "";
 
   const load = React.useCallback(async () => {
     const epoch = ++requestEpoch.current;
@@ -167,7 +168,7 @@ export function Dashboard() {
     else setSchedules([]);
     if (policyResult.status === "fulfilled" && policyResult.value) {
       setAccountPolicy(
-        policyResult.value.items.find((item) => item.id === (account?.current ?? session?.account ?? "")) ?? null
+        policyResult.value.items.find((item) => item.id === accountID) ?? null
       );
     } else {
       setAccountPolicy(null);
@@ -185,7 +186,7 @@ export function Dashboard() {
     setError(failures.join("；"));
     setAuditsLoading(false);
     setBusy(false);
-  }, [account?.current, canManageAccounts, canReadAudits, session?.account]);
+  }, [accountID, canManageAccounts, canReadAudits]);
 
   React.useEffect(() => {
     void load();
@@ -215,7 +216,6 @@ export function Dashboard() {
   const coolingEgress = egress.filter((item) => item.cooldown).length;
   const upstreamHealthy = coursesMeta?.status === "complete";
   const statusPending = busy && !status;
-  const accountID = account?.current ?? session?.account ?? "";
   const accountName = account?.accounts.find((item) => item.id === accountID)?.name ?? accountID;
   const displayName = profile?.display_name || accountName || session?.user?.display_name || "当前账号";
   const roleLabel = session?.user?.role ? roleLabels[session.user.role] : "成员";
