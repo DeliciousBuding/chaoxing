@@ -138,6 +138,53 @@ func answerActivity(course, class, id string) upstream.Activity {
 	return upstream.Activity{ID: id, CourseID: course, ClassID: class, Course: "Synthetic", Title: "Synthetic rapid answer", Kind: "answer", State: "active", UserState: "unsigned", Answerable: true, StartsAt: &start}
 }
 
+func practiceActivity(course, class, id, kind, state string) upstream.Activity {
+	start := time.Now()
+	return upstream.Activity{ID: id, CourseID: course, ClassID: class, Course: "Synthetic", Title: "Synthetic classroom question", Kind: kind, State: state, UserState: "unsigned", StartsAt: &start}
+}
+
+func TestWatchNotifiesPracticeWithoutSubmitting(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{practiceActivity("c", "k", "practice-1", "practice", "active")}}
+	snd := &fakeSender{}
+	answerer := &fakeAnswerer{}
+	r, err := New(Config{
+		Interval: time.Minute, RepeatEvery: time.Minute, MaxRepeats: 2,
+		Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json",
+	}, src, snd, nil, answerer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Tick(context.Background())
+	if len(answerer.requests) != 0 {
+		t.Fatalf("practice must never be submitted: %+v", answerer.requests)
+	}
+	if len(snd.sent) != 1 || snd.sent[0].Title != "📝 学习通课堂练习提醒" || !strings.Contains(snd.sent[0].Body, "题目已发布") {
+		t.Fatalf("%+v", snd.sent)
+	}
+	if e := r.state[key(src.items[0])]; e.Status != "review" || e.Code != "REVIEW_REQUIRED" {
+		t.Fatalf("%+v", e)
+	}
+}
+
+func TestWatchIgnoresFinishedPractice(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{practiceActivity("c", "k", "practice-2", "practice", "finished")}}
+	snd := &fakeSender{}
+	r, err := New(Config{
+		Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, snd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Tick(context.Background())
+	if len(snd.sent) != 0 {
+		t.Fatalf("%+v", snd.sent)
+	}
+	if _, exists := r.state[key(src.items[0])]; exists {
+		t.Fatal("finished practice must not create watch state")
+	}
+}
+
 func TestWatchAutoAnswersOnce(t *testing.T) {
 	src := &fakeSource{items: []upstream.Activity{answerActivity("c", "k", "answer-1")}}
 	snd := &fakeSender{}
@@ -928,7 +975,7 @@ func TestWatchClassroomAgentNotifyOnlyNeverClaims(t *testing.T) {
 	}
 }
 
-func TestWatchClassroomAgentSkipsHomework(t *testing.T) {
+func TestWatchHomeworkNotifiesButNeverClaims(t *testing.T) {
 	homework := upstream.Activity{ID: "work-1", CourseID: "c", ClassID: "k", Course: "Synthetic",
 		Title: "Synthetic homework", Kind: "homework", State: "active", UserState: "unsigned", Answerable: true}
 	src := &fakeSource{items: []upstream.Activity{homework}}
@@ -950,11 +997,11 @@ func TestWatchClassroomAgentSkipsHomework(t *testing.T) {
 	if len(answerer.requests) != 0 {
 		t.Fatalf("homework must never be claimed: %+v", answerer.requests)
 	}
-	if len(snd.sent) != 0 {
-		t.Fatalf("scope-gated homework should not alert: %+v", snd.sent)
+	if len(snd.sent) != 1 || snd.sent[0].Title != "📝 学习通课堂作业提醒" {
+		t.Fatalf("homework should alert without claiming: %+v", snd.sent)
 	}
-	if _, exists := r.state[key(homework)]; exists {
-		t.Fatal("scope-gated homework must not persist watch state")
+	if e := r.state[key(homework)]; e.Status != "review" || e.Code != "REVIEW_REQUIRED" {
+		t.Fatalf("%+v", e)
 	}
 }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0-rc.36 — 2026-10-21
+
+- Notify active classroom practice and homework items even when they are not rapid-answer claimable. These items now enter the watcher decision set only while active and unsigned, produce a review notification, and can never fall through to an upstream claim.
+- Separate answer notifications from sign-in notifications: rapid answers say “答题进行中，尚未作答” instead of “尚未签到”; practice/homework alerts state that the question was published and that no automatic submission occurred.
+- Fix `chaoxing watch windows` rejecting its single `windows` subcommand argument.
+
 ## 0.5.0-rc.35 — 2026-10-21
 
 - Fix the two production pages that failed on a multi-course account. `list_action_items` now falls back to the bounded global assignment feed when no course is selected, and the todo page derives pending rows from one `list_assignments` response instead of issuing a second ambiguous scan.

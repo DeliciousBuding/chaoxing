@@ -819,7 +819,7 @@ func (r *Runner) Tick(ctx context.Context) {
 		}
 		captured = append(captured, items...)
 		for _, item := range items {
-			if item.Signable || item.Answerable {
+			if item.Signable || item.Answerable || answerReviewable(item) {
 				k := key(item)
 				active[k] = item
 				classes[k] = class
@@ -890,6 +890,29 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 	changed := false
 	for k, item := range active {
 		e, seen := r.state[k]
+		if answerReviewable(item) {
+			if seen && (e.Count >= r.cfg.MaxRepeats || now.Sub(e.LastSent) < r.cfg.RepeatEvery) {
+				continue
+			}
+			if _, pending := r.alerts[k]; pending {
+				continue
+			}
+			body := formatPracticeAlertBody(item)
+			message := notify.Message{Title: answerAlertTitle(item.Kind), Body: body, Priority: 6}
+			if err := r.notify(ctx, message); err != nil {
+				log.Printf("activity watch: notify failed: %v", err)
+				r.queueAlert(k, message, now, err)
+				continue
+			}
+			r.state[k] = entry{
+				LastSent: now, Count: e.Count + 1, Status: "review", Method: "watch",
+				Code: "REVIEW_REQUIRED", LastAttempt: e.LastAttempt,
+				RetryAt: e.RetryAt, RetryCount: e.RetryCount,
+			}
+			changed = true
+			log.Printf("activity watch: classroom item %s notified: %s", item.ID, item.Kind)
+			continue
+		}
 		if item.Answerable {
 			if r.cfg.AutoAnswer && (!seen || e.LastAttempt.IsZero()) {
 				changed = r.autoAnswer(ctx, item, e) || changed
@@ -901,7 +924,7 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 			if seen && (e.Count >= r.cfg.MaxRepeats || now.Sub(e.LastSent) < r.cfg.RepeatEvery) {
 				continue
 			}
-			title, body := answerAlertTitle(item.Kind), formatAlertBody(item)
+			title, body := answerAlertTitle(item.Kind), formatAnswerAlertBody(item)
 			if seen && e.Status == "failed" {
 				title, body = "🚨 学习通自动抢答失败", formatFailureBody(item, e.Code)
 			}
@@ -1288,6 +1311,13 @@ func retryableActivityError(err error) bool {
 	}
 }
 
+func answerReviewable(item upstream.Activity) bool {
+	if item.State != "active" || item.UserState != "unsigned" {
+		return false
+	}
+	return item.Kind == "practice" || item.Kind == "homework"
+}
+
 func autoSignType(item upstream.Activity, class Class) bool {
 	switch item.SignType {
 	case "normal_or_photo", "location":
@@ -1503,6 +1533,38 @@ func formatAlertBody(a upstream.Activity) string {
 		lines = append(lines, "开始："+a.StartsAt.In(shanghai).Format("15:04"))
 	}
 	lines = append(lines, "状态：进行中，尚未签到", "请立即打开学习通。")
+	return strings.Join(lines, "\n")
+}
+
+func formatAnswerAlertBody(a upstream.Activity) string {
+	lines := []string{
+		"课程：" + firstNonBlank(a.Course, a.CourseID),
+		"活动：" + firstNonBlank(a.Title, a.ID),
+		"类型：课堂答题",
+		"状态：答题进行中，尚未作答",
+		"系统未自动抢答，请打开学习通或控制台处理。",
+	}
+	if a.StartsAt != nil {
+		lines = append(lines, "开始："+a.StartsAt.In(shanghai).Format("15:04"))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatPracticeAlertBody(a upstream.Activity) string {
+	kind := "随堂练习"
+	if a.Kind == "homework" {
+		kind = "课堂作业"
+	}
+	lines := []string{
+		"课程：" + firstNonBlank(a.Course, a.CourseID),
+		"活动：" + firstNonBlank(a.Title, a.ID),
+		"类型：" + kind,
+		"状态：题目已发布，尚未提交",
+		"系统未自动提交，请打开控制台课堂活动页查看题面与页面证据。",
+	}
+	if a.StartsAt != nil {
+		lines = append(lines, "开始："+a.StartsAt.In(shanghai).Format("15:04"))
+	}
 	return strings.Join(lines, "\n")
 }
 

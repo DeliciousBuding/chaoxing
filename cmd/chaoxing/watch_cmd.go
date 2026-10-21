@@ -21,7 +21,7 @@ const maxWatchClasses = 8
 // only watch.classes and preserves every other configuration field verbatim.
 // The daemon reads configuration at startup, so callers must restart it.
 func watchCommand(configPath string, args []string) error {
-	if len(args) < 2 {
+	if len(args) < 1 {
 		return errors.New("watch subcommand required: classes list|add|remove, windows")
 	}
 	root, err := loadConfigMap(configPath)
@@ -33,6 +33,9 @@ func watchCommand(configPath string, args []string) error {
 	}
 	if args[0] != "classes" {
 		return errors.New("unknown watch subcommand")
+	}
+	if len(args) < 2 {
+		return errors.New("watch classes subcommand required: list|add|remove")
 	}
 	switch args[1] {
 	case "list":
