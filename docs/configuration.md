@@ -193,6 +193,8 @@ Bounds and behavior:
 - `/healthz` returns aggregate process and watcher counters (`pid`, `started_at`, `last_tick_at`, `last_panic_at`, `consecutive_panics`, `consecutive_crashes`, `ticks`, `active_class_polls`) without account IDs. The authenticated Web UI status shows the same metrics per root/tenant account.
 - Embedded WebUI assets use content-hash ETags, immutable cache policy and gzip when the client accepts it.
 - Private coordinate presets are managed with `chaoxing location add|bind|resolve` on the deployment host. Values are stored per account in the private SQLite store and are never exposed through MCP or committed to git.
+- The watcher class list is editable with `chaoxing watch classes list|add|remove`; only `watch.classes` is rewritten, a timestamped backup is kept and a daemon restart is required.
+- `chaoxing courses discover` reads the mooc2 course-list page and marks which courses the legacy feed also returns, which explains a timetable course that is missing from `list_courses`.
 - `/healthz` also reports `stale`: a live watcher that has not completed a cycle for twenty minutes (three times the idle sleep cap) is flagged so a wedged loop is distinguishable from an idle deployment.
 
 - Course-group history is read only while at least one watched class is active; idle deployments do not scan it every minute.

@@ -506,7 +506,7 @@ func (r *Runner) Tick(ctx context.Context) {
 			if seen && (e.Count >= r.cfg.MaxRepeats || now.Sub(e.LastSent) < r.cfg.RepeatEvery) {
 				continue
 			}
-			title, body := "🔔 学习通抢答提醒", formatAlertBody(item)
+			title, body := answerAlertTitle(item.Kind), formatAlertBody(item)
 			if seen && e.Status == "failed" {
 				title, body = "🚨 学习通自动抢答失败", formatFailureBody(item, e.Code)
 			}
@@ -624,7 +624,7 @@ func (r *Runner) captureActivities(ctx context.Context, items []upstream.Activit
 			log.Printf("activity capture save failed: class=%s code=%s", item.ClassID, upstream.SafeFault(err).Code)
 			continue
 		}
-		if !r.cfg.CaptureActivityPages || item.Kind != "practice" || saved.HadPage {
+		if !r.cfg.CaptureActivityPages || (item.Kind != "practice" && item.Kind != "homework") || saved.HadPage {
 			continue
 		}
 		page, err := r.cfg.ActivityPageSource.ActivityPage(ctx, map[string]any{
@@ -851,6 +851,19 @@ func validDay(day string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// answerAlertTitle distinguishes rapid answers from classroom practice and
+// homework so an operator can triage the notification without opening it.
+func answerAlertTitle(kind string) string {
+	switch kind {
+	case "practice":
+		return "📝 学习通课堂练习提醒"
+	case "homework":
+		return "📝 学习通课堂作业提醒"
+	default:
+		return "🔔 学习通抢答提醒"
 	}
 }
 

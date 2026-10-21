@@ -574,6 +574,14 @@ func run() error {
 			return e
 		}
 		return callDaemon(r)
+	case "watch":
+		return watchCommand(configFile(), os.Args[2:])
+	case "courses":
+		c, e := load()
+		if e != nil {
+			return e
+		}
+		return coursesCommand(c, os.Args[2:])
 	case "location":
 		c, e := load()
 		if e != nil {

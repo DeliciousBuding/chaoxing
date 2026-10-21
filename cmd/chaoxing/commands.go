@@ -18,8 +18,9 @@ var errPartial = errors.New("partial result")
 var errHelp = errors.New("help displayed")
 
 func usage() error {
-	fmt.Fprintln(os.Stdout, "chaoxing version | configure | serve | call | query | capabilities | schema <operation> | location\nBusiness commands use the running local daemon; --json is accepted (JSON is the default).")
+	fmt.Fprintln(os.Stdout, "chaoxing version | configure | serve | call | query | capabilities | schema <operation> | location | courses | watch\nBusiness commands use the running local daemon; --json is accepted (JSON is the default).")
 	fmt.Fprintln(os.Stdout, locationUsage())
+	fmt.Fprintln(os.Stdout, "watch classes  list | add --course <id> --class <id> --days Tue,Thu --start 08:00 --end 09:50 | remove ...")
 	for _, d := range operation.All() {
 		fmt.Fprintf(os.Stdout, "  %s: %s\n", strings.ReplaceAll(d.ID, ".", " "), d.Description)
 	}

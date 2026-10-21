@@ -759,3 +759,17 @@ func (c *countingSource) ListClassActivities(context.Context, string, string) ([
 type notifySenderFunc func(context.Context, notify.Message) error
 
 func (f notifySenderFunc) Send(ctx context.Context, m notify.Message) error { return f(ctx, m) }
+
+func TestAnswerAlertTitleByKind(t *testing.T) {
+	cases := map[string]string{
+		"practice": "📝 学习通课堂练习提醒",
+		"homework": "📝 学习通课堂作业提醒",
+		"answer":   "🔔 学习通抢答提醒",
+		"":         "🔔 学习通抢答提醒",
+	}
+	for kind, want := range cases {
+		if got := answerAlertTitle(kind); got != want {
+			t.Fatalf("%q: got %q want %q", kind, got, want)
+		}
+	}
+}

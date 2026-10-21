@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `chaoxing courses discover`, a read-only probe of the mooc2 course-list page (`mooc2-ans/visit/courselistdata`) that marks each course as present in the legacy `backclazzdata` feed and as currently watched. It explains why a course that exists in the timetable may be absent from `list_courses` without entering the course.
+- Add `chaoxing watch classes list|add|remove` for the static watcher class list. It rewrites only `watch.classes`, preserves every other configuration field, validates days/times, caps the list at eight classes, keeps a timestamped backup and prints the resulting classes; the daemon must be restarted to apply.
+- Capture sanitized H5 evidence for classroom homework activities (type 19) in addition to practice (type 42), so later submission-protocol work has both page shapes.
+- Notify classroom practice and homework activities with their own titles instead of labelling every answerable activity as a rapid answer.
 - Poll once immediately after the watcher starts instead of waiting for the first idle-sleep interval, so a deploy or crash respawn during class does not delay the first observation. Outside the configured window the tick is a no-op.
 - Add `chaoxing location` for private coordinate presets on the deployment host: `list`, `add`, `update`, `delete`, `bind`, `unbind` and `resolve` write only to the account's SQLite store, so real campus coordinates and building labels never enter the repository, MCP tools or Web UI payloads.
 - Add a staleness signal to operational health. `/healthz` now reports `stale` and `now`, and the authenticated dashboard marks a watcher whose polling loop has not advanced for twenty minutes (three times the idle sleep cap) while taking clock skew into account.
