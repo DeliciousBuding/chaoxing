@@ -1,10 +1,11 @@
 import * as React from "react";
-import { GraduationCap, LockKeyhole } from "lucide-react";
+import { GraduationCap, LockKeyhole, ShieldCheck } from "lucide-react";
 import { api, ApiError, type SessionInfo } from "../lib/api";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { ErrorBanner } from "../components/common";
 
 export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) {
   const [password, setPassword] = React.useState("");
@@ -31,40 +32,43 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden p-6">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(34,211,238,0.12),transparent_40%),radial-gradient(circle_at_80%_10%,rgba(21,94,117,0.15),transparent_35%)]" />
-      <Card className="w-full max-w-md border-border/80 bg-card/90 backdrop-blur">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden p-5 sm:p-6">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,color-mix(in_oklab,var(--color-primary)_16%,transparent),transparent_38%),radial-gradient(circle_at_82%_8%,color-mix(in_oklab,var(--color-accent)_16%,transparent),transparent_34%)]" />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-primary/5 to-transparent" />
+      <Card className="w-full max-w-md border-border/70 bg-card/90 shadow-2xl shadow-black/10">
         <CardHeader>
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/15 text-primary">
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/14 text-primary ring-1 ring-primary/20">
             <GraduationCap className="h-6 w-6" />
           </div>
-          <CardTitle className="text-2xl">学习通管理平台</CardTitle>
-          <CardDescription>输入所有者密码登录私有控制台。会话与 MCP OAuth 授权相互隔离。</CardDescription>
+          <CardTitle className="text-2xl font-semibold tracking-tight">学习通管理平台</CardTitle>
+          <CardDescription>输入所有者密码登录公网私有控制台。会话与 MCP OAuth 授权相互隔离。</CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={submit}>
             <div className="space-y-2">
               <Label htmlFor="password">所有者密码</Label>
               <div className="relative">
-                <LockKeyhole className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                <LockKeyhole className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-muted-foreground" />
                 <Input
                   id="password"
                   type="password"
-                  className="pl-9"
+                  className="pl-10"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   autoComplete="current-password"
                   required
+                  minLength={12}
                 />
               </div>
             </div>
-            {error && <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
+            <ErrorBanner error={error} />
             <Button className="w-full" type="submit" disabled={busy || !password}>
               {busy ? "验证中…" : "登录控制台"}
             </Button>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              登录使用 PBKDF2-SHA256 哈希验证，Cookie 为 HttpOnly + SameSite=Strict，所有写请求均要求 CSRF 双提交。
-            </p>
+            <div className="flex items-start gap-2 rounded-xl border border-border/70 bg-muted/35 p-3 text-xs leading-relaxed text-muted-foreground">
+              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+              <span>公网路径要求 HTTPS 反代；登录按客户端网络限速，Cookie 为 HttpOnly + SameSite=Strict，写请求均校验 Origin 与 CSRF。</span>
+            </div>
           </form>
         </CardContent>
       </Card>

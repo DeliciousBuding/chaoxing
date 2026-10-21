@@ -1,27 +1,40 @@
 import * as React from "react";
-import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+import { div as MotionDiv } from "motion/react-m";
+import { AlertTriangle, CheckCircle2, Database, Inbox, Loader2 } from "lucide-react";
 import { Badge } from "./ui/badge";
+import { Card, CardContent, CardHeader } from "./ui/card";
+import { Skeleton } from "./ui/skeleton";
 import { cn } from "../lib/utils";
+import { useReducedMotion } from "../lib/hooks";
 
 export function ErrorBanner({ error }: { error: unknown }) {
+  const reduced = useReducedMotion();
   if (!error) return null;
   const message = error instanceof Error ? error.message : String(error);
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
-      <AlertTriangle className="mt-0.5 h-4 w-4" />
+    <MotionDiv
+      initial={reduced ? false : { opacity: 0, y: -6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.16 }}
+      className="flex items-start gap-3 rounded-2xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive backdrop-blur"
+    >
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
       <div className="min-w-0">
         <div className="font-semibold">请求失败</div>
         <div className="break-all opacity-90">{message}</div>
       </div>
-    </div>
+    </MotionDiv>
   );
 }
 
 export function EmptyState({ title, description }: { title: string; description?: string }) {
   return (
-    <div className="rounded-xl border border-dashed p-8 text-center">
+    <div className="rounded-2xl border border-dashed border-border/80 bg-card/40 p-8 text-center">
+      <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <Inbox className="h-5 w-5" />
+      </div>
       <div className="text-sm font-medium">{title}</div>
-      {description && <div className="mt-1 text-xs text-muted-foreground">{description}</div>}
+      {description && <div className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-muted-foreground">{description}</div>}
     </div>
   );
 }
@@ -31,6 +44,31 @@ export function Loading({ label = "加载中" }: { label?: string }) {
     <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
       <Loader2 className="h-4 w-4 animate-spin" />
       {label}
+    </div>
+  );
+}
+
+export function PageSkeleton() {
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {[0, 1, 2, 3].map((item) => (
+          <Skeleton key={item} className="h-32 rounded-2xl" />
+        ))}
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {[0, 1].map((item) => (
+          <Card key={item} className="bg-card/50">
+            <CardHeader className="pb-3">
+              <Skeleton className="h-5 w-40" />
+              <Skeleton className="h-3 w-24" />
+            </CardHeader>
+            <CardContent>
+              <Skeleton className="h-24 w-full" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }
@@ -53,9 +91,13 @@ export function MetaSummary({ data }: { data: any }) {
 
 export function JsonBlock({ value, className }: { value: any; className?: string }) {
   return (
-    <pre className={cn("max-h-80 overflow-auto rounded-xl border bg-black/40 p-4 text-xs leading-relaxed", className)}>
-      {JSON.stringify(value, null, 2)}
-    </pre>
+    <div className={cn("overflow-hidden rounded-2xl border border-border/70 bg-muted/35", className)}>
+      <div className="flex items-center gap-2 border-b border-border/70 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <Database className="h-3.5 w-3.5" />
+        JSON
+      </div>
+      <pre className="max-h-80 overflow-auto p-4 text-xs leading-relaxed">{JSON.stringify(value, null, 2)}</pre>
+    </div>
   );
 }
 

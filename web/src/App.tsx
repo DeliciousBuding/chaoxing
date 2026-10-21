@@ -1,77 +1,94 @@
 import * as React from "react";
-import {
-  Activity,
-  BookOpen,
-  CalendarDays,
-  Brain,
-  ClipboardList,
-  GraduationCap,
-  LayoutDashboard,
-  LogOut,
-  RefreshCw,
-  Shield,
-  Sparkles,
-  MapPin,
-  Wrench
-} from "lucide-react";
-import { api, type AccountInfo, type SessionInfo, type ToolDefinition } from "./lib/api";
-import { Button } from "./components/ui/button";
-import { Select } from "./components/ui/select";
-import { ErrorBanner } from "./components/common";
-import { Login } from "./pages/Login";
-import { Locations } from "./pages/Locations";
-import { Dashboard } from "./pages/Dashboard";
-import { Courses } from "./pages/Courses";
-import { Assignments } from "./pages/Assignments";
-import { Activities } from "./pages/Activities";
-import { Work } from "./pages/Work";
-import { Notices } from "./pages/Notices";
-import { Exams } from "./pages/Exams";
-import { StudyResources } from "./pages/StudyResources";
-import { Captures } from "./pages/Captures";
-import { Tools } from "./pages/Tools";
-import { Settings } from "./pages/Settings";
+import { api } from "./lib/api";
+import { useUIStore } from "./lib/store";
+import { AppShell } from "./components/app-shell";
+import { ErrorBanner, PageSkeleton } from "./components/common";
 
-const pages = [
-  { id: "dashboard", title: "总览", icon: LayoutDashboard },
-  { id: "courses", title: "课程", icon: BookOpen },
-  { id: "todo", title: "待办", icon: ClipboardList },
-  { id: "study", title: "课表/章节/资料", icon: CalendarDays },
-  { id: "activities", title: "课堂活动", icon: Activity },
-  { id: "work", title: "作业答题", icon: Brain },
-  { id: "notices", title: "通知", icon: GraduationCap },
-  { id: "exams", title: "考试", icon: ClipboardList },
-  { id: "captures", title: "捕获", icon: Sparkles },
-  { id: "tools", title: "工具面板", icon: Wrench },
-  { id: "locations", title: "位置", icon: MapPin },
-  { id: "settings", title: "安全与配置", icon: Shield }
-] as const;
+const Login = React.lazy(() => import("./pages/Login").then((m) => ({ default: m.Login })));
+const Dashboard = React.lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
+const Courses = React.lazy(() => import("./pages/Courses").then((m) => ({ default: m.Courses })));
+const Assignments = React.lazy(() => import("./pages/Assignments").then((m) => ({ default: m.Assignments })));
+const StudyResources = React.lazy(() => import("./pages/StudyResources").then((m) => ({ default: m.StudyResources })));
+const Activities = React.lazy(() => import("./pages/Activities").then((m) => ({ default: m.Activities })));
+const Work = React.lazy(() => import("./pages/Work").then((m) => ({ default: m.Work })));
+const Notices = React.lazy(() => import("./pages/Notices").then((m) => ({ default: m.Notices })));
+const Exams = React.lazy(() => import("./pages/Exams").then((m) => ({ default: m.Exams })));
+const Captures = React.lazy(() => import("./pages/Captures").then((m) => ({ default: m.Captures })));
+const Locations = React.lazy(() => import("./pages/Locations").then((m) => ({ default: m.Locations })));
+const Tools = React.lazy(() => import("./pages/Tools").then((m) => ({ default: m.Tools })));
+const Settings = React.lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 
-export type PageId = (typeof pages)[number]["id"];
+function Booting() {
+  return (
+    <div className="flex min-h-screen items-center justify-center p-6">
+      <div className="w-full max-w-5xl space-y-4">
+        <div className="h-10 w-56 animate-pulse rounded-xl bg-muted" />
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {[0, 1, 2, 3].map((item) => (
+            <div key={item} className="h-32 animate-pulse rounded-2xl bg-muted/70" />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
-  const [session, setSession] = React.useState<SessionInfo | null>(null);
+  const session = useUIStore((state) => state.session);
+  const account = useUIStore((state) => state.account);
+  const tools = useUIStore((state) => state.tools);
+  const page = useUIStore((state) => state.page);
+  const theme = useUIStore((state) => state.theme);
+  const refreshToken = useUIStore((state) => state.refreshToken);
+  const globalError = useUIStore((state) => state.globalError);
+  const setSession = useUIStore((state) => state.setSession);
+  const setAccount = useUIStore((state) => state.setAccount);
+  const setTools = useUIStore((state) => state.setTools);
+  const setGlobalError = useUIStore((state) => state.setGlobalError);
+  const resetIdentity = useUIStore((state) => state.resetIdentity);
+  const refresh = useUIStore((state) => state.refresh);
   const [initializing, setInitializing] = React.useState(true);
-  const [account, setAccount] = React.useState<AccountInfo | null>(null);
-  const [tools, setTools] = React.useState<ToolDefinition[]>([]);
-  const [page, setPage] = React.useState<PageId>("dashboard");
-  const [globalError, setGlobalError] = React.useState("");
 
   React.useEffect(() => {
+    document.body.dataset.theme = theme;
+    return () => {
+      delete document.body.dataset.theme;
+    };
+  }, [theme]);
+
+  React.useEffect(() => {
+    let active = true;
     api.session()
-      .then(setSession)
+      .then((value) => {
+        if (active) setSession(value);
+      })
       .catch((err) => {
+        if (!active) return;
         setSession({ authenticated: false, csrf: "", version: "" });
         setGlobalError(err instanceof Error ? err.message : String(err));
       })
-      .finally(() => setInitializing(false));
-  }, []);
+      .finally(() => {
+        if (active) setInitializing(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [setGlobalError, setSession]);
 
   React.useEffect(() => {
     if (!session?.authenticated) return;
-    api.account().then(setAccount).catch(() => undefined);
-    api.tools().then((value) => setTools(value.items)).catch(() => undefined);
-  }, [session?.authenticated, session?.account]);
+    let active = true;
+    Promise.all([api.account(), api.tools()])
+      .then(([nextAccount, nextTools]) => {
+        if (!active) return;
+        setAccount(nextAccount);
+        setTools(nextTools.items);
+      })
+      .catch((err) => setGlobalError(err instanceof Error ? err.message : String(err)));
+    return () => {
+      active = false;
+    };
+  }, [session?.authenticated, session?.account, setAccount, setGlobalError, setTools]);
 
   async function switchAccount(id: string) {
     setGlobalError("");
@@ -79,7 +96,7 @@ export default function App() {
       await api.selectAccount(id);
       const next = await api.account();
       setAccount(next);
-      setSession({ ...session!, account: id });
+      if (session) setSession({ ...session, account: id });
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : String(err));
     }
@@ -87,117 +104,47 @@ export default function App() {
 
   async function logout() {
     await api.logout().catch(() => undefined);
-    setSession({ authenticated: false, csrf: "", version: session?.version ?? "" });
-    setAccount(null);
-    setTools([]);
+    resetIdentity();
   }
 
-  if (initializing) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-muted-foreground">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 animate-pulse rounded-xl bg-primary/30" />
-          正在初始化管理平台…
-        </div>
-      </div>
-    );
-  }
-
-  if (!session?.authenticated) {
-    return <Login onLogin={setSession} />;
-  }
+  let content: React.ReactNode;
+  if (page === "dashboard") content = <Dashboard tools={tools} />;
+  else if (page === "courses") content = <Courses />;
+  else if (page === "todo") content = <Assignments />;
+  else if (page === "study") content = <StudyResources />;
+  else if (page === "activities") content = <Activities tools={tools} />;
+  else if (page === "work") content = <Work tools={tools} />;
+  else if (page === "notices") content = <Notices />;
+  else if (page === "exams") content = <Exams />;
+  else if (page === "captures") content = <Captures />;
+  else if (page === "locations") content = <Locations />;
+  else if (page === "tools") content = <Tools tools={tools} />;
+  else content = <Settings account={account} session={session!} />;
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1600px]">
-        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 border-r bg-card/70 p-5 lg:block">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15 text-primary">
-              <GraduationCap className="h-5 w-5" />
+    <div data-theme={theme} className="min-h-screen bg-background text-foreground">
+      <React.Suspense fallback={<Booting />}>
+        {initializing ? (
+          <Booting />
+        ) : !session?.authenticated ? (
+          <Login onLogin={setSession} />
+        ) : (
+          <AppShell
+            session={session}
+            account={account}
+            onSwitchAccount={(id) => void switchAccount(id)}
+            onLogout={() => void logout()}
+            onRefresh={refresh}
+          >
+            <div className="space-y-4">
+              <ErrorBanner error={globalError} />
+              <React.Suspense fallback={<PageSkeleton />}>
+                <React.Fragment key={refreshToken}>{content}</React.Fragment>
+              </React.Suspense>
             </div>
-            <div>
-              <div className="text-sm font-semibold">学习通控制台</div>
-              <div className="text-xs text-muted-foreground">本地托管平台</div>
-            </div>
-          </div>
-          <nav className="mt-8 space-y-1">
-            {pages.map((item) => {
-              const Icon = item.icon;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => setPage(item.id)}
-                  className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${
-                    page === item.id ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                  }`}
-                >
-                  <Icon className="h-4 w-4" />
-                  {item.title}
-                </button>
-              );
-            })}
-          </nav>
-          <div className="absolute bottom-5 left-5 right-5 text-xs text-muted-foreground">
-            <div>版本 {session.version}</div>
-            <div className="mt-1 opacity-70">私有管理面 · 会话 8 小时</div>
-          </div>
-        </aside>
-
-        <main className="min-w-0 flex-1">
-          <header className="sticky top-0 z-20 border-b bg-background/85 px-5 py-4 backdrop-blur">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h1 className="text-xl font-semibold">{pages.find((item) => item.id === page)?.title}</h1>
-                <p className="text-xs text-muted-foreground">统一管理课程、活动、作业、答题与生产捕获</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Select
-                  className="h-9 w-44"
-                  value={account?.current ?? session.account ?? "root"}
-                  onChange={(event) => void switchAccount(event.target.value)}
-                >
-                  {(account?.accounts ?? [{ id: "root", name: "默认账号" }]).map((item) => (
-                    <option key={item.id} value={item.id}>{item.name}</option>
-                  ))}
-                </Select>
-                <Button variant="outline" size="sm" onClick={() => setPage("dashboard")}>
-                  <RefreshCw className="h-4 w-4" /> 刷新
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => void logout()}>
-                  <LogOut className="h-4 w-4" /> 退出
-                </Button>
-              </div>
-            </div>
-            <div className="mt-3 flex gap-2 overflow-x-auto lg:hidden">
-              {pages.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => setPage(item.id)}
-                  className={`rounded-full border px-3 py-1 text-xs ${page === item.id ? "border-primary/50 bg-primary/15 text-primary" : "text-muted-foreground"}`}
-                >
-                  {item.title}
-                </button>
-              ))}
-            </div>
-          </header>
-
-          <div className="p-5 pb-16">
-            <ErrorBanner error={globalError} />
-            {page === "dashboard" && <Dashboard tools={tools} />}
-            {page === "courses" && <Courses />}
-            {page === "todo" && <Assignments />}
-            {page === "study" && <StudyResources />}
-            {page === "activities" && <Activities tools={tools} />}
-            {page === "work" && <Work tools={tools} />}
-            {page === "notices" && <Notices />}
-            {page === "exams" && <Exams />}
-            {page === "captures" && <Captures />}
-            {page === "locations" && <Locations />}
-            {page === "tools" && <Tools tools={tools} />}
-            {page === "settings" && <Settings account={account} session={session} />}
-          </div>
-        </main>
-      </div>
+          </AppShell>
+        )}
+      </React.Suspense>
     </div>
   );
 }
