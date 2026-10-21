@@ -96,7 +96,7 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
               <div className="text-sm text-muted-foreground">暂无账号策略摘要。</div>
             ) : (
               <>
-              <div className="space-y-2 md:hidden">
+              <div className="space-y-2 lg:hidden">
                 {accountConfigs.map((item) => (
                   <article key={item.id} className="rounded-control border border-border bg-card p-3">
                     <div className="flex items-start justify-between gap-3">
@@ -122,12 +122,12 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
                   </article>
                 ))}
               </div>
-              <div className="hidden md:block">
+              <div className="hidden lg:block">
               <Table label="账号运行策略" className="min-w-[820px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead>账号</TableHead>
-                      <TableHead>Watcher</TableHead>
+                      <TableHead>监听器</TableHead>
                       <TableHead>自动签到</TableHead>
                       <TableHead>自动答题</TableHead>
                       <TableHead>课堂仅通知</TableHead>

@@ -21,8 +21,12 @@ func (s *Server) listWatchSchedules(w http.ResponseWriter, r *http.Request) {
 			items = value
 		}
 	}
+	termStart := ""
+	if s.cfg.ScheduleTermStart != nil {
+		termStart = s.cfg.ScheduleTermStart(account)
+	}
 	writeJSON(w, 200, map[string]any{
 		"items": items, "count": len(items), "timezone": "Asia/Shanghai",
-		"coordinate_system": "bd09",
+		"coordinate_system": "bd09", "term_start": termStart,
 	})
 }

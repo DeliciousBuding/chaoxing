@@ -10,6 +10,7 @@ import { Select } from "../components/ui/select";
 import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader, statusVariant } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { labelFor } from "../lib/labels";
+import { teachingWeek } from "../lib/teaching-week";
 
 export function StudyResources() {
   const [courses, setCourses] = React.useState<any[]>([]);
@@ -25,9 +26,23 @@ export function StudyResources() {
   const selectedCourse = courses.find((course) => courseKeyFor(course) === courseKey);
 
   React.useEffect(() => {
-    api.call("list_courses")
-      .then((result) => setCourses(result.data.result ?? []))
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    let active = true;
+    Promise.all([
+      api.call("list_courses"),
+      api.watchSchedules().catch(() => null)
+    ])
+      .then(([courseResult, scheduleResult]) => {
+        if (!active) return;
+        setCourses(courseResult.data.result ?? []);
+        const weekNumber = teachingWeek(new Date(), scheduleResult?.term_start);
+        if (weekNumber >= 1 && weekNumber <= 30) setWeek(String(weekNumber));
+      })
+      .catch((err) => {
+        if (active) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   async function load() {

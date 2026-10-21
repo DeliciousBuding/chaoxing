@@ -14,6 +14,7 @@ export function Assignments() {
   const [drafts, setDrafts] = React.useState<any>(null);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [loaded, setLoaded] = React.useState(false);
 
   async function load() {
     setBusy(true);
@@ -25,6 +26,7 @@ export function Assignments() {
       ]);
       setActionItems(actions.data);
       setAssignments(all.data);
+      setLoaded(true);
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   }
@@ -94,7 +96,7 @@ export function Assignments() {
         </CardHeader>
         <CardContent className="space-y-4">
           {actionItems && <MetaSummary data={actionItems} />}
-          {busy && !actionItems ? <Loading /> : actions.length === 0 ? <EmptyState title="当前没有明确待办" /> : (
+          {busy && !actionItems ? <Loading /> : !loaded ? null : actions.length === 0 ? <EmptyState title="当前没有明确待办" /> : (
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {actions.map((item, index) => (
                 <div key={index} className="rounded-control border border-border bg-muted/25 p-4">
@@ -120,7 +122,7 @@ export function Assignments() {
         <CardHeader><CardTitle>全部作业</CardTitle></CardHeader>
         <CardContent>
           {assignments && <MetaSummary data={assignments} />}
-          {busy && !assignments ? <Loading /> : rows.length === 0 ? <EmptyState title="没有作业数据" /> : (
+          {busy && !assignments ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState title="没有作业数据" /> : (
             <>
             <div className="space-y-3 lg:hidden">
               {rows.map((row, index) => (
@@ -199,7 +201,7 @@ export function Assignments() {
                 <article key={question.id ?? index} className="rounded-control border border-border bg-muted/15 p-3">
                   <div className="flex items-start justify-between gap-2">
                     <span className="font-mono text-[11px] text-muted-foreground">{question.id}</span>
-                    <Badge>{question.type}</Badge>
+                    <Badge title={question.type}>{labelFor("questionType", question.type)}</Badge>
                   </div>
                   <div className="mt-2 whitespace-pre-wrap text-[13px] leading-5">{question.title}</div>
                   <div className="mt-2 whitespace-pre-wrap text-[11px] leading-5 text-muted-foreground">{(question.options ?? []).join(" / ") || "—"}</div>
@@ -214,7 +216,7 @@ export function Assignments() {
                   <TableRow key={question.id ?? index}>
                     <TableCell className="font-mono text-xs">{question.id}</TableCell>
                     <TableCell className="max-w-2xl whitespace-pre-wrap">{question.title}</TableCell>
-                    <TableCell><Badge>{question.type}</Badge></TableCell>
+                    <TableCell><Badge title={question.type}>{labelFor("questionType", question.type)}</Badge></TableCell>
                     <TableCell className="text-xs text-muted-foreground">{(question.options ?? []).join(" / ") || "—"}</TableCell>
                   </TableRow>
                 ))}

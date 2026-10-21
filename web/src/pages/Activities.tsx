@@ -85,11 +85,15 @@ export function Activities({ tools }: { tools: any[] }) {
   const [signForm, setSignForm] = React.useState<Record<string, string>>({});
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [loaded, setLoaded] = React.useState(false);
 
   async function load() {
     setBusy(true);
     setError("");
-    try { setData((await api.call("list_activities")).data); }
+    try {
+      setData((await api.call("list_activities")).data);
+      setLoaded(true);
+    }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   }
@@ -176,7 +180,7 @@ export function Activities({ tools }: { tools: any[] }) {
           {data && <MetaSummary data={data} />}
         </CardHeader>
         <CardContent className="space-y-4">
-          {busy && !data ? <Loading /> : rows.length === 0 ? <EmptyState title="当前没有活动" /> : (
+          {busy && !data ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState title="当前没有活动" /> : (
             <>
             <div className="space-y-3 lg:hidden">
               {rows.map((row, index) => (

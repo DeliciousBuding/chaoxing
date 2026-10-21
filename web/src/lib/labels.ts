@@ -63,6 +63,20 @@ const labels = {
     completed: "已完成",
     pending: "进行中",
     unknown: "未知"
+  },
+  questionType: {
+    single: "单选",
+    multiple: "多选",
+    completion: "填空",
+    judgement: "判断",
+    shortanswer: "简答",
+    unknown: "未知"
+  },
+  noticeSource: {
+    notice: "通知",
+    announcement: "公告",
+    work: "作业",
+    exam: "考试"
   }
 } as const;
 

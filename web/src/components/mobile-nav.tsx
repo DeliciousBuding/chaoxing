@@ -190,7 +190,6 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
               <div className="flex items-center justify-between border-b border-border px-4 py-3">
                 <div>
                   <h2 id="mobile-page-sheet-title" className="text-[14px] font-medium">全部页面</h2>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">只显示当前身份可访问的功能。</p>
                 </div>
                 <button
                   type="button"

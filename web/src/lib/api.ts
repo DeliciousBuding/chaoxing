@@ -232,7 +232,7 @@ export const api = {
   }),
   deleteLocation: (id: number) => request<{ deleted: boolean }>(`/api/locations/${id}`, { method: "DELETE" }),
   locationBindings: () => request<{ items: LocationBinding[] }>("/api/location-bindings"),
-  watchSchedules: () => request<{ items: WatchSchedule[]; timezone: string; coordinate_system: string }>("/api/watch/schedules"),
+  watchSchedules: () => request<{ items: WatchSchedule[]; timezone: string; coordinate_system: string; term_start?: string }>("/api/watch/schedules"),
   saveLocationBinding: (binding: LocationBinding) => request<{ saved: boolean }>("/api/location-bindings", {
     method: "POST",
     body: JSON.stringify(binding)

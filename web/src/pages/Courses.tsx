@@ -21,6 +21,7 @@ export function Courses() {
   const [filter, setFilter] = React.useState<Filter>("all");
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [loaded, setLoaded] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setBusy(true);
@@ -28,6 +29,7 @@ export function Courses() {
     try {
       const result = await api.call("list_courses");
       setCourses((result.data.result as Course[] | undefined) ?? []);
+      setLoaded(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -104,7 +106,7 @@ export function Courses() {
             <div key={item} className="h-[86px] animate-pulse rounded-card border border-border bg-muted/35 sm:h-48" />
           ))}
         </div>
-      ) : visibleCourses.length === 0 ? (
+      ) : !loaded ? null : visibleCourses.length === 0 ? (
         <EmptyState
           title={courses.length === 0 ? "没有课程数据" : "没有匹配的课程"}
         />

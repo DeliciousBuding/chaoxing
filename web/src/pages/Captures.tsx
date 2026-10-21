@@ -13,11 +13,15 @@ export function Captures() {
   const [selected, setSelected] = React.useState<any>(null);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [loaded, setLoaded] = React.useState(false);
 
   async function load() {
     setBusy(true);
     setError("");
-    try { setRows((await api.captures(50)).items); }
+    try {
+      setRows((await api.captures(50)).items);
+      setLoaded(true);
+    }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   }
@@ -48,7 +52,7 @@ export function Captures() {
       <Card>
         <CardHeader><CardTitle>活动捕获</CardTitle></CardHeader>
         <CardContent>
-          {busy && rows.length === 0 ? <Loading /> : rows.length === 0 ? <EmptyState title="暂无捕获" /> : (
+          {busy && rows.length === 0 ? <Loading /> : !loaded ? null : rows.length === 0 ? <EmptyState title="暂无捕获" /> : (
             <>
             <div className="space-y-3 lg:hidden">
               {rows.map((row, index) => (

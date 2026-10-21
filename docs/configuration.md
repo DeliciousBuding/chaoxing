@@ -219,7 +219,7 @@ Bounds and behavior:
 - `chaoxing watch windows --days 7` prints the exact active intervals, per-schedule key, week restriction and room the watcher will use, which is the quickest way to compare configuration with the official timetable.
 - The watcher class list is editable with `chaoxing watch classes list|add|remove`; only `watch.classes` is rewritten, a timestamped backup is kept and a daemon restart is required.
 - `chaoxing courses discover` reads the mooc2 course-list page and marks which courses the legacy feed also returns, which explains a timetable course that is missing from `list_courses`.
-- `/readyz` reports `stale`: a live watcher that has not completed a cycle for twenty minutes (three times the idle sleep cap) is flagged so a wedged loop is distinguishable from an idle deployment.
+- `/readyz` reports `stale`: a live watcher that has not completed a cycle for fifteen minutes (three times the five-minute idle sleep cap) is flagged so a wedged loop is distinguishable from an idle deployment.
 
 - Course-group history is read only while at least one watched class is active; idle deployments do not scan it every minute.
 

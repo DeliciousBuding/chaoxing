@@ -27,7 +27,7 @@ export const pages = [
   { id: "exams", title: "考试", icon: ClipboardList, group: "study", hidden: true },
   { id: "captures", title: "生产捕获", icon: Sparkles, group: "ops", requirement: "sensitive" as const, hidden: true },
   { id: "locations", title: "位置预设", icon: MapPin, group: "ops", requirement: "accounts" as const },
-  { id: "tools", title: "工具面板", icon: Wrench, group: "ops", hidden: true },
+  { id: "tools", title: "工具面板", icon: Wrench, group: "ops", requirement: "sensitive" as const, hidden: true },
   { id: "members", title: "成员与权限", icon: Users, group: "admin", requirement: "manage_users" as const },
   { id: "audit", title: "审计日志", icon: ScrollText, group: "admin", requirement: "view_audit" as const },
   { id: "settings", title: "安全与配置", icon: Shield, group: "system" }

@@ -1,0 +1,12 @@
+# Copy to /etc/chaoxing/relay.ssh.conf (0600) and replace every placeholder.
+# The relay keeps a persistent reverse tunnel so the edge host can reach the
+# loopback-only HTTP listener. Do not commit the real host, user or key path.
+Host chaoxing-edge
+    HostName edge.example.invalid
+    User relay
+    IdentityFile /etc/chaoxing/relay_ed25519
+    IdentitiesOnly yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+    ExitOnForwardFailure yes
+    RemoteForward 127.0.0.1:8792 127.0.0.1:8792

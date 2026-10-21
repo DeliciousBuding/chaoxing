@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -38,6 +39,7 @@ import (
 	"github.com/DeliciousBuding/chaoxing/internal/watch"
 	"github.com/DeliciousBuding/chaoxing/internal/webui"
 	"github.com/DeliciousBuding/chaoxing/internal/workdraft"
+	"golang.org/x/net/netutil"
 )
 
 func ownerHash(s string) (string, error) { return access.HashPassword(s) }
@@ -441,8 +443,9 @@ func parseWatchTermStart(raw string) (time.Time, error) {
 // cycle for three times the idle sleep cap. The first tick runs immediately,
 // so a missing completion after the short startup grace is already a failure.
 const (
-	watchStaleAfter    = 15 * time.Minute
-	watchFirstTickWait = 2 * time.Minute
+	watchStaleAfter      = 15 * time.Minute
+	maxPublicConnections = 64
+	watchFirstTickWait   = 2 * time.Minute
 )
 
 func watcherStale(now, startedAt, lastTick time.Time, ticks uint64) bool {
@@ -773,6 +776,20 @@ func serve() error {
 			}
 			return webuiScheduleViews(classes)
 		},
+		ScheduleTermStart: func(account string) string {
+			if account == "root" {
+				if c.Watch != nil {
+					return c.Watch.TermStart
+				}
+				return ""
+			}
+			for _, tenant := range c.Tenants {
+				if tenant.ID == account && tenant.Watch != nil {
+					return tenant.Watch.TermStart
+				}
+			}
+			return ""
+		},
 		Profile: func(ctx context.Context, account string) (webui.ProfileView, error) {
 			client, err := upstreamClientForAccount(account)
 			if err != nil {
@@ -922,9 +939,21 @@ func serve() error {
 			}(tenant.watch)
 		}
 	}
+	pubListener, listenErr := net.Listen("tcp", c.Listen)
+	if listenErr != nil {
+		return listenErr
+	}
+	privListener, listenErr := net.Listen("tcp", c.LocalListen)
+	if listenErr != nil {
+		_ = pubListener.Close()
+		return listenErr
+	}
+	// The relay makes this loopback listener reachable from the internet. Cap
+	// concurrent connections before the handler-level limiter so a slow-client
+	// flood cannot exhaust the router's small file-descriptor budget.
 	errs := make(chan error, 2)
-	go func() { errs <- pub.ListenAndServe() }()
-	go func() { errs <- priv.ListenAndServe() }()
+	go func() { errs <- pub.Serve(netutil.LimitListener(pubListener, maxPublicConnections)) }()
+	go func() { errs <- priv.Serve(privListener) }()
 	select {
 	case e = <-errs:
 	case <-ctx.Done():

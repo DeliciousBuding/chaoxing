@@ -126,9 +126,22 @@ type entry struct {
 	Code        string    `json:"code,omitempty"`
 }
 
+// pendingAlert is a notification that could not be delivered after the
+// upstream action already succeeded or failed. Keeping it separate from the
+// activity entry means a retry never re-runs the sign-in itself.
+type pendingAlert struct {
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	Priority  int       `json:"priority"`
+	Attempts  int       `json:"attempts"`
+	NextAt    time.Time `json:"next_at"`
+	LastError string    `json:"last_error,omitempty"`
+}
+
 type stateFile struct {
-	Version int              `json:"version"`
-	Entries map[string]entry `json:"entries"`
+	Version int                     `json:"version"`
+	Entries map[string]entry        `json:"entries"`
+	Alerts  map[string]pendingAlert `json:"alerts,omitempty"`
 }
 
 // Metrics is safe to expose from the public health endpoint: it contains only
@@ -153,6 +166,7 @@ type Runner struct {
 	sender           notify.Sender
 	alertSender      notify.Sender
 	state            map[string]entry
+	alerts           map[string]pendingAlert
 	now              func() time.Time
 	random           func() float64
 	wait             func(context.Context, time.Duration) bool
@@ -176,10 +190,14 @@ const (
 	// best-effort evidence collection. Keep an overall supervision budget, but
 	// give discovery its own shorter budget so a slow class feed cannot consume
 	// the time reserved for signing.
-	tickBudget      = 150 * time.Second
-	pollBudget      = 60 * time.Second
-	groupScanBudget = 30 * time.Second
-	maxSignAttempts = 4
+	tickBudget        = 150 * time.Second
+	pollBudget        = 60 * time.Second
+	groupScanBudget   = 30 * time.Second
+	maxSignAttempts   = 4
+	maxAlertAttempts  = 6
+	alertRetryBase    = 30 * time.Second
+	alertRetryMax     = 5 * time.Minute
+	maxAlertsPerFlush = 4
 )
 
 func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer, answerer ...AnswerActivitySource) (*Runner, error) {
@@ -275,7 +293,8 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 		// attempt because the watcher already re-sends them on the next tick.
 		alertSender: notify.Retry{Sender: sender, Attempts: 3, Delay: 2 * time.Second},
 		answerer:    answerSource,
-		state:       map[string]entry{}, now: time.Now, random: rand.Float64, wait: waitContext,
+		state:       map[string]entry{}, alerts: map[string]pendingAlert{},
+		now: time.Now, random: rand.Float64, wait: waitContext,
 		metrics: Metrics{StartedAt: time.Now().UTC()},
 	}
 	if loadErr := r.load(); loadErr != nil {
@@ -637,12 +656,100 @@ func nextClassStart(t time.Time, classes []Class, before time.Duration, termStar
 	return best.Sub(local)
 }
 
+// queueAlert records a notification for bounded retry. It is used only after
+// the upstream action has already been persisted, so retrying delivery can
+// never repeat a successful sign-in or answer.
+func (r *Runner) queueAlert(k string, msg notify.Message, now time.Time, cause error) {
+	if k == "" {
+		return
+	}
+	if len(r.alerts) >= 64 {
+		log.Printf("activity watch: pending alert queue full; dropping %q", msg.Title)
+		return
+	}
+	lastError := ""
+	if cause != nil {
+		lastError = truncateAlertError(cause.Error())
+	}
+	r.alerts[k] = pendingAlert{
+		Title: msg.Title, Body: msg.Body, Priority: msg.Priority,
+		NextAt: now.Add(alertRetryBase), LastError: lastError,
+	}
+	r.persistState()
+}
+
+// flushAlerts retries due notifications with exponential backoff. It is
+// bounded per tick so a slow push endpoint cannot consume the sign-in budget.
+func (r *Runner) flushAlerts(ctx context.Context, now time.Time) {
+	if len(r.alerts) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(r.alerts))
+	for k := range r.alerts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	attempted := 0
+	changed := false
+	for _, k := range keys {
+		if attempted >= maxAlertsPerFlush {
+			break
+		}
+		alert := r.alerts[k]
+		if now.Before(alert.NextAt) {
+			continue
+		}
+		attempted++
+		err := r.notify(ctx, notify.Message{Title: alert.Title, Body: alert.Body, Priority: alert.Priority})
+		if err == nil {
+			delete(r.alerts, k)
+			// A delivered retry counts as this activity's notification for
+			// rate-limiting purposes, so the next tick does not send a
+			// duplicate reminder.
+			if e, ok := r.state[k]; ok {
+				e.LastSent, e.Count = now, e.Count+1
+				r.state[k] = e
+			}
+			changed = true
+			log.Printf("activity watch: pending alert delivered: %s", alert.Title)
+			continue
+		}
+		alert.Attempts++
+		alert.LastError = truncateAlertError(err.Error())
+		if alert.Attempts >= maxAlertAttempts {
+			delete(r.alerts, k)
+			log.Printf("activity watch: pending alert dropped after %d attempts: %s: %s", alert.Attempts, alert.Title, alert.LastError)
+			changed = true
+			continue
+		}
+		delay := alertRetryBase << (alert.Attempts - 1)
+		if delay > alertRetryMax || delay <= 0 {
+			delay = alertRetryMax
+		}
+		alert.NextAt = now.Add(delay)
+		r.alerts[k] = alert
+		changed = true
+	}
+	if changed {
+		r.persistState()
+	}
+}
+
+func truncateAlertError(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) > 200 {
+		text = text[:200]
+	}
+	return text
+}
+
 // Tick polls only classes whose course schedule is active, attempts each new
 // signable activity at most once, and falls back to alerts for manual types.
 func (r *Runner) Tick(ctx context.Context) {
 	r.tickMu.Lock()
 	defer r.tickMu.Unlock()
 	now := r.now()
+	r.flushAlerts(ctx, now)
 	if !inWindow(now, r.cfg.Window) {
 		return
 	}
@@ -756,6 +863,9 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 			if seen && e.Status == "failed" {
 				title, body = "🚨 学习通自动抢答失败", formatFailureBody(item, e.Code)
 			}
+			if _, pending := r.alerts[k]; pending {
+				continue
+			}
 			priority := 6
 			if seen && e.Status == "failed" {
 				priority = 8
@@ -796,6 +906,9 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 		if seen && e.Status == "failed" {
 			title, body = "🚨 学习通自动签到失败", formatFailureBody(item, e.Code)
 		}
+		if _, pending := r.alerts[k]; pending {
+			continue
+		}
 		priority := 6
 		if seen && e.Status == "failed" {
 			priority = 8
@@ -827,6 +940,7 @@ func (r *Runner) pruneInactive(active map[string]upstream.Activity, now time.Tim
 		// private state file growing until its write limit is reached.
 		if _, still := active[k]; (!still && now.Sub(last) > 6*time.Hour) || now.Sub(last) > 24*time.Hour {
 			delete(r.state, k)
+			delete(r.alerts, k)
 			changed = true
 		}
 	}
@@ -968,8 +1082,10 @@ func (r *Runner) autoAnswer(ctx context.Context, item upstream.Activity, e entry
 	if err != nil {
 		priority = 8
 	}
-	if sendErr := r.notify(ctx, notify.Message{Title: title, Body: body, Priority: priority}); sendErr != nil {
+	message := notify.Message{Title: title, Body: body, Priority: priority}
+	if sendErr := r.notify(ctx, message); sendErr != nil {
 		log.Printf("activity watch: notify failed: %v", sendErr)
+		r.queueAlert(key(item), message, now, sendErr)
 	} else {
 		next.LastSent, next.Count = now, e.Count+1
 	}
@@ -985,8 +1101,10 @@ func (r *Runner) recordAnswerReview(ctx context.Context, item upstream.Activity,
 	now := r.now()
 	next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: "review", Method: "agent", Code: decision.Reason}
 	title, body := "🧠 学习通课堂答题需要确认", formatReviewBody(item, decision)
-	if err := r.notify(ctx, notify.Message{Title: title, Body: body, Priority: 7}); err != nil {
+	message := notify.Message{Title: title, Body: body, Priority: 7}
+	if err := r.notify(ctx, message); err != nil {
 		log.Printf("activity watch: notify failed: %v", err)
+		r.queueAlert(key(item), message, now, err)
 	} else {
 		next.LastSent, next.Count = now, e.Count+1
 	}
@@ -1010,8 +1128,10 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 			}
 			r.state[key(item)] = next
 			r.persistState()
-			if sendErr := r.notify(ctx, notify.Message{Title: "🚨 学习通位置解析失败", Body: formatFailureBody(item, "LOCATION_RESOLVE_FAILED"), Priority: 8}); sendErr != nil {
+			message := notify.Message{Title: "🚨 学习通位置解析失败", Body: formatFailureBody(item, "LOCATION_RESOLVE_FAILED"), Priority: 8}
+			if sendErr := r.notify(ctx, message); sendErr != nil {
 				log.Printf("activity watch: notify failed: %v", sendErr)
+				r.queueAlert(key(item), message, now, sendErr)
 			}
 			return true
 		}
@@ -1067,8 +1187,10 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 	if err != nil {
 		priority = 8
 	}
-	if sendErr := r.notify(ctx, notify.Message{Title: title, Body: body, Priority: priority}); sendErr != nil {
+	message := notify.Message{Title: title, Body: body, Priority: priority}
+	if sendErr := r.notify(ctx, message); sendErr != nil {
 		log.Printf("activity watch: notify failed: %v", sendErr)
+		r.queueAlert(k, message, now, sendErr)
 	} else {
 		next.LastSent, next.Count = now, e.Count+1
 		r.state[k] = next
@@ -1485,6 +1607,10 @@ func (r *Runner) load() error {
 		}
 	}
 	r.state = s.Entries
+	r.alerts = s.Alerts
+	if r.alerts == nil {
+		r.alerts = map[string]pendingAlert{}
+	}
 	return nil
 }
 
@@ -1512,7 +1638,14 @@ func (r *Runner) save() error {
 	for _, k := range keys {
 		entries[k] = r.state[k]
 	}
-	b, err := json.Marshal(stateFile{Version: 2, Entries: entries})
+	alerts := make(map[string]pendingAlert, len(r.alerts))
+	for k, a := range r.alerts {
+		alerts[k] = a
+	}
+	if len(alerts) == 0 {
+		alerts = nil
+	}
+	b, err := json.Marshal(stateFile{Version: 2, Entries: entries, Alerts: alerts})
 	if err != nil {
 		return err
 	}

@@ -80,7 +80,6 @@ function Sidebar({ session }: { session: SessionInfo }) {
         </div>
         <div className="min-w-0">
           <div className="truncate text-[12px] font-medium tracking-[-0.01em]">学习通控制台</div>
-          <div className="truncate text-[10px] text-muted-foreground">Classroom control plane</div>
         </div>
       </div>
       <Divider />
@@ -202,7 +201,7 @@ function Header({
     <header className="sticky top-0 z-20 border-b border-border bg-background pt-[env(safe-area-inset-top)]">
       <div className="flex min-h-12 items-center gap-2 px-3 sm:min-h-11 sm:px-5">
         <nav aria-label="面包屑" className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-muted-foreground">
-          <span className="truncate font-medium text-foreground sm:hidden">{meta.title}</span>
+          <span className="truncate font-medium text-foreground sm:hidden">学习通控制台</span>
           <span className="hidden shrink-0 sm:inline">{group?.title ?? "控制台"}</span>
           <span aria-hidden="true" className="hidden sm:inline">/</span>
           <span className="hidden truncate text-foreground/80 sm:inline">{meta.title}</span>

@@ -606,16 +606,55 @@ func TestWatchAutoSignFailureRetriesAlertDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.now = func() time.Time { return time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai) }
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
 	r.Tick(context.Background())
 	if len(signer.requests) != 1 || len(snd.sent) != 1 {
 		t.Fatalf("requests=%d sent=%d", len(signer.requests), len(snd.sent))
 	}
 	retry := &fakeSender{}
 	r.sender = retry
+	now = now.Add(31 * time.Second)
 	r.Tick(context.Background())
 	if len(signer.requests) != 1 || len(retry.sent) != 1 {
 		t.Fatalf("requests=%d sent=%d", len(signer.requests), len(retry.sent))
+	}
+}
+
+// A sign-in can succeed while the push endpoint is down, and the activity can
+// disappear from the feed before the next tick. The queued alert must survive
+// that disappearance without ever repeating the upstream sign-in.
+func TestWatchPendingAlertSurvivesActivityDisappearing(t *testing.T) {
+	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
+	snd := &fakeSender{fail: true}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	r, err := New(Config{Interval: time.Minute, AutoSign: true, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json"}, src, snd, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
+	r.Tick(context.Background())
+	if len(signer.requests) != 1 || len(r.alerts) != 1 {
+		t.Fatalf("requests=%d pending=%d", len(signer.requests), len(r.alerts))
+	}
+	if r.state[key(src.items[0])].Status != "signed" {
+		t.Fatalf("%+v", r.state)
+	}
+
+	src.items = nil
+	retry := &fakeSender{}
+	r.sender = retry
+	now = now.Add(31 * time.Second)
+	r.Tick(context.Background())
+	if len(signer.requests) != 1 {
+		t.Fatalf("sign-in repeated: %d", len(signer.requests))
+	}
+	if len(retry.sent) != 1 || retry.sent[0].Title != "✅ 学习通自动签到成功" {
+		t.Fatalf("%+v", retry.sent)
+	}
+	if len(r.alerts) != 0 {
+		t.Fatalf("pending alerts not cleared: %+v", r.alerts)
 	}
 }
 

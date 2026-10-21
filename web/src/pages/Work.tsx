@@ -7,6 +7,7 @@ import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
 import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { labelFor } from "../lib/labels";
 
 export function Work({ tools }: { tools: any[] }) {
   const [courses, setCourses] = React.useState<any[]>([]);
@@ -82,8 +83,6 @@ export function Work({ tools }: { tools: any[] }) {
     <div className="space-y-5">
       <PageHeader
         title="作业答题"
-        meta={<span>草稿优先</span>}
-        actions={<Badge variant="warning">最终提交需二次确认</Badge>}
       />
       <ErrorBanner error={error} />
       <Card>
@@ -117,19 +116,37 @@ export function Work({ tools }: { tools: any[] }) {
         <CardContent className="space-y-4">
           {questions && <MetaSummary data={questions} />}
           {busy && !questions ? <Loading /> : !questions ? <EmptyState title="选择作业后读取题目" /> : (
-            <Table label="作业题目">
-              <TableHeader><TableRow><TableHead>题号</TableHead><TableHead>题目</TableHead><TableHead>类型</TableHead><TableHead>选项</TableHead></TableRow></TableHeader>
-              <TableBody>
+            <>
+              <div className="space-y-2 lg:hidden">
                 {(questions.questions ?? []).map((question: any, index: number) => (
-                  <TableRow key={question.id ?? index}>
-                    <TableCell className="font-mono text-xs">{question.id}</TableCell>
-                    <TableCell className="max-w-2xl whitespace-pre-wrap">{question.title}</TableCell>
-                    <TableCell><Badge>{question.type}</Badge></TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{(question.options ?? []).join(" / ") || "—"}</TableCell>
-                  </TableRow>
+                  <article key={question.id ?? index} className="rounded-control border border-border bg-muted/15 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-mono text-[11px] text-muted-foreground">{question.id}</span>
+                      <Badge title={question.type}>{labelFor("questionType", question.type)}</Badge>
+                    </div>
+                    <div className="mt-2 whitespace-pre-wrap text-[13px] leading-5">{question.title}</div>
+                    <div className="mt-2 whitespace-pre-wrap text-[11px] leading-5 text-muted-foreground">
+                      {(question.options ?? []).join(" / ") || "—"}
+                    </div>
+                  </article>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+              <div className="hidden lg:block">
+                <Table label="作业题目">
+                  <TableHeader><TableRow><TableHead>题号</TableHead><TableHead>题目</TableHead><TableHead>类型</TableHead><TableHead>选项</TableHead></TableRow></TableHeader>
+                  <TableBody>
+                    {(questions.questions ?? []).map((question: any, index: number) => (
+                      <TableRow key={question.id ?? index}>
+                        <TableCell className="font-mono text-xs">{question.id}</TableCell>
+                        <TableCell className="max-w-2xl whitespace-pre-wrap">{question.title}</TableCell>
+                        <TableCell><Badge title={question.type}>{labelFor("questionType", question.type)}</Badge></TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{(question.options ?? []).join(" / ") || "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

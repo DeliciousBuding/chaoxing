@@ -512,28 +512,52 @@ export function Locations() {
             </CardHeader>
             <CardContent>
               {busy && presets.length === 0 ? <Loading /> : presets.length === 0 ? <EmptyState title="暂无位置" /> : (
-                <Table label="位置预设">
-                  <TableHeader>
-                    <TableRow><TableHead>名称</TableHead><TableHead>地址</TableHead><TableHead>纬度</TableHead><TableHead>经度</TableHead><TableHead>坐标系</TableHead><TableHead>操作</TableHead></TableRow>
-                  </TableHeader>
-                  <TableBody>
+                <>
+                  <div className="space-y-2 lg:hidden">
                     {presets.map((preset) => (
-                      <TableRow key={preset.id}>
-                        <TableCell className="font-medium">{preset.label}</TableCell>
-                        <TableCell>{preset.address || "—"}</TableCell>
-                        <TableCell className="font-mono text-xs">{preset.latitude.toFixed(6)}</TableCell>
-                        <TableCell className="font-mono text-xs">{preset.longitude.toFixed(6)}</TableCell>
-                          <TableCell><Badge variant="secondary">{preset.coordinate_system === "bd09" ? "BD-09" : preset.coordinate_system ?? "BD-09"}</Badge></TableCell>
-                        <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent">
-                          <div className="flex gap-2">
-                            <Button size="sm" variant="outline" onClick={() => editPreset(preset)}>编辑</Button>
-                            <Button size="sm" variant="outline" onClick={() => void removePreset(preset)}>删除</Button>
+                      <article key={preset.id} className="rounded-control border border-border bg-muted/15 p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-medium">{preset.label}</div>
+                            <div className="mt-1 truncate text-[11px] text-muted-foreground">{preset.address || "未填写地址"}</div>
                           </div>
-                        </TableCell>
-                      </TableRow>
+                          <Badge variant="secondary">{preset.coordinate_system === "bd09" ? "BD-09" : preset.coordinate_system ?? "BD-09"}</Badge>
+                        </div>
+                        <div className="mt-2 font-mono text-[11px] text-muted-foreground">
+                          {preset.latitude.toFixed(6)}, {preset.longitude.toFixed(6)}
+                        </div>
+                        <div className="mt-3 flex gap-2">
+                          <Button size="sm" variant="outline" className="flex-1" onClick={() => editPreset(preset)}>编辑</Button>
+                          <Button size="sm" variant="outline" className="flex-1" onClick={() => void removePreset(preset)}>删除</Button>
+                        </div>
+                      </article>
                     ))}
-                  </TableBody>
-                </Table>
+                  </div>
+                  <div className="hidden lg:block">
+                    <Table label="位置预设">
+                      <TableHeader>
+                        <TableRow><TableHead>名称</TableHead><TableHead>地址</TableHead><TableHead>纬度</TableHead><TableHead>经度</TableHead><TableHead>坐标系</TableHead><TableHead>操作</TableHead></TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {presets.map((preset) => (
+                          <TableRow key={preset.id}>
+                            <TableCell className="font-medium">{preset.label}</TableCell>
+                            <TableCell>{preset.address || "—"}</TableCell>
+                            <TableCell className="font-mono text-xs">{preset.latitude.toFixed(6)}</TableCell>
+                            <TableCell className="font-mono text-xs">{preset.longitude.toFixed(6)}</TableCell>
+                              <TableCell><Badge variant="secondary">{preset.coordinate_system === "bd09" ? "BD-09" : preset.coordinate_system ?? "BD-09"}</Badge></TableCell>
+                            <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent">
+                              <div className="flex gap-2">
+                                <Button size="sm" variant="outline" onClick={() => editPreset(preset)}>编辑</Button>
+                                <Button size="sm" variant="outline" onClick={() => void removePreset(preset)}>删除</Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>
@@ -544,25 +568,45 @@ export function Locations() {
             </CardHeader>
             <CardContent>
               {busy && bindingRows.length === 0 ? <Loading /> : bindingRows.length === 0 ? <EmptyState title="暂无绑定" /> : (
-                <Table label="课程位置绑定">
-                  <TableHeader>
-                    <TableRow><TableHead>课程</TableHead><TableHead>班级</TableHead><TableHead>时段</TableHead><TableHead>位置</TableHead><TableHead>操作</TableHead></TableRow>
-                  </TableHeader>
-                  <TableBody>
+                <>
+                  <div className="space-y-2 lg:hidden">
                     {bindingRows.map(({ binding, preset, course, schedule }) => (
-                      <TableRow key={`${binding.course_id}:${binding.class_id}:${binding.schedule_key ?? ""}`}>
-                        <TableCell>{course?.name ?? binding.course_id}</TableCell>
-                        <TableCell>{course?.class ?? binding.class_id}</TableCell>
-                        <TableCell className="text-xs">
-                          <div className="font-mono">{binding.schedule_key || "课程默认"}</div>
-                          {schedule && <div className="mt-1 text-muted-foreground">{scheduleLabel(schedule)}</div>}
-                        </TableCell>
-                        <TableCell><Badge>{preset?.label ?? "已删除"}</Badge></TableCell>
-                        <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent"><Button size="sm" variant="outline" onClick={() => void unbind(binding)}>解除</Button></TableCell>
-                      </TableRow>
+                      <article key={`${binding.course_id}:${binding.class_id}:${binding.schedule_key ?? ""}`} className="rounded-control border border-border bg-muted/15 p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-medium">{course?.name ?? binding.course_id}</div>
+                            <div className="mt-1 text-[11px] text-muted-foreground">{course?.class ?? binding.class_id}</div>
+                          </div>
+                          <Badge>{preset?.label ?? "已删除"}</Badge>
+                        </div>
+                        <div className="mt-2 font-mono text-[11px] text-muted-foreground">{binding.schedule_key || "课程默认"}</div>
+                        {schedule && <div className="mt-1 text-[11px] text-muted-foreground">{scheduleLabel(schedule)}</div>}
+                        <Button size="sm" variant="outline" className="mt-3 w-full" onClick={() => void unbind(binding)}>解除</Button>
+                      </article>
                     ))}
-                  </TableBody>
-                </Table>
+                  </div>
+                  <div className="hidden lg:block">
+                    <Table label="课程位置绑定">
+                      <TableHeader>
+                        <TableRow><TableHead>课程</TableHead><TableHead>班级</TableHead><TableHead>时段</TableHead><TableHead>位置</TableHead><TableHead>操作</TableHead></TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {bindingRows.map(({ binding, preset, course, schedule }) => (
+                          <TableRow key={`${binding.course_id}:${binding.class_id}:${binding.schedule_key ?? ""}`}>
+                            <TableCell>{course?.name ?? binding.course_id}</TableCell>
+                            <TableCell>{course?.class ?? binding.class_id}</TableCell>
+                            <TableCell className="text-xs">
+                              <div className="font-mono">{binding.schedule_key || "课程默认"}</div>
+                              {schedule && <div className="mt-1 text-muted-foreground">{scheduleLabel(schedule)}</div>}
+                            </TableCell>
+                            <TableCell><Badge>{preset?.label ?? "已删除"}</Badge></TableCell>
+                            <TableCell className="sticky right-0 z-10 border-l border-border bg-card lg:static lg:border-l-0 lg:bg-transparent"><Button size="sm" variant="outline" onClick={() => void unbind(binding)}>解除</Button></TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>

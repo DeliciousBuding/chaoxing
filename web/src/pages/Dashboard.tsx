@@ -28,6 +28,7 @@ import { Button } from "../components/ui/button";
 import { ErrorBanner, PageHeader } from "../components/common";
 import { useUIStore } from "../lib/store";
 import { roleLabels } from "../lib/roles";
+import { teachingWeek, weekLabel, weekMatches } from "../lib/teaching-week";
 import { formatBeijing } from "../lib/time";
 import { cn } from "../lib/utils";
 
@@ -125,6 +126,7 @@ export function Dashboard() {
   const [courses, setCourses] = React.useState<Course[]>([]);
   const [coursesMeta, setCoursesMeta] = React.useState<any>(null);
   const [schedules, setSchedules] = React.useState<WatchSchedule[]>([]);
+  const [termStart, setTermStart] = React.useState("");
   const [signAudits, setSignAudits] = React.useState<SignAudit[]>([]);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -164,8 +166,13 @@ export function Dashboard() {
       setCoursesMeta(null);
       failures.push(`课程目录：${errorMessage(coursesResult.reason)}`);
     }
-    if (schedulesResult.status === "fulfilled") setSchedules(schedulesResult.value.items ?? []);
-    else setSchedules([]);
+    if (schedulesResult.status === "fulfilled") {
+      setSchedules(schedulesResult.value.items ?? []);
+      setTermStart(schedulesResult.value.term_start ?? "");
+    } else {
+      setSchedules([]);
+      setTermStart("");
+    }
     if (policyResult.status === "fulfilled" && policyResult.value) {
       setAccountPolicy(
         policyResult.value.items.find((item) => item.id === accountID) ?? null
@@ -196,6 +203,7 @@ export function Dashboard() {
   const egress: any[] = runtime.egress ?? [];
   const serverNow = runtime.now ? new Date(runtime.now) : new Date();
   const clock = beijingClock(Number.isNaN(serverNow.getTime()) ? new Date() : serverNow);
+  const currentWeek = teachingWeek(Number.isNaN(serverNow.getTime()) ? new Date() : serverNow, termStart);
   const staleMs = 20 * 60 * 1000;
 
   function isStale(row: Record<string, any>) {
@@ -226,7 +234,7 @@ export function Dashboard() {
   const todaySchedules = React.useMemo(() => {
     const seen = new Set<string>();
     return schedules
-      .filter((row) => row.days?.includes(clock.day))
+      .filter((row) => row.days?.includes(clock.day) && weekMatches(currentWeek, row.weeks))
       .map((row) => {
         const course = courseLookup.get(courseKey(row.course_id, row.class_id));
         const start = minuteOfDay(row.start);
@@ -241,8 +249,9 @@ export function Dashboard() {
         return true;
       })
       .sort((a, b) => (minuteOfDay(a.start) ?? 0) - (minuteOfDay(b.start) ?? 0));
-  }, [clock.day, clock.minutes, courseLookup, schedules]);
-  const nextSchedule = todaySchedules.find((row) => row.state === "active") ?? todaySchedules.find((row) => row.state === "upcoming");
+  }, [clock.day, clock.minutes, courseLookup, currentWeek, schedules]);
+  const activeSchedule = todaySchedules.find((row) => row.state === "active");
+  const nextSchedule = activeSchedule ?? todaySchedules.find((row) => row.state === "upcoming");
   const recentSigns = signAudits.slice(0, 3);
   const dashboardCourses = React.useMemo(
     () =>
@@ -291,12 +300,7 @@ export function Dashboard() {
           </Badge>
           {accountPolicy.notify_only && <Badge variant="secondary">通知优先</Badge>}
         </>
-      ) : (
-        <>
-          <Badge variant="success">会话已加固</Badge>
-          <Badge variant="secondary">实时读取</Badge>
-        </>
-      )}
+      ) : null}
     </>
   );
 
@@ -309,6 +313,12 @@ export function Dashboard() {
             <span>{clock.date}</span>
             <span aria-hidden="true">·</span>
             <span>北京时间 {clock.time}</span>
+            {currentWeek > 0 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{weekLabel(currentWeek)}</span>
+              </>
+            )}
           </>
         }
         actions={
@@ -370,7 +380,12 @@ export function Dashboard() {
               </div>
               <p className="mt-1 text-[11px] text-muted-foreground">
                 {dayLabels[clock.day]}
-                {nextSchedule ? ` · 下一段 ${nextSchedule.course?.name || nextSchedule.course_id} ${nextSchedule.start}` : " · 今天没有待开始时段"}
+                {activeSchedule
+                  ? ` · 进行中 ${activeSchedule.course?.name || activeSchedule.course_id} 至 ${activeSchedule.end}`
+                  : nextSchedule
+                    ? ` · 下一段 ${nextSchedule.course?.name || nextSchedule.course_id} ${nextSchedule.start}`
+                    : " · 今天没有待开始时段"}
+                {currentWeek > 0 ? ` · ${weekLabel(currentWeek)}` : ""}
               </p>
             </div>
             <Button size="sm" variant="ghost" onClick={() => setPage("study")}>
@@ -381,7 +396,7 @@ export function Dashboard() {
           {todaySchedules.length === 0 ? (
             <div className="flex items-start gap-2 px-4 py-6 text-[12px] text-muted-foreground sm:px-5">
               <Clock3 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>今天没有已配置的课堂时段。调课或临时课堂会在活动列表里出现。</span>
+              <span>今天没有课堂时段。</span>
             </div>
           ) : (
             <ol className="divide-y divide-border">
@@ -448,7 +463,7 @@ export function Dashboard() {
           </div>
           {!canReadAudits ? (
             <div className="px-4 py-5 text-[11px] leading-5 text-muted-foreground sm:px-5">
-              当前角色不读取签到出口与地点审计。
+              当前角色无签到审计权限。
             </div>
           ) : auditsLoading ? (
             <div className="space-y-2 px-4 py-4 sm:px-5">
@@ -463,7 +478,7 @@ export function Dashboard() {
             </div>
           ) : recentSigns.length === 0 ? (
             <div className="px-4 py-5 text-[11px] leading-5 text-muted-foreground sm:px-5">
-              还没有签到记录。成功或失败尝试都会写入本地审计。
+              暂无签到记录。
             </div>
           ) : (
             <ul className="divide-y divide-border">
@@ -516,7 +531,7 @@ export function Dashboard() {
           </div>
         ) : courses.length === 0 ? (
           <div className="rounded-card border border-border bg-card px-4 py-5 text-[11px] leading-5 text-muted-foreground">
-            课程目录尚未加载。真实课程只在后端读取成功后显示，不用空列表伪装完成。
+            未读取到课程目录。
           </div>
         ) : (
           <div className="grid min-w-0 grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">

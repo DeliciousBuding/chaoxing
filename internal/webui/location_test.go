@@ -115,6 +115,12 @@ func newLocationTestServer(t *testing.T) (*http.ServeMux, *fakeLocationStore) {
 				Days: []string{"Tue"}, Start: "08:00", End: "09:40", Weeks: "7,13", Room: "中303",
 			}}
 		},
+		ScheduleTermStart: func(account string) string {
+			if account == "root" {
+				return "2026-09-13"
+			}
+			return ""
+		},
 		Execute: func(context.Context, string, string, map[string]any) (any, error) { return nil, nil },
 	})
 	if err != nil {
@@ -193,13 +199,17 @@ func TestLocationRoutesSaveResolveAndMapConfig(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	var schedules struct {
-		Items []ScheduleView `json:"items"`
+		Items     []ScheduleView `json:"items"`
+		TermStart string         `json:"term_start"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &schedules); err != nil {
 		t.Fatal(err)
 	}
 	if len(schedules.Items) != 1 || schedules.Items[0].Key != "arch-tue-guidance" || schedules.Items[0].Room != "中303" {
 		t.Fatalf("schedules=%+v", schedules.Items)
+	}
+	if schedules.TermStart != "2026-09-13" {
+		t.Fatalf("term_start=%q", schedules.TermStart)
 	}
 	item, err := store.Resolve(context.Background(), "root", "c", "k", "Tue-08:00-09:40")
 	if err != nil || item == nil {

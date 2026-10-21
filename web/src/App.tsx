@@ -2,9 +2,9 @@ import * as React from "react";
 import { api, SESSION_EXPIRED_EVENT } from "./lib/api";
 import { pageFromURL, useUIStore, writePageURL } from "./lib/store";
 import { canAccessPage, pageMeta } from "./lib/layout";
-import { AppShell } from "./components/app-shell";
 import { EmptyState, ErrorBanner, PageErrorBoundary, PageSkeleton } from "./components/common";
 
+const AppShell = React.lazy(() => import("./components/app-shell").then((m) => ({ default: m.AppShell })));
 const Login = React.lazy(() => import("./pages/Login").then((m) => ({ default: m.Login })));
 const Dashboard = React.lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 const Courses = React.lazy(() => import("./pages/Courses").then((m) => ({ default: m.Courses })));
@@ -160,15 +160,12 @@ export default function App() {
     switchingAccountRef.current = true;
     setSwitchingAccount(true);
     setGlobalError("");
-    // Remount account-scoped pages before the network round trip so stale
-    // audit rows and dashboard values cannot remain visible under the new
-    // account while the switch is in flight.
-    setAccountEpoch((value) => value + 1);
     try {
       await api.selectAccount(id);
       const next = await api.account();
       setAccount(next);
       if (session) setSession({ ...session, account: id });
+      setAccountEpoch((value) => value + 1);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : String(err));
       const restored = await api.account().catch(() => null);
@@ -224,7 +221,9 @@ export default function App() {
             <div className="space-y-4">
               <ErrorBanner error={globalError} />
               <PageErrorBoundary resetKey={`${effectivePage}:${accountEpoch}:${activeAccount}`}>
-                {hasNoAccountScope && effectivePage !== "settings" ? (
+                {switchingAccount ? (
+                  <PageSkeleton />
+                ) : hasNoAccountScope && effectivePage !== "settings" ? (
                   <EmptyState
                     title="尚未授权学习通账号"
                     description="管理员需要在“成员与权限”中为当前成员分配至少一个上游账号；在此之前，业务数据和工具调用不会发起。"

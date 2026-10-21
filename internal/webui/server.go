@@ -88,6 +88,7 @@ type Status func() any
 type CaptureList func(ctx context.Context, account, activityKey string, limit int, includePage bool) ([]capture.Activity, error)
 type SignAuditList func(ctx context.Context, account string, limit int) ([]signaudit.Record, error)
 type ScheduleList func(account string) []ScheduleView
+type ScheduleTermStart func(account string) string
 type ProfileSource func(ctx context.Context, account string) (ProfileView, error)
 type AvatarSource func(ctx context.Context, account string) ([]byte, string, error)
 type CourseCoverSource func(ctx context.Context, account, courseID, classID string) ([]byte, string, error)
@@ -146,6 +147,7 @@ type Config struct {
 	Captures          CaptureList
 	SignAudits        SignAuditList
 	Schedules         ScheduleList
+	ScheduleTermStart ScheduleTermStart
 	Profile           ProfileSource
 	Avatar            AvatarSource
 	CourseCover       CourseCoverSource

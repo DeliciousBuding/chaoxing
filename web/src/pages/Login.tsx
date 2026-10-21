@@ -14,11 +14,6 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
   const [password, setPassword] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
-  const [bootError, setBootError] = React.useState("");
-
-  React.useEffect(() => {
-    api.session().catch((err) => setBootError(err instanceof Error ? err.message : String(err)));
-  }, []);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -45,7 +40,6 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
             </div>
             <div>
               <div className="text-[13px] font-medium">学习通控制台</div>
-              <div className="text-[11px] text-muted-foreground">Private classroom operations</div>
             </div>
           </div>
 
@@ -57,9 +51,6 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
           </div>
         </div>
 
-        <div className="flex max-w-2xl items-center justify-between gap-4 border-t border-border pt-4 text-[11px] text-muted-foreground">
-          <span>Private classroom operations</span>
-        </div>
       </section>
 
       <section className="flex min-app-viewport items-start justify-center px-5 py-8 pb-[calc(2rem+env(safe-area-inset-bottom))] sm:items-center sm:p-8">
@@ -111,7 +102,7 @@ export function Login({ onLogin }: { onLogin: (session: SessionInfo) => void }) 
                     />
                   </div>
                 </div>
-                <ErrorBanner error={error || bootError} />
+                <ErrorBanner error={error} />
                 <Button className="w-full" type="submit" disabled={busy || !username.trim() || !password}>
                   {busy ? "验证中…" : "登录控制台"}
                 </Button>

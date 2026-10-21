@@ -7,7 +7,10 @@ start_service() {
     procd_open_instance
     procd_set_param command /usr/local/bin/chaoxing serve
     procd_set_param env CHAOXING_CONFIG=/etc/chaoxing/config.json TZ=CST-8 GOMEMLIMIT=48MiB GOGC=50 GOMAXPROCS=2
-    procd_set_param respawn 3600 10 0
+    # 5 restarts per hour, then procd stops respawning and marks the instance
+    # failed. Unlimited respawn turns a startup panic into a multi-hour crash
+    # loop that looks alive in process listings while every tick is lost.
+    procd_set_param respawn 3600 10 5
     procd_set_param term_timeout 20
     procd_set_param stdout 1
     procd_set_param stderr 1
