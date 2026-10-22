@@ -658,6 +658,7 @@ func serve() error {
 		var lastTick, lastPanic time.Time
 		stale := false
 		stateDegraded := false
+		feedDegraded := false
 		now := time.Now().UTC()
 		for _, value := range detailed {
 			m, ok := value.(watch.Metrics)
@@ -677,11 +678,12 @@ func serve() error {
 				stale = true
 			}
 			stateDegraded = stateDegraded || m.StateDegraded
+			feedDegraded = feedDegraded || m.FeedDegraded
 		}
 		return map[string]any{
 			"count": count, "consecutive_panics": consecutive, "last_tick_at": lastTick,
 			"last_panic_at": lastPanic, "ticks": ticks, "active_class_polls": active,
-			"stale": stale, "state_degraded": stateDegraded, "now": now,
+			"stale": stale, "state_degraded": stateDegraded, "feed_degraded": feedDegraded, "now": now,
 		}
 	}
 	upstreamClientForAccount := func(account string) (*upstream.Client, error) {
@@ -833,6 +835,7 @@ func serve() error {
 		stale, _ := health["stale"].(bool)
 		panics, _ := health["consecutive_panics"].(int)
 		stateDegraded, _ := health["state_degraded"].(bool)
+		feedDegraded, _ := health["feed_degraded"].(bool)
 		degraded := sup.Metrics().Degraded
 		control := ui.ControlHealth()
 		auditConsecutive, _ := control["audit_consecutive_write_failures"].(uint64)
@@ -840,7 +843,7 @@ func serve() error {
 		if meter, ok := signAudits.(*signaudit.Metered); ok {
 			signAuditConsecutive, _ = meter.Health()
 		}
-		ok := !stale && panics < 3 && !degraded && !stateDegraded && auditConsecutive < 3 && signAuditConsecutive < 3
+		ok := !stale && panics < 3 && !degraded && !stateDegraded && !feedDegraded && auditConsecutive < 3 && signAuditConsecutive < 3
 		watcherCount, _ := health["count"].(int)
 		ticks, _ := health["ticks"].(int)
 		lastTick, _ := health["last_tick_at"].(time.Time)
@@ -854,7 +857,7 @@ func serve() error {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": ok, "stale": stale, "consecutive_panics": panics, "degraded": degraded,
-			"state_degraded": stateDegraded, "watcher_count": watcherCount, "ticks": ticks,
+			"state_degraded": stateDegraded, "feed_degraded": feedDegraded, "watcher_count": watcherCount, "ticks": ticks,
 			"sign_audit_consecutive_write_failures": signAuditConsecutive,
 			"last_tick_at":                          lastTickText, "audit_write_failures": control["audit_write_failures"],
 			"audit_consecutive_write_failures": auditConsecutive,

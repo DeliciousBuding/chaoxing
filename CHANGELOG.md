@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0-rc.37 — 2026-10-22
+
+- Detect newly pending ordinary assignments using persistent complete-feed
+  baselines, bounded per-class scans and notification retry without submission.
+- Report activity and assignment feed failures independently of watcher ticks;
+  readiness degrades after three consecutive failed scans and recovers on success.
+- Require HTTP 200 and a positive message ID from Gotify; reject redirects,
+  invalid origins and malformed or oversized acknowledgments before marking alerts accepted.
+
 ## 0.5.0-rc.36 — 2026-10-21
 
 - Notify active classroom practice and homework items even when they are not rapid-answer claimable. These items now enter the watcher decision set only while active and unsigned, produce a review notification, and can never fall through to an upstream claim.

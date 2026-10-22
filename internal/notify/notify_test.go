@@ -3,9 +3,11 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +112,44 @@ func TestGotifyRejectsHTTPError(t *testing.T) {
 	defer srv.Close()
 	if err := (Gotify{BaseURL: srv.URL, Token: "synthetic-token", Client: srv.Client()}).Send(context.Background(), Message{}); err == nil {
 		t.Fatal("error accepted")
+	}
+}
+
+func TestGotifyRequiresPositiveMessageID(t *testing.T) {
+	for _, body := range []string{`{}`, `null`, `[]`, `bad json`, `{"id":0}`, `{"id":-1}`, `{"id":true}`, `{"id":"1"}`, `{"id":1.5}`, `{"id":1} trailing`, strings.Repeat(" ", 65537) + `{"id":1}`} {
+		t.Run(fmt.Sprintf("case-%d", len(body)), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) }))
+			defer srv.Close()
+			if err := (Gotify{BaseURL: srv.URL, Token: "synthetic", Client: srv.Client()}).Send(context.Background(), Message{}); err == nil {
+				t.Fatal("invalid acknowledgment accepted")
+			}
+		})
+	}
+}
+
+func TestGotifyRejectsRedirectWithoutLeakingToken(t *testing.T) {
+	forwarded := false
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded = true; io.WriteString(w, `{"id":1}`) }))
+	defer destination.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	client := srv.Client()
+	if err := (Gotify{BaseURL: srv.URL, Token: "synthetic", Client: client}).Send(context.Background(), Message{}); err == nil || forwarded {
+		t.Fatal("redirect followed or accepted")
+	}
+	if client.CheckRedirect != nil {
+		t.Fatal("caller client mutated")
+	}
+}
+
+func TestGotifyRejectsNonOriginURLs(t *testing.T) {
+	withCredentials := url.URL{Scheme: "https", Host: "example.com", User: url.UserPassword("synthetic", "synthetic")}
+	for _, base := range []string{withCredentials.String(), "https://example.com/path", "https://example.com/?query=synthetic", "https://example.com/#fragment", "https://example.com:0", "https://example.com:65536", "https://example.com\n"} {
+		if err := (Gotify{BaseURL: base, Token: "synthetic"}).Send(context.Background(), Message{}); err == nil || err.Error() != "gotify base url is invalid" {
+			t.Fatal("invalid origin not rejected safely")
+		}
 	}
 }
 

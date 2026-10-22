@@ -97,6 +97,10 @@ type ActivitySource interface {
 	ListClassActivities(ctx context.Context, courseID, classID string) ([]upstream.Activity, error)
 }
 
+type AssignmentSource interface {
+	ListClassAssignments(ctx context.Context, courseID, classID string) ([]upstream.Assignment, bool, error)
+}
+
 // GroupActivitySource is optional. It exposes course-group message cards
 // without teaching the watcher any IM protocol details.
 type GroupActivitySource interface {
@@ -139,23 +143,26 @@ type pendingAlert struct {
 }
 
 type stateFile struct {
-	Version int                     `json:"version"`
-	Entries map[string]entry        `json:"entries"`
-	Alerts  map[string]pendingAlert `json:"alerts,omitempty"`
+	Version     int                            `json:"version"`
+	Entries     map[string]entry               `json:"entries"`
+	Alerts      map[string]pendingAlert        `json:"alerts,omitempty"`
+	Assignments map[string]*assignmentBaseline `json:"assignments,omitempty"`
 }
 
 // Metrics is safe to expose from the public health endpoint: it contains only
 // timing and counters, never course identities or upstream response bodies.
 type Metrics struct {
-	StartedAt         time.Time `json:"started_at"`
-	LastTickStartedAt time.Time `json:"last_tick_started_at,omitempty"`
-	LastTickAt        time.Time `json:"last_tick_at"`
-	LastPanicAt       time.Time `json:"last_panic_at,omitempty"`
-	ConsecutivePanics int       `json:"consecutive_panics"`
-	LastPanicKind     string    `json:"last_panic_kind,omitempty"`
-	Ticks             uint64    `json:"ticks"`
-	ActiveClassPolls  uint64    `json:"active_class_polls"`
-	StateDegraded     bool      `json:"state_degraded,omitempty"`
+	StartedAt         time.Time              `json:"started_at"`
+	LastTickStartedAt time.Time              `json:"last_tick_started_at,omitempty"`
+	LastTickAt        time.Time              `json:"last_tick_at"`
+	LastPanicAt       time.Time              `json:"last_panic_at,omitempty"`
+	ConsecutivePanics int                    `json:"consecutive_panics"`
+	LastPanicKind     string                 `json:"last_panic_kind,omitempty"`
+	Ticks             uint64                 `json:"ticks"`
+	ActiveClassPolls  uint64                 `json:"active_class_polls"`
+	StateDegraded     bool                   `json:"state_degraded,omitempty"`
+	FeedDegraded      bool                   `json:"feed_degraded,omitempty"`
+	Feeds             map[string]FeedMetrics `json:"feeds,omitempty"`
 }
 
 type Runner struct {
@@ -180,6 +187,9 @@ type Runner struct {
 	activePolls      atomic.Uint64
 	tickMu           sync.Mutex
 	runStarted       atomic.Bool
+	assignments      map[string]*assignmentBaseline
+	lastAssignments  map[string]time.Time
+	feeds            map[string]FeedMetrics
 }
 
 var shanghai = time.FixedZone("CST", 8*60*60)
@@ -303,6 +313,7 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 		alertSender: notify.Retry{Sender: sender, Attempts: 3, Delay: 2 * time.Second},
 		answerer:    answerSource,
 		state:       map[string]entry{}, alerts: map[string]pendingAlert{},
+		assignments: map[string]*assignmentBaseline{}, lastAssignments: map[string]time.Time{}, feeds: map[string]FeedMetrics{},
 		panicAlerts: make(chan notify.Message, 8),
 		now:         time.Now, random: rand.Float64, wait: waitContext,
 		metrics: Metrics{StartedAt: time.Now().UTC()},
@@ -542,6 +553,18 @@ func (r *Runner) Metrics() Metrics {
 	r.metricsMu.RLock()
 	defer r.metricsMu.RUnlock()
 	out := r.metrics
+	out.Feeds = map[string]FeedMetrics{}
+	for key, feed := range r.feeds {
+		source := strings.SplitN(key, ":", 2)[0]
+		v := out.Feeds[source]
+		v.Attempts += feed.Attempts
+		v.Failures += feed.Failures
+		v.ConsecutiveFailures = max(v.ConsecutiveFailures, feed.ConsecutiveFailures)
+		v.LastAttemptAt = maxTime(v.LastAttemptAt, feed.LastAttemptAt)
+		v.LastSuccessAt = maxTime(v.LastSuccessAt, feed.LastSuccessAt)
+		out.Feeds[source] = v
+		out.FeedDegraded = out.FeedDegraded || feed.ConsecutiveFailures >= 3
+	}
 	out.Ticks = r.ticks.Load()
 	out.ActiveClassPolls = r.activePolls.Load()
 	return out
@@ -795,6 +818,7 @@ func (r *Runner) Tick(ctx context.Context) {
 	if !inWindow(now, r.cfg.Window) {
 		return
 	}
+	r.resetInactiveFeedFailures(now)
 	active := map[string]upstream.Activity{}
 	classes := map[string]Class{}
 	byCourseClass := map[string]Class{}
@@ -813,6 +837,7 @@ func (r *Runner) Tick(ctx context.Context) {
 		polledClasses++
 		r.activePolls.Add(1)
 		items, err := r.source.ListClassActivities(pollCtx, class.CourseID, class.ClassID)
+		r.recordFeed("activities:"+class.CourseID+":"+class.ClassID, now, err == nil)
 		if err != nil {
 			log.Printf("activity watch: class %s: %s", class.ClassID, upstream.SafeFault(err).Code)
 			continue
@@ -861,6 +886,9 @@ func (r *Runner) Tick(ctx context.Context) {
 			cancelGroup()
 		}
 	}
+	// Ordinary assignments run after all time-critical participation decisions.
+	// One due class per tick bounds work even outside classroom windows.
+	changed = r.pollAssignments(ctx, now) || changed
 	// Page evidence is best-effort and deliberately runs after every sign-in
 	// decision, including the group fallback. A slow or oversized H5 page must
 	// not delay a sign-in that the group feed discovered.
@@ -878,6 +906,9 @@ func (r *Runner) Tick(ctx context.Context) {
 	if changed {
 		if err := r.save(); err != nil {
 			log.Printf("activity watch: state write failed: %v", err)
+			r.metricsMu.Lock()
+			r.metrics.StateDegraded = true
+			r.metricsMu.Unlock()
 		}
 	}
 }
@@ -1730,6 +1761,10 @@ func (r *Runner) load() error {
 		}
 	}
 	r.state = s.Entries
+	r.assignments = s.Assignments
+	if r.assignments == nil {
+		r.assignments = map[string]*assignmentBaseline{}
+	}
 	r.alerts = s.Alerts
 	if r.alerts == nil {
 		r.alerts = map[string]pendingAlert{}
@@ -1744,6 +1779,7 @@ func (r *Runner) recoverState(cause error) error {
 	}
 	log.Printf("activity watch: state set aside at %s: %v", backup, cause)
 	r.state = map[string]entry{}
+	r.assignments = map[string]*assignmentBaseline{}
 	r.metrics.StateDegraded = true
 	return nil
 }
@@ -1768,7 +1804,7 @@ func (r *Runner) save() error {
 	if len(alerts) == 0 {
 		alerts = nil
 	}
-	b, err := json.Marshal(stateFile{Version: 2, Entries: entries, Alerts: alerts})
+	b, err := json.Marshal(stateFile{Version: 2, Entries: entries, Alerts: alerts, Assignments: r.assignments})
 	if err != nil {
 		return err
 	}
@@ -1778,7 +1814,7 @@ func (r *Runner) save() error {
 		// limit would quarantine the whole file on the next restart and lose
 		// sign-in suppression for every activity.
 		r.alerts = map[string]pendingAlert{}
-		b, err = json.Marshal(stateFile{Version: 2, Entries: entries})
+		b, err = json.Marshal(stateFile{Version: 2, Entries: entries, Assignments: r.assignments})
 		if err != nil {
 			return err
 		}

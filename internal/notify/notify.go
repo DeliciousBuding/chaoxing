@@ -178,8 +178,14 @@ type Gotify struct {
 
 func (g Gotify) Send(ctx context.Context, m Message) error {
 	base, err := url.Parse(strings.TrimSpace(g.BaseURL))
-	if err != nil || base.Scheme != "https" && base.Scheme != "http" || base.Host == "" {
+	if err != nil || base.Scheme != "https" && base.Scheme != "http" || base.Hostname() == "" || base.User != nil || base.RawQuery != "" || base.ForceQuery || base.Fragment != "" || base.RawPath != "" || base.Path != "" && base.Path != "/" || strings.ContainsAny(g.BaseURL, "\r\n\t") {
 		return errors.New("gotify base url is invalid")
+	}
+	if port := base.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return errors.New("gotify base url is invalid")
+		}
 	}
 	if strings.TrimSpace(g.Token) == "" {
 		return errors.New("gotify token is not configured")
@@ -201,24 +207,30 @@ func (g Gotify) Send(ctx context.Context, m Message) error {
 		return errors.New("gotify transport failed")
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("gotify returned HTTP %d", resp.StatusCode)
 	}
-	var ack struct {
-		ID *int `json:"id"`
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 65537))
+	if err != nil || len(body) > 65536 {
+		return errors.New("gotify response is invalid")
 	}
-	if json.Unmarshal(body, &ack) == nil && ack.ID != nil && *ack.ID <= 0 {
-		return fmt.Errorf("gotify rejected message")
+	var ack struct {
+		ID int64 `json:"id"`
+	}
+	if json.Unmarshal(body, &ack) != nil || ack.ID <= 0 {
+		return errors.New("gotify response has no positive message id")
 	}
 	return nil
 }
 
 func (g Gotify) client() *http.Client {
+	client := sharedClient(30 * time.Second)
 	if g.Client != nil {
-		return g.Client
+		copy := *g.Client
+		client = &copy
 	}
-	return sharedClient(30 * time.Second)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return client
 }
 
 func (n Ntfy) Send(ctx context.Context, m Message) error {

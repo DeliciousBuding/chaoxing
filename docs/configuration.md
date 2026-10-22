@@ -1,5 +1,27 @@
 # Configuration and tunnel setup
 
+## Assignment notifications
+
+When the optional watcher is enabled, ordinary assignments are scanned for its
+configured classes as well as time-sensitive classroom activities. One due
+class is scanned after participation decisions per tick, with at least five
+minutes between scans of the same class. Outside class windows the existing
+five-minute tick means a multi-class sweep may take several ticks. The global
+watcher window still applies.
+
+The first complete scan of each class establishes a persistent baseline without
+announcing historical assignments. New verified pending assignments are combined
+into one reminder per class; closed/not-open work is silent and unknown work is
+not called pending. Partial or failed scans never replace the baseline. Failed
+notifications remain eligible for the next complete scan; accepted reminders are
+remembered across restart. This never generates, saves or submits answers.
+
+Private `/status` watcher metrics include aggregated activity/assignment feed
+attempts, failures and last-success timestamps. Three consecutive failed scans
+degrade `/readyz`, independently of loop completion; a successful scan recovers
+the corresponding feed. Inactive classroom windows clear their transient failure
+streak, while ordinary assignment monitoring remains active within the global window.
+
 Build the single binary with the Go version in `go.mod`. `CHAOXING_CONFIG` selects the private config file; its default is `/etc/chaoxing/config.json`. `configure` refuses to replace an existing configuration implicitly.
 
 ## Initialize private state

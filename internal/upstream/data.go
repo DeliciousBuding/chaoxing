@@ -394,6 +394,26 @@ func academicCoverageDetails(details []AcademicCoverage) map[string]any {
 	return map[string]any{"classes": details, "sources_checked": checked, "sources_failed": failed}
 }
 
+// ListClassAssignments shares the bounded course scan used by list_assignments.
+func (c *Client) ListClassAssignments(ctx context.Context, courseID, classID string) ([]Assignment, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	if err := c.lock(ctx); err != nil {
+		return nil, false, err
+	}
+	defer c.queries.Release()
+	courses, err := c.fetchCourses(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, co := range courses {
+		if co.ID == courseID && co.ClassID == classID {
+			return c.scanCourse(ctx, co)
+		}
+	}
+	return nil, false, fault("NOT_FOUND", "no enrolled course matches assignment scan")
+}
+
 func (c *Client) scanCourse(ctx context.Context, co Course) ([]Assignment, bool, error) {
 	if e := ctx.Err(); e != nil {
 		return []Assignment{}, false, e
