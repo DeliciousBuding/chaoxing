@@ -179,6 +179,7 @@ const errorMessages: Record<string, string> = {
   UPSTREAM_HTTP: "学习通拒绝了本次请求",
   RESPONSE_TOO_LARGE: "返回数据过大，请缩小读取范围",
   STATE_WRITE_FAILED: "本地状态写入失败，请检查存储",
+  TEMPORARILY_UNAVAILABLE: "管理服务正忙，请稍后重试",
   UNSUPPORTED: "该功能暂不支持",
   INVALID_ARGUMENT: "参数不完整或格式不正确",
   INVALID_TOOL: "工具名称无效",

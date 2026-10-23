@@ -78,7 +78,7 @@ export function Audit() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="控制面审计"
+        title="审计"
         meta={<span>保留 180 天</span>}
         actions={
         <form className="flex flex-wrap items-end gap-2" onSubmit={applyFilters}>

@@ -3,15 +3,17 @@ import { persist } from "zustand/middleware";
 import type { AccountInfo, SessionInfo, ToolDefinition } from "./api";
 import { isPageId, type PageId } from "./layout";
 
-export const themes = ["nova-dark", "nova-light", "midnight", "contrast"] as const;
+export const themes = ["nova-dark", "nova-light"] as const;
 export type Theme = (typeof themes)[number];
 
 export const themeLabels: Record<Theme, string> = {
   "nova-dark": "深色",
-  "nova-light": "浅色",
-  midnight: "石墨",
-  contrast: "高对比"
+  "nova-light": "浅色"
 };
+
+function normalizeTheme(value: unknown): Theme {
+  return value === "nova-light" ? "nova-light" : "nova-dark";
+}
 
 export function pageFromURL(): PageId | null {
   if (typeof window === "undefined") return null;
@@ -69,7 +71,16 @@ export const useUIStore = create<UIState>()(
     {
       name: "chaoxing-ui-preferences",
       version: 1,
-      partialize: (state) => ({ page: state.page, theme: state.theme })
+      partialize: (state) => ({ page: state.page, theme: state.theme }),
+      merge: (persisted, current) => {
+        const saved = persisted as Partial<UIState> | undefined;
+        return {
+          ...current,
+          ...saved,
+          page: isPageId(saved?.page) ? saved.page : current.page,
+          theme: normalizeTheme(saved?.theme)
+        };
+      }
     }
   )
 );

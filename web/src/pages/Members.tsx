@@ -205,7 +205,7 @@ export function Members({ session }: { session: SessionInfo }) {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="平台成员"
+        title="成员"
         meta={!actorRole ? <Badge variant="warning">权限未加载</Badge> : undefined}
         actions={
           <>

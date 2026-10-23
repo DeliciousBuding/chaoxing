@@ -276,7 +276,7 @@ export function Activities({ tools }: { tools: any[] }) {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="课堂活动"
+        title="课堂"
         actions={<Button size="sm" variant="outline" onClick={() => selectedCourse ? void load(selectedCourse) : void loadCatalog()} disabled={busy || catalogBusy}>刷新活动</Button>}
       />
       <ErrorBanner error={error} />

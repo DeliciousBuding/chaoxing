@@ -15,7 +15,3 @@ export function useMediaQuery(query: string) {
     () => false
   );
 }
-
-export function useReducedMotion() {
-  return useMediaQuery("(prefers-reduced-motion: reduce)");
-}

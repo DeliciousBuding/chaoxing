@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0-rc.39 — 2026-10-23
+
+- Remove the Motion and resizable-panel runtime from the management console. Route content and request errors are now always visible without an animated opacity/transform gate, and the desktop shell uses a fixed 224px sidebar.
+- Reduce the information architecture to three navigation groups and at most nine visible entries. Keep lower-frequency answer-work and notice pages reachable from Todo and Schedule instead of mixing them into primary navigation.
+- Simplify the dashboard to today’s classes plus polling/signing health. Drop the decorative profile request and duplicate course card grid, reducing the initial page from six requests to four and from two heavy upstream calls to one.
+- Reduce themes to dark and light, consolidate account policy rendering to one responsive list, and remove the orphaned avatar/separator components. The production asset set drops by about 77 KiB before gzip.
+
 ## 0.5.0-rc.38 — 2026-10-23
 
 - Log every active class poll with exact start/completion times, duration,

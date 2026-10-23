@@ -1,5 +1,5 @@
 import * as React from "react";
-import { CalendarDays, FileText, Folder, LibraryBig } from "lucide-react";
+import { ArrowUpRight, CalendarDays, FileText, Folder, LibraryBig } from "lucide-react";
 import { api } from "../lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -11,6 +11,7 @@ import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader, s
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { labelFor } from "../lib/labels";
 import { teachingWeek } from "../lib/teaching-week";
+import { useUIStore } from "../lib/store";
 
 const lessonDays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
@@ -44,6 +45,7 @@ function sortedLessons(rows: any[]) {
 }
 
 export function StudyResources() {
+  const setPage = useUIStore((state) => state.setPage);
   const [courses, setCourses] = React.useState<any[]>([]);
   const [courseKey, setCourseKey] = React.useState("");
   const [week, setWeek] = React.useState("1");
@@ -135,7 +137,15 @@ export function StudyResources() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="课表与资料" />
+      <PageHeader
+        title="课表"
+        actions={
+          <Button size="sm" variant="ghost" onClick={() => setPage("notices")}>
+            通知
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </Button>
+        }
+      />
       <ErrorBanner error={error} />
       <Card>
         <CardHeader>

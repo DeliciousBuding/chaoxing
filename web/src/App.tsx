@@ -94,9 +94,7 @@ export default function App() {
     root.style.colorScheme = theme === "nova-light" ? "light" : "dark";
     const themeColors: Record<typeof theme, string> = {
       "nova-dark": "#08090a",
-      "nova-light": "#fcfcfc",
-      midnight: "#0a0b0d",
-      contrast: "#000000"
+      "nova-light": "#fcfcfc"
     };
     let themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
     if (!themeColor) {
@@ -226,7 +224,7 @@ export default function App() {
                 ) : hasNoAccountScope && effectivePage !== "settings" ? (
                   <EmptyState
                     title="尚未授权学习通账号"
-                    description="管理员需要在“成员与权限”中为当前成员分配至少一个上游账号；在此之前，业务数据和工具调用不会发起。"
+                    description="管理员需要在“成员”中为当前成员分配至少一个上游账号；在此之前，业务数据和工具调用不会发起。"
                   />
                 ) : (
                   <React.Suspense fallback={<PageSkeleton />}>

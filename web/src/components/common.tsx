@@ -1,5 +1,4 @@
 import * as React from "react";
-import { div as MotionDiv } from "motion/react-m";
 import { AlertTriangle, CheckCircle2, Database, Inbox, Loader2 } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Card, CardContent, CardHeader } from "./ui/card";
@@ -7,27 +6,19 @@ import { Button } from "./ui/button";
 import { Skeleton } from "./ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
 import { cn } from "../lib/utils";
-import { useReducedMotion } from "../lib/hooks";
 import { formatBeijing } from "../lib/time";
 
 export function ErrorBanner({ error }: { error: unknown }) {
-  const reduced = useReducedMotion();
   if (!error) return null;
   const message = error instanceof Error ? error.message : String(error);
   return (
-    <MotionDiv
-      initial={reduced ? false : { opacity: 0, y: -6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.16 }}
-    >
-      <Alert variant="destructive">
-        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-        <div className="min-w-0">
-          <AlertTitle>请求失败</AlertTitle>
-          <AlertDescription className="break-all">{message}</AlertDescription>
-        </div>
-      </Alert>
-    </MotionDiv>
+    <Alert variant="destructive">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <div className="min-w-0">
+        <AlertTitle>请求失败</AlertTitle>
+        <AlertDescription className="break-all">{message}</AlertDescription>
+      </div>
+    </Alert>
   );
 }
 

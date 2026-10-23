@@ -5,8 +5,8 @@ import { Badge } from "../components/ui/badge";
 import { ErrorBanner, JsonBlock, Loading, PageHeader } from "../components/common";
 import { formatBeijing } from "../lib/time";
 import { roleLabels } from "../lib/roles";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { ThemeSelect } from "../components/app-shell";
+import { Select } from "../components/ui/select";
+import { themes, themeLabels, useUIStore, type Theme } from "../lib/store";
 
 export function Settings({ account, session }: { account: AccountInfo | null; session: SessionInfo }) {
   const [status, setStatus] = React.useState<any>(null);
@@ -14,6 +14,8 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
   const [accountConfigs, setAccountConfigs] = React.useState<AdminAccount[]>([]);
   const [configError, setConfigError] = React.useState("");
   const [configLoading, setConfigLoading] = React.useState(false);
+  const theme = useUIStore((state) => state.theme);
+  const setTheme = useUIStore((state) => state.setTheme);
   React.useEffect(() => {
     api.status().then(setStatus).catch((err) => setStatusError(err instanceof Error ? err.message : String(err)));
   }, []);
@@ -44,7 +46,7 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
   return (
     <div className="space-y-5">
       <PageHeader
-        title="安全与配置"
+        title="设置"
       />
       <Card>
         <CardHeader><CardTitle>当前会话</CardTitle></CardHeader>
@@ -71,7 +73,18 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
             </div>
             <div>
               <p className="text-xs text-muted-foreground">外观</p>
-              <div className="mt-2"><ThemeSelect compact={false} /></div>
+              <div className="mt-2">
+                <Select
+                  aria-label="主题"
+                  className="h-8 w-full text-[11px]"
+                  value={theme}
+                  onChange={(event) => setTheme(event.target.value as Theme)}
+                >
+                  {themes.map((item) => (
+                    <option key={item} value={item}>{themeLabels[item]}</option>
+                  ))}
+                </Select>
+              </div>
             </div>
           </div>
         </CardContent>
@@ -90,8 +103,7 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
             ) : accountConfigs.length === 0 ? (
               <div className="text-sm text-muted-foreground">暂无账号策略摘要。</div>
             ) : (
-              <>
-              <div className="space-y-2 lg:hidden">
+              <div className="grid gap-2 md:grid-cols-2">
                 {accountConfigs.map((item) => (
                   <article key={item.id} className="rounded-control border border-border bg-card p-3">
                     <div className="flex items-start justify-between gap-3">
@@ -117,39 +129,6 @@ export function Settings({ account, session }: { account: AccountInfo | null; se
                   </article>
                 ))}
               </div>
-              <div className="hidden lg:block">
-              <Table label="账号运行策略" className="min-w-[820px]">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>账号</TableHead>
-                      <TableHead>监听器</TableHead>
-                      <TableHead>自动签到</TableHead>
-                      <TableHead>自动答题</TableHead>
-                      <TableHead>课堂仅通知</TableHead>
-                      <TableHead>位置</TableHead>
-                      <TableHead>课程</TableHead>
-                      <TableHead>显式成员</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {accountConfigs.map((item) => (
-                      <TableRow key={item.id}>
-                        <TableCell>
-                          <div className="text-sm">{item.name}</div>
-                        </TableCell>
-                        <TableCell><Badge variant={item.watch_enabled ? "success" : "secondary"}>{item.watch_enabled ? "启用" : "关闭"}</Badge></TableCell>
-                        <TableCell><Badge variant={item.auto_sign ? "success" : "secondary"}>{item.auto_sign ? "启用" : "关闭"}</Badge></TableCell>
-                        <TableCell><Badge variant={item.auto_answer ? "success" : "secondary"}>{item.auto_answer ? "启用" : "关闭"}</Badge></TableCell>
-                        <TableCell><Badge variant={item.notify_only ? "success" : "warning"}>{item.notify_only ? "是" : "否"}</Badge></TableCell>
-                        <TableCell>{item.location_enabled ? "已配置" : "未启用"}</TableCell>
-                        <TableCell>{item.classes}</TableCell>
-                        <TableCell>{item.explicit_members}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-              </Table>
-              </div>
-              </>
             )}
           </CardContent>
         </Card>

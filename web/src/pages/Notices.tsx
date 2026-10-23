@@ -30,7 +30,7 @@ export function Notices() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="课程通知"
+        title="通知"
         actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新</Button>}
       />
       <ErrorBanner error={error} />

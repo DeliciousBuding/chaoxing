@@ -1,14 +1,11 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence } from "motion/react";
-import { div as MotionDiv, span as MotionSpan } from "motion/react-m";
 import {
   ChevronRight,
   MoreHorizontal,
   X
 } from "lucide-react";
 import { canAccessPage, pageGroups, pages, visiblePages, type PageId } from "../lib/layout";
-import { useReducedMotion } from "../lib/hooks";
 import { useUIStore } from "../lib/store";
 import { cn } from "../lib/utils";
 import type { SessionInfo } from "../lib/api";
@@ -28,7 +25,6 @@ const focusableSelector = [
 export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["capabilities"] }) {
   const page = useUIStore((state) => state.page);
   const setPage = useUIStore((state) => state.setPage);
-  const reducedMotion = useReducedMotion();
   const [open, setOpen] = React.useState(false);
   const moreButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const sheetRef = React.useRef<HTMLDivElement | null>(null);
@@ -118,11 +114,7 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
                 )}
               >
                 {active && (
-                  <MotionSpan
-                    layoutId={reducedMotion ? undefined : "mobile-nav-active"}
-                    transition={reducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 38 }}
-                    className="absolute inset-x-2 inset-y-1.5 rounded-control bg-accent"
-                  />
+                  <span className="absolute inset-x-2 inset-y-1.5 rounded-control bg-accent" />
                 )}
                 <span className="relative flex min-w-0 flex-col items-center gap-1">
                   <Icon className="h-[18px] w-[18px]" />
@@ -143,11 +135,7 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
             )}
           >
             {!pageIsPrimary && (
-              <MotionSpan
-                layoutId={reducedMotion ? undefined : "mobile-nav-active"}
-                transition={reducedMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 38 }}
-                className="absolute inset-x-2 inset-y-1.5 rounded-control bg-accent"
-              />
+              <span className="absolute inset-x-2 inset-y-1.5 rounded-control bg-accent" />
             )}
             <span className="relative flex min-w-0 flex-col items-center gap-1">
               <MoreHorizontal className="h-[18px] w-[18px]" />
@@ -157,22 +145,18 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
         </div>
       </nav>
 
-      {typeof document !== "undefined" && createPortal(
-        <AnimatePresence>
+      {typeof document !== "undefined" && open && createPortal(
+        <>
           {open && (
-            <MotionDiv
+            <div
               key="mobile-sheet-overlay"
-              initial={reducedMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={reducedMotion ? undefined : { opacity: 0 }}
-              transition={{ duration: 0.16 }}
               className="fixed inset-0 z-40 bg-black/55 lg:hidden"
               onClick={() => setOpen(false)}
               aria-hidden="true"
             />
           )}
           {open && (
-            <MotionDiv
+            <div
               key="mobile-sheet"
               id="mobile-page-sheet"
               ref={sheetRef}
@@ -180,10 +164,6 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
               aria-modal="true"
               aria-labelledby="mobile-page-sheet-title"
               tabIndex={-1}
-              initial={reducedMotion ? false : { y: "104%" }}
-              animate={{ y: 0 }}
-              exit={reducedMotion ? undefined : { y: "104%" }}
-              transition={reducedMotion ? { duration: 0 } : { duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
               className="fixed inset-x-0 bottom-0 z-50 max-h-[82dvh] overflow-hidden rounded-t-panel border-t border-border bg-card pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] lg:hidden"
               onClick={(event) => event.stopPropagation()}
             >
@@ -249,9 +229,9 @@ export function MobileBottomNav({ capabilities }: { capabilities?: SessionInfo["
                   );
                 })}
               </div>
-            </MotionDiv>
+            </div>
           )}
-        </AnimatePresence>,
+        </>,
         document.body
       )}
     </>

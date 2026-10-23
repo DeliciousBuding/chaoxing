@@ -1,4 +1,5 @@
 import * as React from "react";
+import { ArrowUpRight } from "lucide-react";
 import { api } from "../lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -6,8 +7,11 @@ import { Badge } from "../components/ui/badge";
 import { EmptyState, ErrorBanner, JsonBlock, Loading, MetaSummary, PageHeader } from "../components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { labelFor } from "../lib/labels";
+import { useUIStore } from "../lib/store";
 
 export function Assignments() {
+  const session = useUIStore((state) => state.session);
+  const setPage = useUIStore((state) => state.setPage);
   const [actionItems, setActionItems] = React.useState<any>(null);
   const [assignments, setAssignments] = React.useState<any>(null);
   const [detail, setDetail] = React.useState<any>(null);
@@ -99,7 +103,17 @@ export function Assignments() {
             {!loaded ? "读取中" : error ? "读取失败" : actions.length > 0 ? "有待处理" : "暂无待办"}
           </Badge>
         }
-        actions={<Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新待办</Button>}
+        actions={
+          <>
+            {session?.capabilities?.tool_scopes?.includes("chaoxing.work") && (
+              <Button size="sm" variant="ghost" onClick={() => setPage("work")}>
+                作业答题
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            <Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>刷新待办</Button>
+          </>
+        }
       />
       <ErrorBanner error={error} />
 

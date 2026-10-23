@@ -362,7 +362,7 @@ export function Locations() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="位置预设"
+        title="位置"
         actions={<Button size="sm" variant="outline" onClick={() => void reload()} disabled={busy}>刷新</Button>}
       />
       <ErrorBanner error={error} />

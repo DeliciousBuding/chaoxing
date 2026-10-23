@@ -1,38 +1,21 @@
 import * as React from "react";
 import {
-  Activity,
   ArrowUpRight,
   CalendarDays,
   CheckCircle2,
   CircleAlert,
   Clock3,
-  Globe2,
-  HeartPulse,
   MapPin,
-  RefreshCw,
-  ServerCog,
-  Wifi
+  RefreshCw
 } from "lucide-react";
-import {
-  api,
-  type AdminAccount,
-  type Course,
-  type Profile,
-  type SignAudit,
-  type WatchSchedule
-} from "../lib/api";
-import { Avatar } from "../components/avatar";
-import { CourseCard } from "../components/course-card";
+import { api, type Course, type SignAudit, type WatchSchedule } from "../lib/api";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { ErrorBanner, PageHeader } from "../components/common";
 import { useUIStore } from "../lib/store";
-import { roleLabels } from "../lib/roles";
 import { teachingWeek, weekLabel, weekMatches } from "../lib/teaching-week";
 import { formatBeijing } from "../lib/time";
 import { cn } from "../lib/utils";
-
-type Tone = "ok" | "warn" | "danger" | "muted";
 
 const dayCodes = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const dayLabels: Record<string, string> = {
@@ -45,25 +28,11 @@ const dayLabels: Record<string, string> = {
   Sat: "周六"
 };
 
-function toneClass(tone: Tone) {
-  switch (tone) {
-    case "ok":
-      return "text-success";
-    case "warn":
-      return "text-warning";
-    case "danger":
-      return "text-destructive";
-    default:
-      return "text-muted-foreground";
-  }
-}
-
 function beijingClock(value: Date) {
   const shifted = new Date(value.getTime() + 8 * 60 * 60 * 1000);
-  const minutes = shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
   return {
     day: dayCodes[shifted.getUTCDay()],
-    minutes,
+    minutes: shifted.getUTCHours() * 60 + shifted.getUTCMinutes(),
     time: `${String(shifted.getUTCHours()).padStart(2, "0")}:${String(shifted.getUTCMinutes()).padStart(2, "0")}`,
     date: new Intl.DateTimeFormat("zh-CN", {
       timeZone: "Asia/Shanghai",
@@ -110,10 +79,14 @@ function auditVariant(item: SignAudit) {
   return "warning" as const;
 }
 
-function statusText(item: SignAudit) {
+function auditText(item: SignAudit) {
   if (item.verified) return "已确认";
   if (item.state === "failed") return "失败";
   return item.code || "待确认";
+}
+
+function errorMessage(value: unknown) {
+  return value instanceof Error ? value.message : String(value);
 }
 
 export function Dashboard() {
@@ -121,8 +94,6 @@ export function Dashboard() {
   const account = useUIStore((state) => state.account);
   const setPage = useUIStore((state) => state.setPage);
   const [status, setStatus] = React.useState<any>(null);
-  const [profile, setProfile] = React.useState<Profile | null>(null);
-  const [accountPolicy, setAccountPolicy] = React.useState<AdminAccount | null>(null);
   const [courses, setCourses] = React.useState<Course[]>([]);
   const [coursesMeta, setCoursesMeta] = React.useState<any>(null);
   const [schedules, setSchedules] = React.useState<WatchSchedule[]>([]);
@@ -134,7 +105,6 @@ export function Dashboard() {
   const [auditsError, setAuditsError] = React.useState("");
   const requestEpoch = React.useRef(0);
   const canReadAudits = Boolean(session?.capabilities?.sensitive_read);
-  const canManageAccounts = Boolean(session?.capabilities?.manage_accounts);
   const accountID = account?.current ?? session?.account ?? "";
 
   const load = React.useCallback(async () => {
@@ -143,21 +113,18 @@ export function Dashboard() {
     setError("");
     setAuditsLoading(canReadAudits);
     setAuditsError("");
-    const [statusResult, profileResult, coursesResult, schedulesResult, policyResult, auditsResult] =
-      await Promise.allSettled([
-        api.status(),
-        api.profile(),
-        api.call("list_courses"),
-        api.watchSchedules(),
-        canManageAccounts ? api.adminAccounts() : Promise.resolve(null),
-        canReadAudits ? api.signAudits(12) : Promise.resolve(null)
-      ]);
+    const [statusResult, coursesResult, schedulesResult, auditsResult] = await Promise.allSettled([
+      api.status(),
+      api.call("list_courses"),
+      api.watchSchedules(),
+      canReadAudits ? api.signAudits(6) : Promise.resolve(null)
+    ]);
     if (epoch !== requestEpoch.current) return;
+
     const failures: string[] = [];
     if (statusResult.status === "fulfilled") setStatus(statusResult.value);
     else failures.push(`运行状态：${errorMessage(statusResult.reason)}`);
-    if (profileResult.status === "fulfilled") setProfile(profileResult.value);
-    else setProfile(null);
+
     if (coursesResult.status === "fulfilled") {
       setCourses((coursesResult.value.data.result as Course[] | undefined) ?? []);
       setCoursesMeta(coursesResult.value.data.meta ?? null);
@@ -166,41 +133,35 @@ export function Dashboard() {
       setCoursesMeta(null);
       failures.push(`课程目录：${errorMessage(coursesResult.reason)}`);
     }
+
     if (schedulesResult.status === "fulfilled") {
       setSchedules(schedulesResult.value.items ?? []);
       setTermStart(schedulesResult.value.term_start ?? "");
     } else {
       setSchedules([]);
       setTermStart("");
+      failures.push(`课表：${errorMessage(schedulesResult.reason)}`);
     }
-    if (policyResult.status === "fulfilled" && policyResult.value) {
-      setAccountPolicy(
-        policyResult.value.items.find((item) => item.id === accountID) ?? null
-      );
-    } else {
-      setAccountPolicy(null);
-    }
-    if (canReadAudits) {
-      if (auditsResult.status === "fulfilled" && auditsResult.value) {
-        setSignAudits(auditsResult.value.items ?? []);
-      } else {
-        setSignAudits([]);
-        if (auditsResult.status === "rejected") setAuditsError(errorMessage(auditsResult.reason));
-      }
+
+    if (!canReadAudits) {
+      setSignAudits([]);
+    } else if (auditsResult.status === "fulfilled" && auditsResult.value) {
+      setSignAudits(auditsResult.value.items ?? []);
     } else {
       setSignAudits([]);
+      if (auditsResult.status === "rejected") setAuditsError(errorMessage(auditsResult.reason));
     }
+
     setError(failures.join("；"));
     setAuditsLoading(false);
     setBusy(false);
-  }, [accountID, canManageAccounts, canReadAudits]);
+  }, [accountID, canReadAudits]);
 
   React.useEffect(() => {
     void load();
   }, [load]);
 
   const runtime = status?.runtime ?? {};
-  const egress: any[] = runtime.egress ?? [];
   const serverNow = runtime.now ? new Date(runtime.now) : new Date();
   const clock = beijingClock(Number.isNaN(serverNow.getTime()) ? new Date() : serverNow);
   const currentWeek = teachingWeek(Number.isNaN(serverNow.getTime()) ? new Date() : serverNow, termStart);
@@ -219,14 +180,8 @@ export function Dashboard() {
   const watcherPanics = watcherRows.reduce((sum, item) => sum + (Number(item.consecutive_panics) || 0), 0);
   const watchersStale = watcherRows.some((item) => isStale(item));
   const process: Record<string, any> = runtime.process ?? {};
-  const processCrashes = Number(process.consecutive_crashes) || 0;
-  const processDegraded = Boolean(process.degraded);
-  const coolingEgress = egress.filter((item) => item.cooldown).length;
+  const processDegraded = Boolean(process.degraded) || Number(process.consecutive_crashes) > 0;
   const upstreamHealthy = coursesMeta?.status === "complete";
-  const statusPending = busy && !status;
-  const accountName = account?.accounts.find((item) => item.id === accountID)?.name ?? accountID;
-  const displayName = profile?.display_name || accountName || session?.user?.display_name || "当前账号";
-  const roleLabel = session?.user?.role ? roleLabels[session.user.role] : "成员";
   const courseLookup = React.useMemo(
     () => new Map(courses.map((course) => [courseKey(course.course_id, course.class_id), course])),
     [courses]
@@ -239,7 +194,13 @@ export function Dashboard() {
         const course = courseLookup.get(courseKey(row.course_id, row.class_id));
         const start = minuteOfDay(row.start);
         const end = minuteOfDay(row.end);
-        const state = start === null || end === null ? "unknown" : clock.minutes >= start && clock.minutes < end ? "active" : clock.minutes >= end ? "done" : "upcoming";
+        const state = start === null || end === null
+          ? "unknown"
+          : clock.minutes >= start && clock.minutes < end
+            ? "active"
+            : clock.minutes >= end
+              ? "done"
+              : "upcoming";
         return { ...row, course, state };
       })
       .filter((row) => {
@@ -253,56 +214,19 @@ export function Dashboard() {
   const activeSchedule = todaySchedules.find((row) => row.state === "active");
   const nextSchedule = activeSchedule ?? todaySchedules.find((row) => row.state === "upcoming");
   const recentSigns = signAudits.slice(0, 3);
-  const dashboardCourses = React.useMemo(
-    () =>
-      [...courses]
-        .sort((a, b) => Number(Boolean(a.retired)) - Number(Boolean(b.retired)))
-        .slice(0, 4),
-    [courses]
-  );
-
-  const statusItems = [
-    {
-      icon: Wifi,
-      label: "上游",
-      value: statusPending ? "读取中" : upstreamHealthy ? "可用" : "待确认",
-      tone: (statusPending || !upstreamHealthy ? "warn" : "ok") as Tone
-    },
-    {
-      icon: HeartPulse,
-      label: "轮询",
-      value: watcherRows.length === 0 ? "未启用" : watchersStale ? "已停滞" : watcherPanics > 0 ? "需关注" : "运行中",
-      tone: (watchersStale || watcherPanics > 0 ? "warn" : "ok") as Tone
-    },
-    {
-      icon: ServerCog,
-      label: "进程",
-      value: processDegraded ? "降级" : processCrashes > 0 ? "需关注" : "稳定",
-      tone: (processDegraded || processCrashes > 0 ? "warn" : "ok") as Tone
-    },
-    {
-      icon: Globe2,
-      label: "出口",
-      value: egress.length === 0 ? "直连" : coolingEgress > 0 ? "部分冷却" : "代理就绪",
-      tone: (coolingEgress > 0 ? "warn" : "ok") as Tone
-    }
-  ];
-
-  const accountBadges = (
-    <>
-      {accountPolicy ? (
-        <>
-          <Badge variant={accountPolicy.auto_sign ? "success" : "warning"}>
-            {accountPolicy.auto_sign ? "签到自动" : "签到待开启"}
-          </Badge>
-          <Badge variant={accountPolicy.auto_answer ? "warning" : "secondary"}>
-            {accountPolicy.auto_answer ? "答题自动" : "答题关闭"}
-          </Badge>
-          {accountPolicy.notify_only && <Badge variant="secondary">通知优先</Badge>}
-        </>
-      ) : null}
-    </>
-  );
+  const watcherState = watcherRows.length === 0
+    ? { value: "未启用", className: "text-muted-foreground" }
+    : watchersStale || watcherPanics > 0
+      ? { value: watchersStale ? "已停滞" : "需关注", className: "text-warning" }
+      : { value: "正常", className: "text-success" };
+  const serviceState = processDegraded
+    ? { value: "需关注", className: "text-warning" }
+    : { value: "稳定", className: "text-success" };
+  const upstreamState = busy && !status
+    ? { value: "读取中", className: "text-muted-foreground" }
+    : upstreamHealthy
+      ? { value: "正常", className: "text-success" }
+      : { value: "待确认", className: "text-warning" };
 
   return (
     <div className="space-y-4">
@@ -324,7 +248,7 @@ export function Dashboard() {
         actions={
           <>
             <Button size="sm" variant="outline" onClick={() => setPage("activities")}>
-              课堂活动
+              课堂
               <ArrowUpRight className="h-3.5 w-3.5" />
             </Button>
             <Button size="sm" variant="ghost" onClick={() => void load()} disabled={busy}>
@@ -336,62 +260,28 @@ export function Dashboard() {
       />
       <ErrorBanner error={error} />
 
-      <section className="overflow-hidden rounded-card border border-border bg-card">
-        <div className="flex items-center gap-3 px-4 py-3 sm:px-5">
-          <Avatar
-            src={profile?.avatar_url}
-            name={displayName}
-            className="h-9 w-9 border-border-strong bg-secondary"
-          />
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <h2 className="truncate text-[14px] font-medium tracking-[-0.02em]">{displayName}</h2>
-              <span className="text-[11px] text-muted-foreground">{roleLabel}</span>
-              {accountName && <span className="truncate text-[11px] text-muted-foreground">· {accountName}</span>}
-              <span className="flex flex-wrap items-center gap-1.5 sm:ml-1">{accountBadges}</span>
-            </div>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-border px-4 py-2.5 sm:flex sm:flex-wrap sm:items-center sm:gap-x-5 sm:px-5">
-          {statusItems.map((item) => (
-            <span key={item.label} className="inline-flex min-w-0 items-center gap-1.5 text-[11px]">
-              <item.icon className={cn("h-3 w-3 shrink-0", toneClass(item.tone))} />
-              <span className="text-muted-foreground">{item.label}</span>
-              <span className={cn("font-medium", toneClass(item.tone))}>{item.value}</span>
-            </span>
-          ))}
-          <button
-            type="button"
-            onClick={() => setPage("settings")}
-            className="ml-auto hidden text-[11px] text-muted-foreground transition-colors hover:text-foreground sm:inline"
-          >
-            运行设置
-          </button>
-        </div>
-      </section>
-
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(300px,1fr)]">
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(300px,1fr)]">
         <section className="min-w-0 overflow-hidden rounded-card border border-border bg-card">
           <div className="border-b border-border px-4 py-3.5 sm:px-5">
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
                 <CalendarDays className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <h2 className="truncate text-[13px] font-medium">今日课堂</h2>
+                <h2 className="text-[13px] font-medium">今日课堂</h2>
               </div>
-              <Button size="sm" variant="ghost" className="-my-1 shrink-0 px-1.5 text-[11px]" onClick={() => setPage("study")}>
-                完整课表
+              <Button size="sm" variant="ghost" className="shrink-0 px-1.5 text-[11px]" onClick={() => setPage("study")}>
+                课表
                 <ArrowUpRight className="h-3.5 w-3.5" />
               </Button>
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
-                {dayLabels[clock.day]}
-                {activeSchedule
-                  ? ` · 进行中 ${activeSchedule.course?.name || activeSchedule.course_id} 至 ${activeSchedule.end}`
-                  : nextSchedule
-                    ? ` · 下一段 ${nextSchedule.course?.name || nextSchedule.course_id} ${nextSchedule.start}`
-                    : " · 今天没有待开始时段"}
-                {currentWeek > 0 ? ` · ${weekLabel(currentWeek)}` : ""}
-              </p>
+              {dayLabels[clock.day]}
+              {activeSchedule
+                ? ` · 进行中 ${activeSchedule.course?.name || activeSchedule.course_id} 至 ${activeSchedule.end}`
+                : nextSchedule
+                  ? ` · 下一段 ${nextSchedule.course?.name || nextSchedule.course_id} ${nextSchedule.start}`
+                  : " · 今天没有待开始时段"}
+              {currentWeek > 0 ? ` · ${weekLabel(currentWeek)}` : ""}
+            </p>
           </div>
           {todaySchedules.length === 0 ? (
             <div className="flex items-start gap-2 px-4 py-6 text-[12px] text-muted-foreground sm:px-5">
@@ -428,12 +318,6 @@ export function Dashboard() {
                             <span className="truncate">{row.room}</span>
                           </>
                         )}
-                        {row.weeks && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span className="shrink-0">{row.weeks.includes("-") ? `第 ${row.weeks} 周` : `周次 ${row.weeks}`}</span>
-                          </>
-                        )}
                       </div>
                     </div>
                     <div className="text-right">
@@ -453,98 +337,69 @@ export function Dashboard() {
         </section>
 
         <section className="min-w-0 overflow-hidden rounded-card border border-border bg-card">
-          <div className="flex items-start justify-between gap-2 border-b border-border px-4 py-3.5 sm:px-5">
-            <div>
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
-                <h2 className="text-[13px] font-medium">最近签到</h2>
+          <div className="border-b border-border px-4 py-3.5 sm:px-5">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
+              <h2 className="text-[13px] font-medium">签到与轮询</h2>
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+              <div>
+                <div className="text-muted-foreground">轮询</div>
+                <div className={cn("mt-0.5 font-medium", watcherState.className)}>{watcherState.value}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">上游</div>
+                <div className={cn("mt-0.5 font-medium", upstreamState.className)}>{upstreamState.value}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">服务</div>
+                <div className={cn("mt-0.5 font-medium", serviceState.className)}>{serviceState.value}</div>
               </div>
             </div>
           </div>
-          {!canReadAudits ? (
-            <div className="px-4 py-5 text-[11px] leading-5 text-muted-foreground sm:px-5">
-              当前角色无签到审计权限。
-            </div>
-          ) : auditsLoading ? (
-            <div className="space-y-2 px-4 py-4 sm:px-5">
-              {[0, 1, 2].map((item) => (
-                <div key={item} className="h-12 animate-pulse rounded-control bg-muted/55" />
-              ))}
-            </div>
-          ) : auditsError ? (
-            <div className="flex items-start gap-2 px-4 py-5 text-[11px] leading-5 text-warning sm:px-5">
-              <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>签到记录暂不可用：{auditsError}</span>
-            </div>
-          ) : recentSigns.length === 0 ? (
-            <div className="px-4 py-5 text-[11px] leading-5 text-muted-foreground sm:px-5">
-              暂无签到记录。
-            </div>
-          ) : (
-            <ul className="divide-y divide-border">
-              {recentSigns.map((item, index) => {
-                const course = courseLookup.get(courseKey(item.course_id, item.class_id));
-                return (
-                  <li key={`${item.created_at}:${item.activity_id}:${index}`} className="flex min-w-0 items-start gap-2.5 px-4 py-3 sm:px-5">
-                    <span className={cn("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", item.verified ? "bg-success" : item.state === "failed" ? "bg-destructive" : "bg-warning")} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 items-center justify-between gap-2">
-                        <span className="truncate text-[12px] font-medium">{course?.name || item.course_id}</span>
-                        <Badge variant={auditVariant(item)} className="shrink-0">{statusText(item)}</Badge>
+          <div className="px-4 py-3 sm:px-5">
+            <div className="mb-2 text-[11px] font-medium text-muted-foreground">最近签到</div>
+            {!canReadAudits ? (
+              <div className="text-[11px] leading-5 text-muted-foreground">当前角色无签到审计权限。</div>
+            ) : auditsLoading ? (
+              <div className="space-y-2">
+                {[0, 1, 2].map((item) => (
+                  <div key={item} className="h-12 animate-pulse rounded-control bg-muted/55" />
+                ))}
+              </div>
+            ) : auditsError ? (
+              <div className="flex items-start gap-2 text-[11px] leading-5 text-warning">
+                <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>签到记录暂不可用：{auditsError}</span>
+              </div>
+            ) : recentSigns.length === 0 ? (
+              <div className="text-[11px] leading-5 text-muted-foreground">暂无签到记录。</div>
+            ) : (
+              <ul className="divide-y divide-border">
+                {recentSigns.map((item, index) => {
+                  const course = courseLookup.get(courseKey(item.course_id, item.class_id));
+                  return (
+                    <li key={`${item.created_at}:${item.activity_id}:${index}`} className="flex min-w-0 items-start gap-2.5 py-2.5 first:pt-0 last:pb-0">
+                      <span className={cn("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", item.verified ? "bg-success" : item.state === "failed" ? "bg-destructive" : "bg-warning")} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 items-center justify-between gap-2">
+                          <span className="truncate text-[12px] font-medium">{course?.name || item.course_id}</span>
+                          <Badge variant={auditVariant(item)} className="shrink-0">{auditText(item)}</Badge>
+                        </div>
+                        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+                          <span>{methodLabel(item.method)}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{formatBeijing(item.created_at)}</span>
+                        </div>
                       </div>
-                      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
-                        <span>{methodLabel(item.method)}</span>
-                        <span aria-hidden="true">·</span>
-                        <span>{formatBeijing(item.created_at)}</span>
-                      </div>
-                      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
-                        {item.egress_ip && <span className="font-mono">{item.egress_ip}</span>}
-                        {item.address && <span className="truncate" title={item.address}>{item.address}</span>}
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
         </section>
       </div>
-
-      <section className="min-w-0">
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <div className="flex items-center gap-2">
-              <Activity className="h-3.5 w-3.5 text-muted-foreground" />
-              <h2 className="text-[13px] font-medium">课程</h2>
-            </div>
-          </div>
-          <Button size="sm" variant="ghost" onClick={() => setPage("courses")}>
-            全部课程
-            <ArrowUpRight className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-        {statusPending && courses.length === 0 ? (
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-            {[0, 1, 2, 3].map((item) => (
-              <div key={item} className="h-[86px] animate-pulse rounded-card border border-border bg-muted/35 sm:h-44" />
-            ))}
-          </div>
-        ) : courses.length === 0 ? (
-          <div className="rounded-card border border-border bg-card px-4 py-5 text-[11px] leading-5 text-muted-foreground">
-            未读取到课程目录。
-          </div>
-        ) : (
-          <div className="grid min-w-0 grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-            {dashboardCourses.map((course) => (
-              <CourseCard key={courseKey(course.course_id, course.class_id)} course={course} />
-            ))}
-          </div>
-        )}
-      </section>
     </div>
   );
-}
-
-function errorMessage(value: unknown) {
-  return value instanceof Error ? value.message : String(value);
 }
