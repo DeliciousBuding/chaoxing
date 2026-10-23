@@ -1,9 +1,11 @@
 package watch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -906,11 +908,58 @@ func TestWatchPrunesOldStateEvenWhenActivityRemainsInFeed(t *testing.T) {
 
 func TestWatchRejectsInvalidJitterAndLead(t *testing.T) {
 	class := []Class{{CourseID: "c", ClassID: "k"}}
+	if _, err := New(Config{
+		Interval: 15 * time.Second, Classes: class, StatePath: t.TempDir() + "/state.json",
+	}, &fakeSource{}, &fakeSender{}, nil); err != nil {
+		t.Fatalf("15-second interval rejected: %v", err)
+	}
+	if _, err := New(Config{Interval: 14 * time.Second, Classes: class}, &fakeSource{}, &fakeSender{}, nil); err == nil {
+		t.Fatal("14-second interval accepted")
+	}
 	if _, err := New(Config{Interval: time.Minute, IntervalJitterPercent: -1, Classes: class}, &fakeSource{}, &fakeSender{}, nil); err == nil {
 		t.Fatal("negative jitter accepted")
 	}
 	if _, err := New(Config{Interval: time.Minute, Lead: -2 * time.Second, Classes: class}, &fakeSource{}, &fakeSender{}, nil); err == nil {
 		t.Fatal("invalid lead accepted")
+	}
+}
+
+func TestSignInObservationSummary(t *testing.T) {
+	items := []upstream.Activity{
+		{ID: "1", Kind: "signin", UserState: "signed", RawUserStatus: 1},
+		{ID: "2", Kind: "signin", UserState: "unsigned", RawUserStatus: 0, Signable: true},
+		{ID: "3", Kind: "answer", UserState: "unsigned"},
+		{ID: "4", Kind: "signin", UserState: "unsigned", RawUserStatus: 0, Signable: true},
+	}
+	if got := signInObservationSummary(items, 2); got != "1:signed:1:false,2:unsigned:0:true,+1" {
+		t.Fatalf("summary=%q", got)
+	}
+	if got := signInObservationSummary(nil, 8); got != "-" {
+		t.Fatalf("empty summary=%q", got)
+	}
+}
+
+func TestWatchLogsClassPollObservation(t *testing.T) {
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+
+	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
+	r, err := New(Config{
+		Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}},
+		StatePath: t.TempDir() + "/state.json",
+	}, src, &fakeSender{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return time.Date(2026, 10, 23, 17, 21, 26, 0, shanghai) }
+	r.Tick(context.Background())
+
+	text := output.String()
+	if !strings.Contains(text, "activity watch: class_poll class=k") ||
+		!strings.Contains(text, "status=ok items=1 observed=1:unsigned:0:true") {
+		t.Fatalf("missing precise poll log: %s", text)
 	}
 }
 

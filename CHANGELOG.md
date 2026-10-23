@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0-rc.38 — 2026-10-23
+
+- Log every active class poll with exact start/completion times, duration,
+  status, item count and bounded normalized sign-in observations.
+- Log automatic sign-in candidates, start/cancellation and final result with
+  safe activity/class identifiers and no sign material.
+- Allow dense classroom polling down to 15 seconds while preserving idle sleep.
+
 ## 0.5.0-rc.37 — 2026-10-22
 
 - Detect newly pending ordinary assignments using persistent complete-feed

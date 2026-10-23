@@ -215,8 +215,9 @@ const (
 	alertFlushBudget = 6 * time.Second
 	// A sign-in burst must not spend the whole tick budget sleeping. The
 	// jitter stays, but all automatic sign-ins in one tick share this cap.
-	maxSignDelayPerTick = 30 * time.Second
-	signActionTimeout   = 30 * time.Second
+	maxSignDelayPerTick  = 30 * time.Second
+	signActionTimeout    = 30 * time.Second
+	minimumWatchInterval = 15 * time.Second
 )
 
 func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer, answerer ...AnswerActivitySource) (*Runner, error) {
@@ -233,8 +234,8 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 	if cfg.AutoAnswer && answerSource == nil {
 		return nil, errors.New("auto answer requires an answer activity source")
 	}
-	if cfg.Interval < 30*time.Second {
-		return nil, errors.New("watch interval must be at least 30 seconds")
+	if cfg.Interval < minimumWatchInterval {
+		return nil, fmt.Errorf("watch interval must be at least %s", minimumWatchInterval)
 	}
 	if cfg.IntervalJitterPercent < 0 {
 		return nil, errors.New("watch interval jitter must not be negative")
@@ -836,7 +837,18 @@ func (r *Runner) Tick(ctx context.Context) {
 		}
 		polledClasses++
 		r.activePolls.Add(1)
+		pollStarted := r.now().UTC()
 		items, err := r.source.ListClassActivities(pollCtx, class.CourseID, class.ClassID)
+		pollCompleted := r.now().UTC()
+		pollStatus := "ok"
+		if err != nil {
+			pollStatus = upstream.SafeFault(err).Code
+		}
+		log.Printf(
+			"activity watch: class_poll class=%s started_at=%s completed_at=%s duration_ms=%d status=%s items=%d observed=%s",
+			class.ClassID, pollStarted.Format(time.RFC3339Nano), pollCompleted.Format(time.RFC3339Nano),
+			pollCompleted.Sub(pollStarted).Milliseconds(), pollStatus, len(items), signInObservationSummary(items, 8),
+		)
 		r.recordFeed("activities:"+class.CourseID+":"+class.ClassID, now, err == nil)
 		if err != nil {
 			log.Printf("activity watch: class %s: %s", class.ClassID, upstream.SafeFault(err).Code)
@@ -986,6 +998,10 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 			// sign-in without a location resolver must not be skipped merely
 			// because two timetable rows share the same padding window.
 			if !ambiguous || r.cfg.LocationResolver == nil {
+				log.Printf(
+					"activity watch: sign_candidate activity=%s class=%s user_state=%s raw_user_status=%d signable=%t schedule=%s",
+					item.ID, item.ClassID, item.UserState, item.RawUserStatus, item.Signable, scheduleKey,
+				)
 				changed = r.autoSign(ctx, classes[k], item, e, scheduleKey) || changed
 				continue
 			}
@@ -1227,7 +1243,14 @@ func (r *Runner) recordAnswerReview(ctx context.Context, item upstream.Activity,
 }
 
 func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activity, e entry, scheduleKey string) bool {
-	if delay := r.autoSignDelay(); delay > 0 && !r.wait(ctx, delay) {
+	started := r.now().UTC()
+	delay := r.autoSignDelay()
+	log.Printf(
+		"activity watch: auto sign start activity=%s class=%s user_state=%s delay_ms=%d schedule=%s started_at=%s",
+		item.ID, item.ClassID, item.UserState, delay.Milliseconds(), scheduleKey, started.Format(time.RFC3339Nano),
+	)
+	if delay > 0 && !r.wait(ctx, delay) {
+		log.Printf("activity watch: auto sign cancelled activity=%s class=%s reason=tick_context_done", item.ID, item.ClassID)
 		return false
 	}
 	actionCtx, cancel := context.WithTimeout(ctx, signActionTimeout)
@@ -1311,8 +1334,38 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 		r.state[k] = next
 		r.persistState()
 	}
-	log.Printf("activity watch: auto sign %s: status=%s", item.ID, next.Status)
+	completed := r.now().UTC()
+	log.Printf(
+		"activity watch: auto sign result activity=%s class=%s status=%s method=%s code=%s verified=%t started_at=%s completed_at=%s duration_ms=%d",
+		item.ID, item.ClassID, next.Status, next.Method, next.Code, result.Verified,
+		started.Format(time.RFC3339Nano), completed.Format(time.RFC3339Nano), completed.Sub(started).Milliseconds(),
+	)
 	return true
+}
+
+func signInObservationSummary(items []upstream.Activity, max int) string {
+	if max < 1 {
+		max = 1
+	}
+	rows := make([]string, 0, max)
+	total := 0
+	for _, item := range items {
+		if item.Kind != "signin" {
+			continue
+		}
+		total++
+		if len(rows) >= max {
+			continue
+		}
+		rows = append(rows, fmt.Sprintf("%s:%s:%d:%t", item.ID, item.UserState, item.RawUserStatus, item.Signable))
+	}
+	if len(rows) == 0 {
+		return "-"
+	}
+	if total > len(rows) {
+		rows = append(rows, fmt.Sprintf("+%d", total-len(rows)))
+	}
+	return strings.Join(rows, ",")
 }
 
 func (r *Runner) persistState() {
