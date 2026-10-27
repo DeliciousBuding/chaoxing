@@ -909,12 +909,12 @@ func TestWatchPrunesOldStateEvenWhenActivityRemainsInFeed(t *testing.T) {
 func TestWatchRejectsInvalidJitterAndLead(t *testing.T) {
 	class := []Class{{CourseID: "c", ClassID: "k"}}
 	if _, err := New(Config{
-		Interval: 15 * time.Second, Classes: class, StatePath: t.TempDir() + "/state.json",
+		Interval: 5 * time.Second, Classes: class, StatePath: t.TempDir() + "/state.json",
 	}, &fakeSource{}, &fakeSender{}, nil); err != nil {
-		t.Fatalf("15-second interval rejected: %v", err)
+		t.Fatalf("5-second interval rejected: %v", err)
 	}
-	if _, err := New(Config{Interval: 14 * time.Second, Classes: class}, &fakeSource{}, &fakeSender{}, nil); err == nil {
-		t.Fatal("14-second interval accepted")
+	if _, err := New(Config{Interval: 4 * time.Second, Classes: class}, &fakeSource{}, &fakeSender{}, nil); err == nil {
+		t.Fatal("4-second interval accepted")
 	}
 	if _, err := New(Config{Interval: time.Minute, IntervalJitterPercent: -1, Classes: class}, &fakeSource{}, &fakeSender{}, nil); err == nil {
 		t.Fatal("negative jitter accepted")

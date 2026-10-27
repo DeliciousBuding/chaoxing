@@ -217,7 +217,7 @@ const (
 	// jitter stays, but all automatic sign-ins in one tick share this cap.
 	maxSignDelayPerTick  = 30 * time.Second
 	signActionTimeout    = 30 * time.Second
-	minimumWatchInterval = 15 * time.Second
+	minimumWatchInterval = 5 * time.Second
 )
 
 func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer, answerer ...AnswerActivitySource) (*Runner, error) {
@@ -513,7 +513,7 @@ func (r *Runner) Run(ctx context.Context) {
 		r.tick(ctx)
 	}
 	for {
-		delay := r.nextDelay(r.now())
+		delay := r.nextTickDelay(r.now())
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -668,6 +668,21 @@ func (r *Runner) nextDelay(now time.Time) time.Duration {
 		return next
 	}
 	return 5 * time.Minute
+}
+
+// A course interval is start-to-start, not an extra sleep after upstream work.
+// Keep ticks serialized and avoid catch-up bursts after a slow request. Idle
+// sleeps still target their schedule boundary without subtracting work twice.
+func (r *Runner) nextTickDelay(now time.Time) time.Duration {
+	delay := r.nextDelay(now)
+	if inWindow(now, r.cfg.Window) {
+		for _, class := range r.cfg.Classes {
+			if classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) {
+				return max(time.Second, delay-now.Sub(r.Metrics().LastTickStartedAt))
+			}
+		}
+	}
+	return delay
 }
 
 func nextWindowOpen(t time.Time, spec string) time.Duration {
@@ -856,7 +871,7 @@ func (r *Runner) Tick(ctx context.Context) {
 		}
 		captured = append(captured, items...)
 		for _, item := range items {
-			if item.Signable || item.Answerable || answerReviewable(item) {
+			if item.CourseID == class.CourseID && item.ClassID == class.ClassID && (item.Signable || item.Answerable || answerReviewable(item)) {
 				k := key(item)
 				active[k] = item
 				classes[k] = class
@@ -867,6 +882,9 @@ func (r *Runner) Tick(ctx context.Context) {
 	// group sweep. A slow page fetch or group scan must never delay a sign-in
 	// that has already been discovered.
 	changed := r.processActivities(ctx, active, classes, now)
+	// Scan in-class assignments every tick too: a classroom quiz may be
+	// published only in the assignment feed, not in the activity feed.
+	changed = r.pollAssignments(ctx, now) || changed
 	if groupSource, ok := r.source.(GroupActivitySource); ok && polledClasses > 0 {
 		// Course-group history is a fallback for cards missing from the class
 		// feed. Scan it on a slower cadence, and only while a watched class is
@@ -882,7 +900,7 @@ func (r *Runner) Tick(ctx context.Context) {
 					r.lastGroupScan = now
 					for _, item := range groupRows {
 						class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
-						if !ok || !classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) || !item.Signable {
+						if !ok || !classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) || !(item.Signable || item.Answerable || answerReviewable(item)) {
 							continue
 						}
 						k := key(item)
@@ -898,9 +916,6 @@ func (r *Runner) Tick(ctx context.Context) {
 			cancelGroup()
 		}
 	}
-	// Ordinary assignments run after all time-critical participation decisions.
-	// One due class per tick bounds work even outside classroom windows.
-	changed = r.pollAssignments(ctx, now) || changed
 	// Page evidence is best-effort and deliberately runs after every sign-in
 	// decision, including the group fallback. A slow or oversized H5 page must
 	// not delay a sign-in that the group feed discovered.
@@ -941,7 +956,7 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 				continue
 			}
 			body := formatPracticeAlertBody(item)
-			message := notify.Message{Title: answerAlertTitle(item.Kind), Body: body, Priority: 6}
+			message := notify.Message{Title: answerAlertTitle(item.Kind), Body: body, Priority: r.classroomPriority(classes[k], now, 6)}
 			if err := r.notify(ctx, message); err != nil {
 				log.Printf("activity watch: notify failed: %v", err)
 				r.queueAlert(k, message, now, err)
@@ -978,7 +993,7 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 			if seen && e.Status == "failed" {
 				priority = 8
 			}
-			message := notify.Message{Title: title, Body: body, Priority: priority}
+			message := notify.Message{Title: title, Body: body, Priority: r.classroomPriority(classes[k], now, priority)}
 			if err := r.notify(ctx, message); err != nil {
 				log.Printf("activity watch: notify failed: %v", err)
 				r.queueAlert(k, message, now, err)
@@ -1030,7 +1045,7 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 				priority = 9
 			}
 		}
-		message := notify.Message{Title: title, Body: body, Priority: priority}
+		message := notify.Message{Title: title, Body: body, Priority: r.classroomPriority(classes[k], now, priority)}
 		if err := r.notify(ctx, message); err != nil {
 			log.Printf("activity watch: notify failed: %v", err)
 			r.queueAlert(k, message, now, err)
@@ -1211,7 +1226,7 @@ func (r *Runner) autoAnswer(ctx context.Context, item upstream.Activity, e entry
 	// pushing must never make the next tick answer the same activity again.
 	r.state[k] = next
 	r.persistState()
-	message := notify.Message{Title: title, Body: body, Priority: priority}
+	message := notify.Message{Title: title, Body: body, Priority: r.activityPriority(item, now, priority)}
 	if sendErr := r.notify(ctx, message); sendErr != nil {
 		log.Printf("activity watch: notify failed: %v", sendErr)
 		r.queueAlert(k, message, now, sendErr)
@@ -1230,7 +1245,7 @@ func (r *Runner) recordAnswerReview(ctx context.Context, item upstream.Activity,
 	now := r.now()
 	next := entry{LastAttempt: now, Count: e.Count, LastSent: e.LastSent, Status: "review", Method: "agent", Code: decision.Reason}
 	title, body := "🧠 学习通课堂答题需要确认", formatReviewBody(item, decision)
-	message := notify.Message{Title: title, Body: body, Priority: 7}
+	message := notify.Message{Title: title, Body: body, Priority: r.activityPriority(item, now, 7)}
 	if err := r.notify(ctx, message); err != nil {
 		log.Printf("activity watch: notify failed: %v", err)
 		r.queueAlert(key(item), message, now, err)
@@ -1266,7 +1281,7 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 			}
 			r.state[key(item)] = next
 			r.persistState()
-			message := notify.Message{Title: "🚨 学习通位置解析失败", Body: formatFailureBody(item, "LOCATION_RESOLVE_FAILED"), Priority: 8}
+			message := notify.Message{Title: "🚨 学习通位置解析失败", Body: formatFailureBody(item, "LOCATION_RESOLVE_FAILED"), Priority: r.activityPriority(item, now, 8)}
 			if sendErr := r.notify(ctx, message); sendErr != nil {
 				log.Printf("activity watch: notify failed: %v", sendErr)
 				r.queueAlert(key(item), message, now, sendErr)
@@ -1325,7 +1340,7 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 	if err != nil {
 		priority = 8
 	}
-	message := notify.Message{Title: title, Body: body, Priority: priority}
+	message := notify.Message{Title: title, Body: body, Priority: r.activityPriority(item, now, priority)}
 	if sendErr := r.notify(ctx, message); sendErr != nil {
 		log.Printf("activity watch: notify failed: %v", sendErr)
 		r.queueAlert(k, message, now, sendErr)
@@ -1399,7 +1414,29 @@ func answerReviewable(item upstream.Activity) bool {
 	if item.State != "active" || item.UserState != "unsigned" {
 		return false
 	}
-	return item.Kind == "practice" || item.Kind == "homework"
+	return item.Kind == "practice" || item.Kind == "homework" || item.Kind == "activity"
+}
+
+// Explicit course schedules determine classroom urgency. Unscheduled watches
+// retain their ordinary all-day policy instead of becoming all-day alarms.
+func (r *Runner) classroomActive(class Class, now time.Time) bool {
+	return len(class.Schedule) > 0 && inWindow(now, r.cfg.Window) && classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart)
+}
+
+func (r *Runner) classroomPriority(class Class, now time.Time, ordinary int) int {
+	if r.classroomActive(class, now) && ordinary < 9 {
+		return 9
+	}
+	return ordinary
+}
+
+func (r *Runner) activityPriority(item upstream.Activity, now time.Time, ordinary int) int {
+	for _, class := range r.cfg.Classes {
+		if class.CourseID == item.CourseID && class.ClassID == item.ClassID {
+			return r.classroomPriority(class, now, ordinary)
+		}
+	}
+	return ordinary
 }
 
 func autoSignType(item upstream.Activity, class Class) bool {
@@ -1596,6 +1633,8 @@ func answerAlertTitle(kind string) string {
 		return "📝 学习通课堂练习提醒"
 	case "homework":
 		return "📝 学习通课堂作业提醒"
+	case "activity":
+		return "🔔 学习通课堂活动提醒"
 	default:
 		return "🔔 学习通抢答提醒"
 	}
@@ -1638,6 +1677,8 @@ func formatPracticeAlertBody(a upstream.Activity) string {
 	kind := "随堂练习"
 	if a.Kind == "homework" {
 		kind = "课堂作业"
+	} else if a.Kind == "activity" {
+		return strings.Join([]string{"课程：" + firstNonBlank(a.Course, a.CourseID), "活动：" + firstNonBlank(a.Title, a.ID), "状态：活动进行中，尚未参与", "请打开学习通查看并处理；系统未自动参与。"}, "\n")
 	}
 	lines := []string{
 		"课程：" + firstNonBlank(a.Course, a.CourseID),

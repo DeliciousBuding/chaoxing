@@ -99,6 +99,8 @@ Slider recognition is configured through `captcha_solver`. The built-in local de
 
 Notifications can be sent simultaneously to Feishu webhooks, ntfy and Gotify. Watch state is atomic, private and separate from upstream credentials. Each tenant account can run its own watcher with independent classes, schedules, coordinates, sign codes, state and notification destinations.
 
+Within an explicitly scheduled course window, classroom activity alerts and new ordinary assignments share high urgency (priority 9), regardless of which upstream feed carries the item. Both feeds follow the configured classroom polling interval, down to five seconds, without overlapping requests or bypassing account pacing. Outside class, assignment scanning remains low-frequency with priority-6 alerts. Historical assignment baselines, completed-item suppression and accepted-notification deduplication remain in place.
+
 The notification layer is a one-way, provider-fan-out boundary:
 
 | Channel | Required configuration | Delivery |

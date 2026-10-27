@@ -67,10 +67,15 @@ func (r *Runner) pollAssignments(ctx context.Context, now time.Time) bool {
 	if !ok {
 		return false
 	}
+	changed := false
 	var selected *Class
 	var oldest time.Time
 	for i := range r.cfg.Classes {
 		class := &r.cfg.Classes[i]
+		if r.classroomActive(*class, now) {
+			changed = r.pollClassAssignments(ctx, source, *class, now) || changed
+			continue
+		}
 		last := r.lastAssignments[class.CourseID+":"+class.ClassID]
 		if !last.IsZero() && now.Sub(last) < assignmentScanInterval {
 			continue
@@ -80,13 +85,25 @@ func (r *Runner) pollAssignments(ctx context.Context, now time.Time) bool {
 		}
 	}
 	if selected == nil {
-		return false
+		return changed
 	}
+	return r.pollClassAssignments(ctx, source, *selected, now) || changed
+}
+
+func (r *Runner) pollClassAssignments(ctx context.Context, source AssignmentSource, class Class, now time.Time) bool {
+	selected := &class
 	key := selected.CourseID + ":" + selected.ClassID
 	r.lastAssignments[key] = now
 	scanCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	items, complete, err := source.ListClassAssignments(scanCtx, selected.CourseID, selected.ClassID)
+	status := "ok"
+	if err != nil {
+		status = upstream.SafeFault(err).Code
+	} else if !complete {
+		status = "partial"
+	}
+	log.Printf("assignment watch: class_poll class=%s started_at=%s completed_at=%s status=%s items=%d", class.ClassID, now.UTC().Format(time.RFC3339Nano), r.now().UTC().Format(time.RFC3339Nano), status, len(items))
 	valid := err == nil && complete && len(items) <= 1000
 	ids := map[string]bool{}
 	for _, item := range items {
@@ -159,7 +176,8 @@ func (r *Runner) pollAssignments(ctx context.Context, now time.Time) bool {
 		lines = append(lines, "• "+item.Title)
 	}
 	lines = append(lines, "系统未自动提交，请打开学习通或控制台作业页处理。")
-	if err := r.notify(ctx, notify.Message{Title: "📝 学习通作业提醒", Body: strings.Join(lines, "\n"), Priority: 6}); err != nil {
+	priority := r.classroomPriority(class, now, 6)
+	if err := r.notify(ctx, notify.Message{Title: "📝 学习通作业提醒", Body: strings.Join(lines, "\n"), Priority: priority}); err != nil {
 		log.Printf("assignment watch: notify failed")
 		return true // Pending IDs stay retryable on the next bounded scan.
 	}

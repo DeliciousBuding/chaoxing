@@ -17,13 +17,83 @@ type assignmentSource struct {
 	err       error
 	signer    *fakeSigner
 	seenSigns int
+	calls     map[string]int
 }
 
-func (s *assignmentSource) ListClassAssignments(context.Context, string, string) ([]upstream.Assignment, bool, error) {
+func (s *assignmentSource) ListClassAssignments(_ context.Context, _, classID string) ([]upstream.Assignment, bool, error) {
+	if s.calls == nil {
+		s.calls = map[string]int{}
+	}
+	s.calls[classID]++
 	if s.signer != nil {
 		s.seenSigns = len(s.signer.requests)
 	}
 	return s.rows, s.complete, s.err
+}
+
+func classroomSchedule() []Schedule {
+	return []Schedule{{Days: []string{"Tue"}, Start: "10:00", End: "11:40"}}
+}
+
+func TestClassroomAssignmentsPollEveryTickAndKeepAcceptedState(t *testing.T) {
+	src := &assignmentSource{complete: true, rows: []upstream.Assignment{assignment("old", "pending")}}
+	snd := &fakeSender{}
+	path := filepath.Join(t.TempDir(), "state.json")
+	r := assignmentRunner(t, src, snd, path)
+	r.cfg.Interval = 5 * time.Second
+	r.cfg.Classes[0].Schedule = classroomSchedule()
+	now := time.Date(2026, 10, 27, 10, 30, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
+	r.Tick(context.Background())
+	src.rows = append(src.rows, assignment("quiz", "pending"))
+	now = now.Add(5 * time.Second)
+	snd.fail = true
+	r.Tick(context.Background())
+	if len(snd.sent) != 1 || snd.sent[0].Priority != 9 || r.assignments["c:k"].Items["quiz"].Notified {
+		t.Fatal("in-class quiz not urgent or failed send suppressed retry", snd.sent)
+	}
+	snd.fail = false
+	now = now.Add(5 * time.Second)
+	r.Tick(context.Background())
+	if src.calls["k"] != 3 || len(snd.sent) != 2 || !r.assignments["c:k"].Items["quiz"].Notified {
+		t.Fatal("in-class assignments did not poll/retry at five-second cadence")
+	}
+	r = assignmentRunner(t, src, snd, path)
+	r.cfg.Classes[0].Schedule = classroomSchedule()
+	r.now = func() time.Time { return now }
+	r.Tick(context.Background())
+	if len(snd.sent) != 2 {
+		t.Fatal("restart replayed accepted quiz or historical baseline")
+	}
+	now = now.Add(2 * time.Hour)
+	src.rows = append(src.rows, assignment("after-class", "pending"))
+	r.Tick(context.Background())
+	if len(snd.sent) != 3 || snd.sent[2].Priority != 6 {
+		t.Fatal("outside-class work received classroom urgency", snd.sent)
+	}
+	now = now.Add(5 * time.Second)
+	r.Tick(context.Background())
+	if src.calls["k"] != 5 {
+		t.Fatal("idle assignments no longer bounded to five minutes")
+	}
+}
+
+func TestClassroomAssignmentPollingDoesNotStarveOtherClasses(t *testing.T) {
+	src := &assignmentSource{complete: true}
+	r := assignmentRunner(t, src, &fakeSender{}, "")
+	r.cfg.Classes = []Class{
+		{CourseID: "c", ClassID: "first", Schedule: classroomSchedule()},
+		{CourseID: "c", ClassID: "second", Schedule: classroomSchedule()},
+		{CourseID: "c", ClassID: "idle", Schedule: []Schedule{{Days: []string{"Wed"}, Start: "10:00", End: "11:40"}}},
+	}
+	now := time.Date(2026, 10, 27, 10, 30, 0, 0, shanghai)
+	r.now = func() time.Time { return now }
+	r.Tick(context.Background())
+	now = now.Add(5 * time.Second)
+	r.Tick(context.Background())
+	if src.calls["first"] != 2 || src.calls["second"] != 2 || src.calls["idle"] != 1 {
+		t.Fatalf("active/idle rotation: %v", src.calls)
+	}
 }
 
 func assignment(id, state string) upstream.Assignment {
