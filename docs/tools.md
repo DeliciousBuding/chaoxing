@@ -4,6 +4,8 @@ Chaoxing exposes 32 operations through the CLI, local daemon and HTTP MCP. The o
 
 ## Calls, schemas and transport results
 
+Sign-in cards from the class activity list have `user_state=unknown` and `state_source=class_feed_unverified`; `raw_user_status` is preserved for diagnosis. `signable=true` identifies an active candidate, not proof that the account is unsigned. The signer checks the actual pre-sign page before submitting and verifies attendance afterwards. Sign results separate `submitted` (a submission request was attempted) from `verified` (attendance was confirmed). A verified `method=none` result is an existing attendance record, not a new submission. Upstream throttling uses `UPSTREAM_RATE_LIMITED` with `retry_after_seconds`; a deferred call sends no upstream request.
+
 Business CLI commands use the running local daemon. JSON is the default; `--json` is accepted. Use `chaoxing schema assignments.list` (or `chaoxing schema list_assignments`) to inspect an operation's input and output schemas. `chaoxing capabilities` prints the local registry without an upstream read. The `get_capabilities` tool returns the same catalog as a normalized tool result.
 
 For example, after discovering IDs with `chaoxing courses list`:

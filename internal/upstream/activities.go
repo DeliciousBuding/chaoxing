@@ -23,6 +23,7 @@ type Activity struct {
 	Kind          string `json:"kind"`
 	State         string `json:"state"`
 	UserState     string `json:"user_state"`
+	StateSource   string `json:"state_source,omitempty"`
 	RawType       int    `json:"raw_type"`
 	RawOtherID    int    `json:"raw_other_id"`
 	RawStatus     int    `json:"raw_status"`
@@ -253,7 +254,14 @@ func normalizeActivity(raw rawActivity, co Course, ext string) Activity {
 		RawURL:        strings.TrimSpace(raw.URL),
 	}
 	a.SignType = signType(raw.OtherID.value)
-	a.Signable = kind == "signin" && state == "active" && userState == "unsigned"
+	// The list's userStatus is not an attendance receipt. In particular, an
+	// active, not-yet-signed card can contain userStatus=1. Preserve the hint,
+	// but let preSign and the independent attendance read decide completion.
+	if kind == "signin" {
+		a.UserState = "unknown"
+		a.StateSource = "class_feed_unverified"
+	}
+	a.Signable = kind == "signin" && state == "active"
 	a.Answerable = kind == "answer" && state == "active" && userState == "unsigned"
 	a.StartsAt = msTime(raw.StartTime.value)
 	a.EndsAt = msTime(raw.EndTime.value)

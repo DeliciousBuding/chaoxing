@@ -47,7 +47,7 @@ func TestRecordSignAuditCapturesEgressAndSubmittedLocation(t *testing.T) {
 		SignRequest{CourseID: "course-1", ClassID: "class-1", ActivityID: "activity-1"},
 		&result,
 		nil,
-		&signAuditTrace{Address: "synthetic address", Latitude: &lat, Longitude: &lng},
+		&signAuditTrace{Address: "synthetic address", Latitude: &lat, Longitude: &lng, Submitted: true},
 	)
 	if len(store.records) != 1 {
 		t.Fatalf("records=%d", len(store.records))
@@ -82,7 +82,7 @@ func TestRecordSignAuditKeepsFailureCode(t *testing.T) {
 		t.Fatalf("records=%d", len(store.records))
 	}
 	got := store.records[0]
-	if got.State != "failed" || got.Code != "SIGN_REJECTED" || got.Address != "fallback address" || got.EgressSource != "unavailable" {
+	if got.State != "failed" || got.Code != "SIGN_REJECTED" || got.Address != "" || got.EgressSource != "not_submitted" || got.Method != "none" {
 		t.Fatalf("unexpected audit: %+v", got)
 	}
 	if got.CreatedAt.IsZero() || time.Since(got.CreatedAt) > time.Minute {

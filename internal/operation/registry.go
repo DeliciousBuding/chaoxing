@@ -210,6 +210,7 @@ func activitySchema() map[string]any {
 		"kind":            stringSchema("signin", "answer", "practice", "homework", "activity"),
 		"state":           stringSchema("active", "finished", "unknown"),
 		"user_state":      stringSchema("unsigned", "signed", "teacher_signed", "leave", "absence", "late", "leave_early", "expired", "unknown"),
+		"state_source":    stringSchema(),
 		"raw_type":        map[string]any{"type": "integer"},
 		"raw_status":      map[string]any{"type": "integer"},
 		"raw_user_status": map[string]any{"type": "integer"},
@@ -270,7 +271,9 @@ func signResultSchema() map[string]any {
 	return objectSchema([]string{"activity_id", "course_id", "class_id", "method", "state", "verified"}, map[string]any{
 		"activity_id": stringSchema(), "course_id": stringSchema(), "class_id": stringSchema(),
 		"method": stringSchema("normal", "location", "password", "gesture", "qrcode", "photo", "face", "none"), "state": stringSchema(),
-		"verified": booleanSchema(),
+		"verified":     booleanSchema(),
+		"submitted":    booleanSchema(),
+		"state_source": stringSchema(),
 	})
 }
 

@@ -18,6 +18,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DeliciousBuding/chaoxing/internal/admission"
@@ -31,11 +33,12 @@ import (
 const api = "https://mooc1-api.chaoxing.com"
 
 type Fault struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Category  string `json:"category,omitempty"`
-	Retryable bool   `json:"retryable"`
-	Hint      string `json:"hint,omitempty"`
+	Code              string `json:"code"`
+	Message           string `json:"message"`
+	Category          string `json:"category,omitempty"`
+	Retryable         bool   `json:"retryable"`
+	Hint              string `json:"hint,omitempty"`
+	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
 }
 
 func (f *Fault) Error() string     { return f.Code + ": " + f.Message }
@@ -47,6 +50,7 @@ func SafeFault(err error) *Fault {
 	var src *Fault
 	if errors.As(err, &src) {
 		f.Code = src.Code
+		f.RetryAfterSeconds = src.RetryAfterSeconds
 	}
 	if errors.Is(err, operation.ErrInvalidArgument) {
 		f.Code = "INVALID_ARGUMENT"
@@ -55,6 +59,10 @@ func SafeFault(err error) *Fault {
 		f.Code = "INVALID_TOOL"
 	}
 	switch f.Code {
+	case "UPSTREAM_RATE_LIMITED":
+		f.Category, f.Retryable = "resource", true
+		f.Message = "Upstream requested a polling cooldown."
+		f.Hint = "Wait for retry_after_seconds; do not increase request frequency."
 	case "RATE_LIMITED":
 		f.Category = "resource"
 		f.Message = "Query capacity is temporarily exhausted."
@@ -152,31 +160,36 @@ type SavedCookies struct {
 	Cookies []*http.Cookie `json:"cookies"`
 }
 type Client struct {
-	queries           *admission.Gate
-	config            Config
-	http              *http.Client
-	saved             map[string]SavedCookies
-	savedHash         [sha256.Size]byte
-	lastLogin         time.Time
-	loginFailedAt     time.Time
-	courses           []Course
-	coursesAt         time.Time
-	assignments       []Assignment
-	assignmentsAt     time.Time
-	coverage          string
-	extraAssignments  map[string]Assignment
-	device            deviceState
-	identity          *signIdentity
-	im                *imConfig
-	imGroups          []imGroup
-	imGroupsAt        time.Time
-	imActivities      []Activity
-	imActivitiesAt    time.Time
-	imActivitiesOK    bool
-	imActivityWarning []string
-	workJobs          map[string]WorkJob
-	workQuestionSets  map[string]cachedWorkQuestionSet
-	captchaChallenges map[string]signCaptchaChallenge
+	queries             *admission.Gate
+	config              Config
+	http                *http.Client
+	saved               map[string]SavedCookies
+	savedHash           [sha256.Size]byte
+	lastLogin           time.Time
+	loginFailedAt       time.Time
+	courses             []Course
+	coursesAt           time.Time
+	assignments         []Assignment
+	assignmentsAt       time.Time
+	coverage            string
+	extraAssignments    map[string]Assignment
+	device              deviceState
+	identity            *signIdentity
+	im                  *imConfig
+	imGroups            []imGroup
+	imGroupsAt          time.Time
+	imActivities        []Activity
+	imActivitiesAt      time.Time
+	imActivitiesOK      bool
+	imActivityWarning   []string
+	workJobs            map[string]WorkJob
+	workQuestionSets    map[string]cachedWorkQuestionSet
+	captchaChallenges   map[string]signCaptchaChallenge
+	cooldownMu          sync.Mutex
+	cooldowns           map[string]endpointCooldown
+	evidence            *evidenceWriter
+	evidenceFailures    atomic.Uint64
+	evidenceConsecutive atomic.Uint64
 }
 
 type cachedWorkQuestionSet struct {
@@ -213,6 +226,9 @@ func New(c Config) (*Client, error) {
 		return nil
 	}
 	x := &Client{config: c, http: h, saved: map[string]SavedCookies{}, queries: admission.New(1, 8)}
+	if c.SessionPath != "" {
+		x.evidence = newEvidenceWriter(c.SessionPath)
+	}
 	if e = x.loadDeviceState(); e != nil {
 		return nil, e
 	}
@@ -329,10 +345,15 @@ func (c *Client) raw(ctx context.Context, method, rawurl string, form url.Values
 	return c.rawLimit(ctx, method, rawurl, form, maxRawResponseBytes)
 }
 
-func (c *Client) rawLimit(ctx context.Context, method, rawurl string, form url.Values, limit int64) ([]byte, *http.Response, error) {
+func (c *Client) rawLimit(ctx context.Context, method, rawurl string, form url.Values, limit int64) (bodyBytes []byte, response *http.Response, requestErr error) {
 	u, e := url.Parse(rawurl)
 	if e != nil || !safeURL(u) {
 		return nil, nil, fault("INVALID_URL", "upstream URL not permitted")
+	}
+	started := time.Now()
+	defer func() { c.observeResponse(ctx, method, u, started, bodyBytes, response, requestErr) }()
+	if e := c.endpointDeferred(u); e != nil {
+		return nil, nil, e
 	}
 	var body io.Reader
 	if form != nil {
@@ -345,6 +366,11 @@ func (c *Client) rawLimit(ctx context.Context, method, rawurl string, form url.V
 	r.Header.Set("User-Agent", c.userAgent())
 	if form != nil {
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if u.Path == "/pptSign/stuSignajax" {
+		if trace, ok := ctx.Value(signTraceKey{}).(*signAuditTrace); ok && trace != nil {
+			trace.Submitted = true
+		}
 	}
 	resp, e := c.http.Do(r)
 	if e != nil {
@@ -363,6 +389,9 @@ func (c *Client) rawLimit(ctx context.Context, method, rawurl string, form url.V
 	}
 	if int64(len(b)) > limit {
 		return nil, resp, fault("RESPONSE_TOO_LARGE", "upstream response exceeds limit")
+	}
+	if upstreamRateLimited(b) || resp.StatusCode == http.StatusTooManyRequests {
+		return b, resp, c.deferEndpoint(u)
 	}
 	// Save cookies at every redirect hop in Jar but snapshot final response here.
 	if e = c.save(resp); e != nil {

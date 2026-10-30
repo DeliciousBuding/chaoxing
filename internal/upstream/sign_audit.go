@@ -15,6 +15,29 @@ import (
 const egressProbeURL = "https://www.cloudflare.com/cdn-cgi/trace"
 
 func (c *Client) recordSignAudit(req SignRequest, result *SignResult, signErr error, trace *signAuditTrace) {
+	if trace != nil {
+		result.Submitted = trace.Submitted
+	}
+	if !result.Submitted {
+		result.Method = "none"
+		result.Address, result.Latitude, result.Longitude = "", nil, nil
+		result.EgressIP, result.EgressSource = "", "not_submitted"
+	}
+	attemptID := ""
+	if trace != nil {
+		attemptID = trace.AttemptID
+	}
+	outcome := result.State
+	if signErr != nil {
+		outcome = "failed"
+	}
+	c.recordEvidence(map[string]any{
+		"event": "sign_result", "course_id": req.CourseID, "class_id": req.ClassID,
+		"activity_id": req.ActivityID, "submitted": result.Submitted, "verified": result.Verified,
+		"method": result.Method, "state": outcome, "state_source": result.StateSource,
+		"code":            evidenceErrorCode(signErr),
+		"sign_attempt_id": attemptID,
+	})
 	if c.config.SignAudit == nil {
 		return
 	}
@@ -39,15 +62,22 @@ func (c *Client) recordSignAudit(req SignRequest, result *SignResult, signErr er
 			latitude, longitude = trace.Latitude, trace.Longitude
 		}
 	}
-	if address == "" {
+	if address == "" && result.Submitted {
 		address = strings.TrimSpace(req.Address)
 	}
-	if latitude == nil && req.Latitude != nil {
+	if latitude == nil && req.Latitude != nil && result.Submitted {
 		latitude, longitude = req.Latitude, req.Longitude
 	}
 	result.Address, result.Latitude, result.Longitude = address, latitude, longitude
 	egressIP, egressSource := result.EgressIP, result.EgressSource
-	if egressIP == "" {
+	if !result.Submitted {
+		method = "none"
+		result.Method = "none"
+		address, latitude, longitude = "", nil, nil
+		egressIP, egressSource = "", "not_submitted"
+		result.Address, result.Latitude, result.Longitude = "", nil, nil
+		result.EgressIP, result.EgressSource = "", "not_submitted"
+	} else if egressIP == "" {
 		egressIP, egressSource = c.probeEgressIP()
 		result.EgressIP, result.EgressSource = egressIP, egressSource
 	}

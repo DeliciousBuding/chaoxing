@@ -53,6 +53,8 @@ type SignResult struct {
 	Method       string    `json:"method"`
 	State        string    `json:"state"`
 	Verified     bool      `json:"verified"`
+	Submitted    bool      `json:"submitted"`
+	StateSource  string    `json:"state_source,omitempty"`
 	Address      string    `json:"address,omitempty"`
 	Latitude     *float64  `json:"latitude,omitempty"`
 	Longitude    *float64  `json:"longitude,omitempty"`
@@ -62,9 +64,12 @@ type SignResult struct {
 }
 
 type signAuditTrace struct {
-	Address   string
-	Latitude  *float64
-	Longitude *float64
+	AttemptID  string
+	ActivityID string
+	Submitted  bool
+	Address    string
+	Latitude   *float64
+	Longitude  *float64
 }
 
 type activeInfo struct {
@@ -114,6 +119,9 @@ func (c *Client) signActivityLocked(ctx context.Context, req SignRequest) (SignR
 // signActivityWithSolver runs the sign state machine and, when a solver is
 // configured, resolves one slider challenge before a single retry.
 func (c *Client) signActivityWithSolver(ctx context.Context, req SignRequest, trace *signAuditTrace) (SignResult, error) {
+	trace.AttemptID = strconv.FormatInt(time.Now().UnixNano(), 36)
+	trace.ActivityID = req.ActivityID
+	ctx = context.WithValue(ctx, signTraceKey{}, trace)
 	result, err := c.signActivity(ctx, req, trace)
 	if err == nil || c.config.CaptchaSolver == nil {
 		return result, err
@@ -154,12 +162,6 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest, trace *signA
 	activity, ok := findActivity(rows, req.ActivityID)
 	if !ok || activity.Kind != "signin" {
 		return SignResult{}, fault("NOT_FOUND", "activity is not in the current class feed")
-	}
-	if activity.UserState != "unsigned" {
-		return SignResult{
-			ActivityID: activity.ID, CourseID: activity.CourseID, ClassID: activity.ClassID,
-			Method: "none", State: activity.UserState, Verified: true, FetchedAt: time.Now().UTC(),
-		}, nil
 	}
 	if activity.State != "active" || !activity.Signable {
 		return SignResult{}, fault("UNSUPPORTED", "activity is not currently signable")
@@ -237,9 +239,12 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest, trace *signA
 	if !verified {
 		return SignResult{}, fault("SIGN_REJECTED", "upstream did not confirm the sign-in")
 	}
+	if !trace.Submitted {
+		method = "none"
+	}
 	return SignResult{
 		ActivityID: activity.ID, CourseID: activity.CourseID, ClassID: activity.ClassID,
-		Method: method, State: state, Verified: true, Address: trace.Address,
+		Method: method, State: state, Verified: true, Submitted: trace.Submitted, StateSource: "attendance", Address: trace.Address,
 		Latitude: trace.Latitude, Longitude: trace.Longitude, FetchedAt: time.Now().UTC(),
 	}, nil
 }
@@ -318,7 +323,14 @@ func (c *Client) attendanceVerified(ctx context.Context, activityID string) (boo
 	if json.Unmarshal(b, &payload) != nil || payload.Result != 1 || !payload.Data.Status.ok {
 		return false, fault("UPSTREAM_SCHEMA", "attendance state not recognized")
 	}
-	return payload.Data.Status.value != 0, nil
+	switch payload.Data.Status.value {
+	case 1, 2, 3, 9:
+		return true, nil
+	case 0, 4, 5, 10, 11:
+		return false, nil
+	default:
+		return false, fault("UPSTREAM_SCHEMA", "unknown attendance status")
+	}
 }
 
 func (c *Client) signSelected(ctx context.Context, activity Activity, info activeInfo, req SignRequest, method string, trace *signAuditTrace) (string, error) {
@@ -597,17 +609,8 @@ func (c *Client) preSign(ctx context.Context, activity Activity, identity signId
 }
 
 func signedStatus(body string) bool {
-	for _, pattern := range []*regexp.Regexp{
-		regexp.MustCompile(`"primaryAttend"\s*:\s*\{[^{}]*?"status"\s*:\s*(\d+)`),
-		regexp.MustCompile(`signstatus\s*=\s*(\d+)`),
-	} {
-		if m := pattern.FindStringSubmatch(body); m != nil {
-			if n, err := strconv.Atoi(m[1]); err == nil {
-				return n == 1 || n == 2 || n == 3 || n == 9
-			}
-		}
-	}
-	return false
+	n, ok := primaryAttendanceStatus(body)
+	return ok && (n == 1 || n == 2 || n == 3 || n == 9)
 }
 
 func (c *Client) postAnalysis(ctx context.Context, activityID string) error {

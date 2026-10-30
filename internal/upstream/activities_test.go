@@ -47,7 +47,7 @@ func TestActivityFeedNormalizesSignInState(t *testing.T) {
 		byID[item.ID] = item
 	}
 	unsigned := byID["101"]
-	if unsigned.Course != "Synthetic" || unsigned.Kind != "signin" || unsigned.State != "active" || unsigned.UserState != "unsigned" || !unsigned.Signable {
+	if unsigned.Course != "Synthetic" || unsigned.Kind != "signin" || unsigned.State != "active" || unsigned.UserState != "unknown" || !unsigned.Signable || unsigned.StateSource != "class_feed_unverified" {
 		t.Fatalf("%+v", unsigned)
 	}
 	if unsigned.StartsAt == nil || unsigned.EndsAt == nil {
@@ -58,7 +58,7 @@ func TestActivityFeedNormalizesSignInState(t *testing.T) {
 		t.Fatalf("%+v", finished)
 	}
 	signed := byID["103"]
-	if signed.Kind != "signin" || signed.State != "active" || signed.UserState != "signed" || signed.Signable {
+	if signed.Kind != "signin" || signed.State != "active" || signed.UserState != "unknown" || !signed.Signable || signed.RawUserStatus != 1 {
 		t.Fatalf("%+v", signed)
 	}
 }

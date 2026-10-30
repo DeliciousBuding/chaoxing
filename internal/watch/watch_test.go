@@ -79,6 +79,39 @@ func (f *fakeSigner) SignActivity(_ context.Context, req upstream.SignRequest) (
 	return f.result, f.err
 }
 
+func TestWatchDoesNotClaimExternalOrUnverifiedSignAsAutomaticSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		result    upstream.SignResult
+		wantTitle string
+	}{
+		{"external", upstream.SignResult{Method: "none", State: "signed", Verified: true, StateSource: "attendance"}, "✅ 学习通已签（非本次提交）"},
+		{"not verified", upstream.SignResult{Method: "normal", State: "signed", Submitted: true}, "🚨 学习通自动签到失败"},
+		{"not submitted", upstream.SignResult{Method: "normal", State: "signed", Verified: true}, "🚨 学习通自动签到失败"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
+			sender := &fakeSender{}
+			signer := &fakeSigner{result: tc.result}
+			r, err := New(Config{Interval: time.Minute, RepeatEvery: time.Minute, MaxRepeats: 3, AutoSign: true, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: filepath.Join(t.TempDir(), "state.json")}, src, sender, signer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.state["c:k:1"] = entry{Status: "signed", LastAttempt: time.Now()}
+			r.Tick(context.Background())
+			if len(signer.requests) != 1 || len(sender.sent) != 1 || sender.sent[0].Title != tc.wantTitle {
+				t.Fatalf("requests=%d notifications=%+v", len(signer.requests), sender.sent)
+			}
+			if tc.result.Method == "none" {
+				r.Tick(context.Background())
+				if len(signer.requests) != 1 || !r.state["c:k:1"].AttendanceVerified || r.state["c:k:1"].Submitted {
+					t.Fatal("verified external result was not durably distinguished")
+				}
+			}
+		})
+	}
+}
+
 type fakeSender struct {
 	fail bool
 	sent []notify.Message
@@ -337,7 +370,7 @@ func TestWatchAlertsThenRepeatsUntilSigned(t *testing.T) {
 func TestWatchAutoSignsOnceAndUsesPresetLocation(t *testing.T) {
 	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
 	snd := &fakeSender{}
-	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true, Submitted: true}}
 	r, err := New(Config{
 		Interval: time.Minute, RepeatEvery: time.Minute, MaxRepeats: 3, AutoSign: true,
 		Classes:   []Class{{CourseID: "c", ClassID: "k", Location: &Location{Latitude: 31.1, Longitude: 121.2, Address: "Synthetic room"}}},
@@ -371,7 +404,7 @@ func TestWatchMergesGroupCardAndUsesPresetSignCode(t *testing.T) {
 	item.Source, item.GroupName = "group", "Synthetic course group"
 	src.groupItems = []upstream.Activity{item}
 	snd := &fakeSender{}
-	signer := &fakeSigner{result: upstream.SignResult{Method: "password", State: "signed", Verified: true}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "password", State: "signed", Verified: true, Submitted: true}}
 	r, err := New(Config{
 		Interval: time.Minute, AutoSign: true,
 		Classes:   []Class{{CourseID: "c", ClassID: "k", SignCode: &SignCode{Code: "1234"}}},
@@ -394,7 +427,7 @@ func TestWatchMergesGroupCardAndUsesPresetSignCode(t *testing.T) {
 }
 
 func TestWatchSignsBeforeSlowGroupScan(t *testing.T) {
-	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true, Submitted: true}}
 	src := &orderGroupSource{
 		fakeSource: fakeSource{items: []upstream.Activity{signIn("c", "k", "primary-1", true)}},
 		signer:     signer,
@@ -420,7 +453,7 @@ func TestWatchSignsBeforeSlowGroupScan(t *testing.T) {
 
 func TestWatchStillSignsWhenPollDelayIsExhausted(t *testing.T) {
 	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "primary-2", true)}}
-	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true, Submitted: true}}
 	r, err := New(Config{
 		Interval: time.Minute, AutoSign: true, ClassPollDelayMin: time.Second, ClassPollDelayMax: time.Second,
 		Classes: []Class{
@@ -586,7 +619,7 @@ func TestWatchAutoSignStopsAfterBoundedTransientRetries(t *testing.T) {
 
 func TestWatchAutoSignOverlapWithoutLocationResolverStillSigns(t *testing.T) {
 	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
-	signer := &fakeSigner{result: upstream.SignResult{Method: "normal", State: "signed", Verified: true}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "normal", State: "signed", Verified: true, Submitted: true}}
 	r, err := New(Config{
 		Interval: time.Minute, AutoSign: true, PollBefore: 20 * time.Minute, PollAfter: 20 * time.Minute,
 		Classes: []Class{{
@@ -610,7 +643,7 @@ func TestWatchAutoSignOverlapWithoutLocationResolverStillSigns(t *testing.T) {
 
 func TestWatchAutoSignOverlapWithDisabledLocationServiceStillSigns(t *testing.T) {
 	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
-	signer := &fakeSigner{result: upstream.SignResult{Method: "normal", State: "signed", Verified: true}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "normal", State: "signed", Verified: true, Submitted: true}}
 	r, err := New(Config{
 		Interval: time.Minute, AutoSign: true, PollBefore: 20 * time.Minute, PollAfter: 20 * time.Minute,
 		LocationResolver: location.NewResolver(nil, "root"),
@@ -677,7 +710,7 @@ func TestWatchAutoSignFailureRetriesAlertDelivery(t *testing.T) {
 func TestWatchPendingAlertSurvivesActivityDisappearing(t *testing.T) {
 	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
 	snd := &fakeSender{fail: true}
-	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true, Submitted: true}}
 	r, err := New(Config{Interval: time.Minute, AutoSign: true, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/state.json"}, src, snd, signer)
 	if err != nil {
 		t.Fatal(err)
@@ -1119,7 +1152,7 @@ func (f *fakeLocationService) DeleteBinding(context.Context, string, string, str
 func TestWatchResolverOverridesPresetLocation(t *testing.T) {
 	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "1", true)}}
 	snd := &fakeSender{}
-	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true, Submitted: true}}
 	class := Class{
 		CourseID: "c", ClassID: "k", Schedule: []Schedule{{Days: []string{"Tue"}, Start: "08:00", End: "09:40"}},
 		Location: &Location{Latitude: 31.1, Longitude: 121.2, Address: "legacy config"},
@@ -1149,7 +1182,7 @@ func TestAutoSignUsesScheduleKeyCapturedBeforeDelay(t *testing.T) {
 	clock := time.Date(2026, 10, 20, 9, 59, 50, 0, shanghai) // Tuesday, 10s before post-class padding ends
 	src := &fakeSource{items: []upstream.Activity{signIn("c", "k", "gate-1", true)}}
 	snd := &fakeSender{}
-	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true}}
+	signer := &fakeSigner{result: upstream.SignResult{Method: "location", State: "signed", Verified: true, Submitted: true}}
 	service := &fakeLocationService{account: "root", bindings: map[string]location.Location{
 		"c\x00k\x00Tue-08:00-09:40": {Latitude: 39.90420, Longitude: 116.40740, Address: "Synthetic specific"},
 		"c\x00k\x00":                {Latitude: 31.10000, Longitude: 121.20000, Address: "Synthetic class fallback"},

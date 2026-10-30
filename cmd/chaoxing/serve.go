@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -843,7 +844,8 @@ func serve() error {
 		if meter, ok := signAudits.(*signaudit.Metered); ok {
 			signAuditConsecutive, _ = meter.Health()
 		}
-		ok := !stale && panics < 3 && !degraded && !stateDegraded && !feedDegraded && auditConsecutive < 3 && signAuditConsecutive < 3
+		evidenceFailures, evidenceConsecutive := x.EvidenceHealth()
+		ok := !stale && panics < 3 && !degraded && !stateDegraded && !feedDegraded && auditConsecutive < 3 && signAuditConsecutive < 3 && evidenceConsecutive < 3
 		watcherCount, _ := health["count"].(int)
 		ticks, _ := health["ticks"].(int)
 		lastTick, _ := health["last_tick_at"].(time.Time)
@@ -859,6 +861,8 @@ func serve() error {
 			"ok": ok, "stale": stale, "consecutive_panics": panics, "degraded": degraded,
 			"state_degraded": stateDegraded, "feed_degraded": feedDegraded, "watcher_count": watcherCount, "ticks": ticks,
 			"sign_audit_consecutive_write_failures": signAuditConsecutive,
+			"evidence_write_failures":               evidenceFailures,
+			"evidence_consecutive_write_failures":   evidenceConsecutive,
 			"last_tick_at":                          lastTickText, "audit_write_failures": control["audit_write_failures"],
 			"audit_consecutive_write_failures": auditConsecutive,
 		})
@@ -902,9 +906,10 @@ func serve() error {
 		v, e := execute(ctx, in.Tool, in.Arguments)
 		if e != nil {
 			status := http.StatusBadGateway
-			if upstream.SafeFault(e).Code == "RATE_LIMITED" {
+			safe := upstream.SafeFault(e)
+			if safe.Code == "RATE_LIMITED" || safe.Code == "UPSTREAM_RATE_LIMITED" {
 				status = http.StatusTooManyRequests
-				w.Header().Set("Retry-After", "1")
+				w.Header().Set("Retry-After", strconv.Itoa(max(1, safe.RetryAfterSeconds)))
 			}
 			w.WriteHeader(status)
 			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": upstream.SafeFault(e)})
