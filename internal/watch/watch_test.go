@@ -1249,6 +1249,9 @@ func TestRunPollsImmediatelyAfterStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Verify startup scheduling independently of the wall clock. The final
+	// minute of a real day lies outside this test's 00:00-23:59 window.
+	runner.now = func() time.Time { return time.Date(2026, 10, 20, 12, 0, 0, 0, shanghai) }
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go runner.Run(ctx)
