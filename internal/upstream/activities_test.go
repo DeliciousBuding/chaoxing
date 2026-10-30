@@ -10,6 +10,30 @@ import (
 	"time"
 )
 
+func TestActivityCooldownStopsCourseAndGroupFanout(t *testing.T) {
+	calls := 0
+	c := academicClient(t, []Course{{ID: "synthetic-course", ClassID: "class-a"}}, roundtrip(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Path != "/v2/apis/active/student/activelist" {
+			t.Fatalf("rejected activity query continued with unrelated request %s", r.URL.Path)
+		}
+		return response(r, `{"result":0,"errorMsg":"请勿频繁操作"}`), nil
+	}))
+	c.config.GroupActivities = true
+	args := map[string]any{"course_id": "synthetic-course", "class_id": "class-a"}
+	if _, err := c.Call(context.Background(), "list_activities", args); SafeFault(err).Code != "UPSTREAM_RATE_LIMITED" || calls != 1 {
+		t.Fatalf("initial rejection: calls=%d err=%v", calls, err)
+	}
+	// Expire the course cache: a deferred query must not refresh it either.
+	c.coursesAt = time.Time{}
+	if _, err := c.Call(context.Background(), "list_activities", args); SafeFault(err).Code != "UPSTREAM_RATE_LIMITED" || calls != 1 {
+		t.Fatalf("interactive cooldown caused fanout: calls=%d err=%v", calls, err)
+	}
+	if _, err := c.ListClassActivities(context.Background(), "synthetic-course", "class-a"); SafeFault(err).Code != "UPSTREAM_RATE_LIMITED" || calls != 1 {
+		t.Fatalf("watcher cooldown refreshed courses: calls=%d err=%v", calls, err)
+	}
+}
+
 func TestClassActivityCacheCoalescesWithoutHidingCooldown(t *testing.T) {
 	calls := 0
 	c := academicClient(t, []Course{{ID: "synthetic-course", ClassID: "class-a"}}, roundtrip(func(r *http.Request) (*http.Response, error) {

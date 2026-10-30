@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -20,6 +21,15 @@ const classActivityCacheTTL = 30 * time.Second
 type cachedClassActivities struct {
 	rows []Activity
 	at   time.Time
+}
+
+func (c *Client) activityDeferred(ctx context.Context) error {
+	u, _ := url.Parse(activityAPI)
+	err := c.endpointDeferred(u)
+	if err != nil {
+		c.observeResponse(ctx, http.MethodGet, u, time.Now(), nil, nil, err)
+	}
+	return err
 }
 
 // Activity is the normalized, read-only projection of one class activity.
@@ -87,6 +97,9 @@ type rawActivity struct {
 }
 
 func (c *Client) activities(ctx context.Context, args map[string]any) (any, error) {
+	if err := c.activityDeferred(ctx); err != nil {
+		return nil, err
+	}
 	limit := number(args, "limit", 50)
 	if limit < 1 {
 		limit = 50
@@ -123,6 +136,9 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 		items = append(items, rows...)
 		classes = append(classes, map[string]any{"course_id": co.ID, "class_id": co.ClassID, "complete": true, "cache_hit": !cached.at.IsZero() && time.Since(cached.at) < classActivityCacheTTL, "fetched_at": c.classActivities[co.ID+":"+co.ClassID].at.UTC()})
 	}
+	if failed == len(selected) && firstErr != nil {
+		return nil, firstErr
+	}
 	groupAvailable := !c.config.GroupActivities
 	var groupErr error
 	if c.config.GroupActivities {
@@ -151,9 +167,6 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 	if groupErr != nil {
 		code := academicCode(groupErr)
 		warnings = append(warnings, "group activity feed unavailable: "+code)
-	}
-	if failed == len(selected) && firstErr != nil {
-		return nil, firstErr
 	}
 	items = dedupeActivities(items)
 	total := len(items)
