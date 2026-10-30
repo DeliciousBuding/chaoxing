@@ -55,6 +55,10 @@ type signIdentity struct {
 	SC         string
 }
 
+// Course participation uses the person identity; the IM account keeps its
+// distinct user identity. Older envelopes may omit puid.
+func (s signIdentity) signUID() string { return firstNonBlank(s.PUID, s.UID) }
+
 func (c *Client) loadDeviceState() error {
 	path := c.deviceStatePath()
 	if path == "" {
@@ -349,16 +353,24 @@ func decryptDeviceIdentity(clientID string) (string, string, error) {
 	if !ok {
 		return "", "", errors.New("device key is not RSA")
 	}
-	m := new(big.Int).Exp(new(big.Int).SetBytes(cipher), big.NewInt(int64(rsaKey.E)), rsaKey.N)
-	encoded := m.Bytes()
+	return recoverDeviceIdentity(rsaKey, cipher)
+}
+
+func recoverDeviceIdentity(rsaKey *rsa.PublicKey, cipher []byte) (string, string, error) {
+	value := new(big.Int).SetBytes(cipher)
+	if len(cipher) != rsaKey.Size() || value.Cmp(rsaKey.N) >= 0 {
+		return "", "", errors.New("client id size or representative is invalid")
+	}
+	m := new(big.Int).Exp(value, big.NewInt(int64(rsaKey.E)), rsaKey.N)
+	encoded := m.FillBytes(make([]byte, rsaKey.Size()))
 	if len(encoded) < 11 || encoded[0] != 0 || encoded[1] != 1 {
 		return "", "", errors.New("client id block is invalid")
 	}
-	end := 10
-	for end < len(encoded) && encoded[end] != 0 {
+	end := 2
+	for end < len(encoded) && encoded[end] == 0xff {
 		end++
 	}
-	if end >= len(encoded) {
+	if end < 10 || end >= len(encoded) || encoded[end] != 0 {
 		return "", "", errors.New("client id padding is invalid")
 	}
 	var device struct {

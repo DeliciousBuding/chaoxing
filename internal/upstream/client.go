@@ -90,7 +90,7 @@ func SafeFault(err error) *Fault {
 	case "UPSTREAM_HTTP":
 		f.Category = "upstream"
 		f.Message = "Upstream rejected the request."
-	case "SIGN_REJECTED", "SIGN_LOCATION_REJECTED":
+	case "SIGN_REJECTED", "SIGN_LOCATION_REJECTED", "SIGN_DEVICE_REJECTED":
 		f.Category = "upstream_state"
 		f.Message = "The sign-in submission was not accepted."
 		f.Hint = "Check the activity state and configured coordinates."
@@ -183,6 +183,7 @@ type Client struct {
 	im                  *imConfig
 	imGroups            []imGroup
 	imGroupsAt          time.Time
+	imGroupCursor       int
 	imActivities        []Activity
 	imActivitiesAt      time.Time
 	imActivitiesOK      bool
@@ -406,7 +407,7 @@ func (c *Client) rawLimit(ctx context.Context, method, rawurl string, form url.V
 		return nil, resp, fault("STATE_WRITE_FAILED", "cannot persist session")
 	}
 	if resp.StatusCode != 200 {
-		return nil, resp, httpStatusFault(resp.StatusCode, "upstream")
+		return b, resp, httpStatusFault(resp.StatusCode, "upstream")
 	}
 	if e = c.endpointSucceeded(u, b); e != nil {
 		return nil, resp, e
@@ -530,14 +531,18 @@ func (c *Client) authenticatedReadResponse(ctx context.Context, method, u string
 
 func (c *Client) authenticatedReadResponseLimit(ctx context.Context, method, u string, form url.Values, limit int64) ([]byte, *http.Response, error) {
 	b, r, e := c.rawLimit(ctx, method, u, form, limit)
-	if e != nil {
+	if e != nil && !preSignSessionRejected(r) {
 		return nil, nil, e
 	}
-	if loginRequired(b, r) {
+	if preSignSessionRejected(r) || loginRequired(b, r) {
+		c.recordEvidence(map[string]any{"event": "session_recovery", "reason": "upstream_login_required"})
 		if e = c.login(ctx); e != nil {
 			return nil, nil, e
 		}
 		b, r, e = c.rawLimit(ctx, method, u, form, limit)
+		if preSignSessionRejected(r) {
+			return nil, nil, fault("AUTH_REQUIRED", "pre-sign session rejected after automatic login")
+		}
 		if e != nil {
 			return nil, nil, e
 		}
@@ -546,6 +551,10 @@ func (c *Client) authenticatedReadResponseLimit(ctx context.Context, method, u s
 		}
 	}
 	return b, r, nil
+}
+
+func preSignSessionRejected(r *http.Response) bool {
+	return r != nil && r.StatusCode == http.StatusForbidden && r.Request != nil && r.Request.URL.Hostname() == "mobilelearn.chaoxing.com" && r.Request.URL.Path == "/newsign/preSign"
 }
 func (c *Client) lock(ctx context.Context) error {
 	if err := c.queries.Acquire(ctx); err != nil {

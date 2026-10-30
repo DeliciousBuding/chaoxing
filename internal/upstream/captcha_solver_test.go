@@ -20,7 +20,7 @@ func (f *fakeCaptchaSolver) Solve(_ context.Context, image, cutout []byte) (int,
 	return f.x, f.failure
 }
 
-func TestSignActivitySolvesSliderCaptcha(t *testing.T) {
+func TestSignActivitySolvesDynamicallyRequestedSliderCaptcha(t *testing.T) {
 	signCalls := 0
 	solver := &fakeCaptchaSolver{x: 120}
 	c := academicClient(t, []Course{{ID: "course-1", ClassID: "class-1", Name: "Synthetic"}}, roundtrip(func(r *http.Request) (*http.Response, error) {
@@ -43,7 +43,7 @@ func TestSignActivitySolvesSliderCaptcha(t *testing.T) {
 		case "/v2/apis/active/student/activelist":
 			return response(r, signActivityResponse(5, "")), nil
 		case "/v2/apis/active/getPPTActiveInfo":
-			return response(r, `{"result":1,"data":{"otherId":5,"ifNeedVCode":1,"openCheckFaceFlag":0}}`), nil
+			return response(r, `{"result":1,"data":{"otherId":5,"ifNeedVCode":0,"openCheckFaceFlag":0}}`), nil
 		case "/apis/login/userLogin4Uname.do":
 			return response(r, `{"status":true,"msg":{"name":"Synthetic User","uid":"10001","puid":"10001","fid":"20002"}}`), nil
 		case "/newsign/preSign":

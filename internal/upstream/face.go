@@ -39,7 +39,7 @@ func (c *Client) enrollFace(ctx context.Context, objectID string) (FaceEnrollRes
 	if err != nil {
 		return FaceEnrollResult{}, err
 	}
-	q := orderedQuery("objectid", objectID, "uid", identity.UID, "fid", identity.FID)
+	q := orderedQuery("objectid", objectID, "uid", identity.signUID(), "fid", identity.FID)
 	b, err := c.get(ctx, faceEnrollAPI+"?"+q)
 	if err != nil {
 		return FaceEnrollResult{}, err
@@ -62,7 +62,7 @@ func (c *Client) faceCheck(ctx context.Context, activity Activity, faceObjectID 
 	raw := "LiveDetectionStatus1collectStatus1currentFaceId" + faceObjectID + "cxcid" + identity.CXCID + "cxtime" + cxtime + identity.SC
 	sum := md5.Sum([]byte(raw))
 	faceResult, err := json.Marshal(map[string]any{
-		"currentFaceId": faceObjectID, "collectStatus": "1", "LiveDetectionStatus": "1",
+		"currentFaceId": faceObjectID, "collectStatus": 1, "LiveDetectionStatus": 1,
 		"cxcid": identity.CXCID, "cxtime": cxtime, "signToken": hex.EncodeToString(sum[:]),
 	})
 	if err != nil {
@@ -77,11 +77,11 @@ func (c *Client) faceCheck(ctx context.Context, activity Activity, faceObjectID 
 		return "", "", err
 	}
 	var payload struct {
-		Status int    `json:"status"`
-		Enc    string `json:"enc"`
-		Code   string `json:"code"`
+		Status flexInt `json:"status"`
+		Enc    string  `json:"enc"`
+		Code   string  `json:"code"`
 	}
-	if json.Unmarshal(b, &payload) != nil || payload.Status != 1 || payload.Enc == "" {
+	if json.Unmarshal(b, &payload) != nil || (payload.Status.ok && payload.Status.value != 1) || payload.Enc == "" {
 		return "", "", fault("FACE_CHECK_REJECTED", "face liveness check was not accepted")
 	}
 	return payload.Enc, payload.Code, nil

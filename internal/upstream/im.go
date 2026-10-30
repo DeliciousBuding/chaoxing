@@ -32,8 +32,10 @@ type imConfig struct {
 }
 
 type imGroup struct {
-	Name string `json:"name"`
-	ID   string `json:"id"`
+	Name     string `json:"name"`
+	ID       string `json:"id"`
+	CourseID string `json:"course_id,omitempty"`
+	ClassID  string `json:"class_id,omitempty"`
 }
 
 // ListGroupActivities reads sign-in cards from Easemob group history. It is a
@@ -71,7 +73,7 @@ func (c *Client) groupActivities(ctx context.Context, groups []imGroup) ([]Activ
 	complete := true
 	warnings := []string{}
 	if len(groups) > maxIMGroupsPerSweep {
-		groups = groups[:maxIMGroupsPerSweep]
+		groups = c.selectIMGroups(groups)
 		complete = false
 		warnings = append(warnings, "group sweep capped before every joined group was scanned")
 	}
@@ -123,6 +125,41 @@ func (c *Client) groupActivities(ctx context.Context, groups []imGroup) ([]Activ
 	c.imActivities, c.imActivitiesAt = rows, time.Now()
 	c.imActivitiesOK, c.imActivityWarning = complete, warnings
 	return rows, complete, warnings, nil
+}
+
+func (c *Client) selectIMGroups(groups []imGroup) []imGroup {
+	priority, other := []imGroup{}, []imGroup{}
+	for _, group := range groups {
+		active := false
+		for key, cached := range c.classActivities {
+			if time.Since(cached.at) < classActivityCacheTTL && group.CourseID != "" && (key == group.CourseID+":"+group.ClassID || (group.ClassID == "" && strings.HasPrefix(key, group.CourseID+":"))) {
+				active = true
+				break
+			}
+		}
+		if active {
+			priority = append(priority, group)
+		} else {
+			other = append(other, group)
+		}
+	}
+	selected := make([]imGroup, 0, maxIMGroupsPerSweep)
+	if len(priority) > maxIMGroupsPerSweep {
+		for i := 0; i < maxIMGroupsPerSweep; i++ {
+			selected = append(selected, priority[(c.imGroupCursor+i)%len(priority)])
+		}
+		c.imGroupCursor = (c.imGroupCursor + maxIMGroupsPerSweep) % len(priority)
+		return selected
+	}
+	selected = append(selected, priority...)
+	slots := min(maxIMGroupsPerSweep-len(selected), len(other))
+	for i := 0; i < slots; i++ {
+		selected = append(selected, other[(c.imGroupCursor+i)%len(other)])
+	}
+	if len(other) > 0 {
+		c.imGroupCursor = (c.imGroupCursor + slots) % len(other)
+	}
+	return selected
 }
 
 func (c *Client) imConfig(ctx context.Context) (imConfig, error) {
@@ -191,17 +228,24 @@ func (c *Client) fetchIMGroups(ctx context.Context) ([]imGroup, error) {
 	for _, item := range payload.Data {
 		if strings.TrimSpace(item.ID) != "" {
 			name := strings.TrimSpace(item.Name)
-			if name == "" {
-				var description struct {
-					CourseInfo struct {
-						CourseName string `json:"coursename"`
-					} `json:"courseInfo"`
-				}
-				if json.Unmarshal([]byte(item.Description), &description) == nil {
-					name = strings.TrimSpace(description.CourseInfo.CourseName)
-				}
+			var description struct {
+				CourseInfo struct {
+					CourseName string  `json:"coursename"`
+					CourseID   flexInt `json:"courseid"`
+					ClassID    flexInt `json:"classid"`
+				} `json:"courseInfo"`
 			}
-			groups = append(groups, imGroup{Name: name, ID: strings.TrimSpace(item.ID)})
+			if json.Unmarshal([]byte(item.Description), &description) == nil && name == "" {
+				name = strings.TrimSpace(description.CourseInfo.CourseName)
+			}
+			group := imGroup{Name: name, ID: strings.TrimSpace(item.ID)}
+			if description.CourseInfo.CourseID.ok && description.CourseInfo.CourseID.value > 0 {
+				group.CourseID = fmt.Sprint(description.CourseInfo.CourseID.value)
+			}
+			if description.CourseInfo.ClassID.ok && description.CourseInfo.ClassID.value > 0 {
+				group.ClassID = fmt.Sprint(description.CourseInfo.ClassID.value)
+			}
+			groups = append(groups, group)
 		}
 	}
 	c.imGroups, c.imGroupsAt = groups, time.Now()
@@ -241,6 +285,7 @@ func (c *Client) imGroupActivities(ctx context.Context, cfg imConfig, group imGr
 			}
 			item, ok := parseIMAttachment(ext.StringValue)
 			if ok {
+				item.StartsAt = msTime(messageBody.Timestamp)
 				rows = append(rows, item)
 			}
 		}
@@ -249,7 +294,8 @@ func (c *Client) imGroupActivities(ctx context.Context, cfg imConfig, group imGr
 }
 
 type easemobMessage struct {
-	Exts []easemobKeyValue
+	Exts      []easemobKeyValue
+	Timestamp int64
 }
 
 type easemobKeyValue struct {
@@ -268,6 +314,11 @@ func parseEasemobMessage(meta []byte) (easemobMessage, bool) {
 	}
 	messageFields := parseProtobuf(body)
 	out := easemobMessage{}
+	if values := fields[4]; len(values) > 0 {
+		if timestamp, ok := values[0].(uint64); ok && timestamp <= 1<<63-1 {
+			out.Timestamp = int64(timestamp)
+		}
+	}
 	for _, value := range messageFields[5] {
 		raw, ok := value.([]byte)
 		if !ok {
@@ -294,33 +345,33 @@ func parseEasemobMessage(meta []byte) (easemobMessage, bool) {
 
 func parseIMAttachment(value string) (Activity, bool) {
 	var attachment struct {
-		AttachmentType int `json:"attachmentType"`
+		AttachmentType flexInt `json:"attachmentType"`
 		SignInfo       struct {
-			AID        int64  `json:"aid"`
-			AType      int    `json:"atype"`
-			ATypeName  string `json:"atypeName"`
-			Title      string `json:"title"`
-			SubTitle   string `json:"subTitle"`
+			AID        flexInt `json:"aid"`
+			AType      flexInt `json:"atype"`
+			ATypeName  string  `json:"atypeName"`
+			Title      string  `json:"title"`
+			SubTitle   string  `json:"subTitle"`
 			CourseInfo struct {
-				CourseID   int64  `json:"courseid"`
-				ClassID    int    `json:"classid"`
-				CourseName string `json:"coursename"`
+				CourseID   flexInt `json:"courseid"`
+				ClassID    flexInt `json:"classid"`
+				CourseName string  `json:"coursename"`
 			} `json:"courseInfo"`
 		} `json:"att_chat_course"`
 	}
-	if json.Unmarshal([]byte(value), &attachment) != nil || attachment.AttachmentType != 15 {
+	if json.Unmarshal([]byte(value), &attachment) != nil || attachment.AttachmentType.value != 15 {
 		return Activity{}, false
 	}
 	sign := attachment.SignInfo
-	if sign.AID == 0 || (sign.AType != 2 && sign.AType != 74) {
+	if sign.AID.value <= 0 || sign.CourseInfo.CourseID.value <= 0 || sign.CourseInfo.ClassID.value <= 0 || (sign.AType.value != 2 && sign.AType.value != 74) {
 		return Activity{}, false
 	}
 	return Activity{
-		ID: fmt.Sprintf("%d", sign.AID), CourseID: fmt.Sprintf("%d", sign.CourseInfo.CourseID),
-		ClassID: fmt.Sprintf("%d", sign.CourseInfo.ClassID), Course: sign.CourseInfo.CourseName,
+		ID: fmt.Sprint(sign.AID.value), CourseID: fmt.Sprint(sign.CourseInfo.CourseID.value),
+		ClassID: fmt.Sprint(sign.CourseInfo.ClassID.value), Course: sign.CourseInfo.CourseName,
 		Title: firstNonBlank(sign.Title, sign.SubTitle, sign.ATypeName), Kind: "signin",
 		StartsAtTitle: strings.TrimSpace(sign.SubTitle),
-		State:         "active", UserState: "unknown", RawType: sign.AType, RawOtherID: int(signTypeNumber(sign.ATypeName)),
+		State:         "active", UserState: "unknown", RawType: int(sign.AType.value), RawOtherID: int(signTypeNumber(sign.ATypeName)),
 		SignType: signType(signTypeNumber(sign.ATypeName)), Signable: true,
 	}, true
 }

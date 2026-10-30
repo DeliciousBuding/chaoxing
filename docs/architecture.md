@@ -126,6 +126,8 @@ Watch state is a bounded JSON file in each account's private state directory. It
 
 ## Sign-in and device identity
 
+[Sign-in protocol](signin-protocol.md) records the pinned reference comparison, supported request variants and deliberate differences. Participation requests use the person ID (`puid`); IM authentication keeps the separate user ID. An exact pre-sign 403 can recover the session once, while other HTTP rejections retain their normal fault classification. QR payloads cannot redirect an operation to a different activity. Submitted-location audits come from the constructed request rather than unused caller defaults.
+
 Sign-in is split by responsibility. `internal/upstream` owns the class and course-group protocol chain, persistent Android-like device identity, account identity, automatic reauthentication and attendance verification. `internal/watch` owns course-time decisions and one-attempt-per-activity state. `internal/operation` owns the public contract, while `internal/authz` carries OAuth scopes from `internal/access` to `internal/mcphttp`. No adapter learns HTTP details and no watcher constructs URLs.
 
 `internal/captchasolver` is a provider adapter, not part of the upstream protocol. The local detector receives the slider background/cutout pair and returns one coordinate without network access; DamaGou receives only the background. The daemon never exposes its userkey, endpoint, or raw model/provider errors. `internal/upstream` owns challenge state, image download, coordinate submission and the single retry.

@@ -43,7 +43,6 @@ type SignRequest struct {
 	PhotoObjectID   string
 	FaceObjectID    string
 	FaceEnc         string
-	FaceCode        string
 }
 
 type SignResult struct {
@@ -67,6 +66,7 @@ type signAuditTrace struct {
 	AttemptID  string
 	ActivityID string
 	Submitted  bool
+	Method     string
 	Address    string
 	Latitude   *float64
 	Longitude  *float64
@@ -88,7 +88,7 @@ type locationResultPayload struct {
 	Latitude  float64 `json:"latitude"`
 	Longitude float64 `json:"longitude"`
 	Address   string  `json:"address"`
-	MockData  string  `json:"mockData"`
+	MockData  string  `json:"mockData,omitempty"`
 }
 
 // SignActivity is the watcher-facing boundary. It uses the same account queue
@@ -147,6 +147,15 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest, trace *signA
 	if req.Latitude != nil && !validCoordinate(*req.Latitude, *req.Longitude) {
 		return SignResult{}, fault("INVALID_ARGUMENT", "location is outside range")
 	}
+	if req.QRPayload != "" {
+		qr, err := parseQRCode(req.QRPayload)
+		if err != nil {
+			return SignResult{}, err
+		}
+		if qr.AID != "" && qr.AID != req.ActivityID {
+			return SignResult{}, fault("INVALID_ARGUMENT", "QR activity does not match the selected activity")
+		}
+	}
 	courses, err := c.fetchCourses(ctx)
 	if err != nil {
 		return SignResult{}, err
@@ -179,30 +188,37 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest, trace *signA
 	if info.OpenCheckFace.ok && info.OpenCheckFace.value == 1 && req.FaceObjectID == "" {
 		return SignResult{}, fault("UNSUPPORTED", "activity requires an enrolled face object id")
 	}
-	if info.IfNeedVCode.ok && info.IfNeedVCode.value == 1 {
-		if challenge, ok := c.captchaChallenges[activity.ID]; ok {
-			if time.Since(challenge.CreatedAt) > 10*time.Minute {
-				delete(c.captchaChallenges, activity.ID)
-				return SignResult{}, fault("CAPTCHA_REQUIRED", "captcha challenge expired; call sign_activity again")
-			}
-			if challenge.Validate == "" {
-				return SignResult{}, fault("CAPTCHA_REQUIRED", "answer the captcha challenge before retrying")
-			}
-			req.SignEnc2, req.CaptchaValidate = challenge.Enc2, challenge.Validate
+	// A challenge is authoritative even when the static activity flag is off.
+	// Upstream can request captcha dynamically after the first submission.
+	if challenge, ok := c.captchaChallenges[activity.ID]; ok {
+		if challenge.CourseID != req.CourseID || challenge.ClassID != req.ClassID {
+			return SignResult{}, fault("INVALID_ARGUMENT", "captcha class does not match")
 		}
-		// Without a stored challenge, submit once. The reference protocol returns
-		// `validate_<enc2>` for a captcha-required activity; blind pre-rejection
-		// would make that state unreachable.
+		if time.Since(challenge.CreatedAt) > 10*time.Minute {
+			delete(c.captchaChallenges, activity.ID)
+			return SignResult{}, fault("CAPTCHA_REQUIRED", "captcha challenge expired; call sign_activity again")
+		}
+		if challenge.Validate == "" {
+			return SignResult{}, fault("CAPTCHA_REQUIRED", "answer the captcha challenge before retrying")
+		}
+		req.SignEnc2, req.CaptchaValidate = challenge.Enc2, challenge.Validate
 	}
+	// Without a stored challenge, submit once. The reference protocol returns
+	// `validate_<enc2>` for a captcha-required activity; blind pre-rejection
+	// would make that state unreachable.
 	var method string
 	switch {
+	case info.OpenCheckFace.ok && info.OpenCheckFace.value == 1 && info.OtherID.value == 0 && info.IfPhoto.ok && info.IfPhoto.value == 1:
+		return SignResult{}, fault("UNSUPPORTED", "combined photo and face requirements need manual handling")
+	case req.FaceObjectID != "" && info.OpenCheckFace.ok && info.OpenCheckFace.value == 1 && (info.OtherID.value == 0 || info.OtherID.value == 4):
+		method = "face"
+	case info.OpenCheckFace.ok && info.OpenCheckFace.value == 1:
+		return SignResult{}, fault("UNSUPPORTED", "face combination is not supported for this sign type")
 	case info.OtherID.value == 0 && (!info.IfPhoto.ok || info.IfPhoto.value == 0):
 		method = "normal"
 	case info.OtherID.value == 0 && info.IfPhoto.ok && info.IfPhoto.value == 1 && req.PhotoObjectID != "":
 		method = "photo"
-	case info.OpenCheckFace.ok && info.OpenCheckFace.value == 1 && req.FaceObjectID != "":
-		method = "face"
-	case info.OtherID.value == 4 && info.IfOpenAddress.ok && info.IfOpenAddress.value == 1:
+	case info.OtherID.value == 4:
 		method = "location"
 	case info.OtherID.value == 5 && req.SignCode != "":
 		method = "password"
@@ -218,6 +234,9 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest, trace *signA
 			return SignResult{}, fault("INVALID_ARGUMENT", "qr_payload is required for QR sign-in")
 		}
 		return SignResult{}, fault("UNSUPPORTED", "only normal, location, gesture and password sign-in are implemented")
+	}
+	if (method == "password" || method == "gesture" || method == "qrcode") && info.IfOpenAddress.ok && info.IfOpenAddress.value == 1 && req.Latitude == nil {
+		return SignResult{}, fault("INVALID_ARGUMENT", "this sign-in requires operator-supplied location")
 	}
 	state, err := c.signSelected(ctx, activity, info, req, method, trace)
 	if err != nil {
@@ -398,7 +417,7 @@ func (c *Client) attendanceVerified(ctx context.Context, activityID string) (boo
 
 func (c *Client) signSelected(ctx context.Context, activity Activity, info activeInfo, req SignRequest, method string, trace *signAuditTrace) (string, error) {
 	if trace != nil {
-		trace.Address = strings.TrimSpace(req.Address)
+		trace.Method = method
 	}
 	identity, err := c.fetchSignIdentity(ctx)
 	if err != nil {
@@ -414,70 +433,38 @@ func (c *Client) signSelected(ctx context.Context, activity Activity, info activ
 	if err = c.postAnalysis(ctx, activity.ID); err != nil {
 		return "", err
 	}
-	if method == "normal" {
-		pairs := []string{
-			"activeId", activity.ID, "courseId", activity.CourseID, "uid", identity.UID,
-			"clientip", "", "useragent", "", "latitude", "-1", "longitude", "-1",
-			"appType", "15", "fid", identity.FID, "name", identity.Name,
-		}
-		if req.CaptchaValidate != "" {
-			pairs = append(pairs, "validate", req.CaptchaValidate)
-		}
-		pairs = append(pairs, "deviceCode", c.device.DeviceCode)
-		if req.SignEnc2 != "" {
-			pairs = append(pairs, "enc2", req.SignEnc2)
-		}
-		q := orderedQuery(pairs...)
-		b, err := c.get(ctx, stuSignAPI+"?"+q)
-		if err != nil {
-			return "", err
-		}
-		return signResponseState(string(b))
-	}
-	if method == "photo" {
-		photoResult, err := json.Marshal(map[string]any{"files": []map[string]string{{
-			"name": "photo.jpg", "objectid": req.PhotoObjectID, "type": "image/jpeg",
-		}}})
-		if err != nil {
-			return "", fault("INTERNAL", "photo result failed")
-		}
-		pairs := []string{
-			"activeId", activity.ID, "courseId", activity.CourseID, "uid", identity.UID,
-			"clientip", "", "latitude", "-1", "longitude", "-1", "appType", "15",
-			"fid", identity.FID, "objectId", req.PhotoObjectID, "name", identity.Name,
-			"deviceCode", c.device.DeviceCode,
-		}
-		if req.SignEnc2 != "" {
-			pairs = append(pairs, "enc2", req.SignEnc2)
-		}
-		if req.CaptchaValidate != "" {
-			pairs = append(pairs, "validate", req.CaptchaValidate)
-		}
-		pairs = append(pairs, "photoResult", string(photoResult))
-		b, err := c.get(ctx, stuSignAPI+"?"+orderedQuery(pairs...))
-		if err != nil {
-			return "", err
-		}
-		return signResponseState(string(b))
+	if method == "normal" || method == "photo" {
+		return c.signNormal(ctx, activity, req, identity)
 	}
 	if method == "face" {
-		faceEnc, faceCode, err := c.faceCheck(ctx, activity, req.FaceObjectID, identity)
+		faceEnc, _, err := c.faceCheck(ctx, activity, req.FaceObjectID, identity)
 		if err != nil {
 			return "", err
 		}
-		req.FaceEnc, req.FaceCode = faceEnc, faceCode
+		req.FaceEnc = faceEnc
 		return c.signFace(ctx, activity, info, req, identity, trace)
 	}
 	if method == "password" || method == "gesture" {
 		if err := c.checkSignCode(ctx, activity.ID, req.SignCode); err != nil {
 			return "", err
 		}
+		lat, lng := "-1", "-1"
+		var position *locationResultPayload
+		if req.Latitude != nil {
+			p, err := signPosition(activity, info, req, false, trace)
+			if err != nil {
+				return "", err
+			}
+			position = &p
+			lat, lng = strconv.FormatFloat(p.Latitude, 'f', 6, 64), strconv.FormatFloat(p.Longitude, 'f', 6, 64)
+		}
 		pairs := []string{
-			"activeId", activity.ID, "courseId", activity.CourseID, "uid", identity.UID,
-			"clientip", "", "latitude", "-1", "longitude", "-1", "appType", "15",
+			"activeId", activity.ID, "courseId", activity.CourseID, "uid", identity.signUID(),
+			"clientip", "", "latitude", lat, "longitude", lng, "appType", "15",
 			"fid", identity.FID, "name", identity.Name, "signCode", req.SignCode,
 			"deviceCode", c.device.DeviceCode,
 		}
+		pairs = appendPosition(pairs, position, true)
 		if req.SignEnc2 != "" {
 			pairs = append(pairs, "enc2", req.SignEnc2)
 		}
@@ -500,21 +487,30 @@ func (c *Client) signSelected(ctx context.Context, activity Activity, info activ
 			return "", err
 		}
 		activeID := activity.ID
-		if qr.AID != "" {
-			activeID = qr.AID
+		var position *locationResultPayload
+		if req.Latitude != nil {
+			p, err := signPosition(activity, info, req, false, trace)
+			if err != nil {
+				return "", err
+			}
+			position = &p
 		}
 		pairs := []string{
 			"enc", qr.Enc, "name", identity.Name, "activeId", activeID,
-			"uid", identity.UID, "clientip", "", "latitude", "-1", "longitude", "-1",
+			"uid", identity.signUID(), "clientip", "",
+		}
+		pairs = appendPosition(pairs, position, false)
+		pairs = append(pairs, "latitude", "-1", "longitude", "-1",
 			"fid", identity.FID, "appType", "15", "deviceCode", c.device.DeviceCode,
 			"vpProbability", "-1", "vpStrategy", "", "courseId", activity.CourseID,
-		}
+		)
 		if req.SignEnc2 != "" {
 			pairs = append(pairs, "enc2", req.SignEnc2)
 		}
 		if req.CaptchaValidate != "" {
 			pairs = append(pairs, "validate", req.CaptchaValidate)
 		}
+		pairs = appendPositionResult(pairs, position)
 		b, err := c.get(ctx, stuSignAPI+"?"+orderedQuery(pairs...))
 		if err != nil {
 			return "", err
@@ -550,32 +546,14 @@ func (c *Client) checkSignCode(ctx context.Context, activityID, code string) err
 }
 
 func (c *Client) signLocation(ctx context.Context, activity Activity, info activeInfo, req SignRequest, identity signIdentity, tight bool, trace *signAuditTrace) (string, error) {
-	if info.LocationLat == nil || info.LocationLng == nil {
-		return "", fault("UNSUPPORTED", "location activity has no published center")
-	}
-	lat, lng := *info.LocationLat, *info.LocationLng
-	if req.Latitude != nil {
-		lat, lng = *req.Latitude, *req.Longitude
-		if info.LocationRange.ok && info.LocationRange.value > 0 && coordinateDistanceMeters(lat, lng, *info.LocationLat, *info.LocationLng) > float64(info.LocationRange.value) {
-			return "", fault("INVALID_ARGUMENT", "preset location is outside the activity range")
-		}
-	}
-	lat, lng = jitterLocation(lat, lng, tight)
-	address := firstNonBlank(req.Address, activity.Course, "课堂位置")
-	resultLat, resultLng := roundCoordinate(lat, 6), roundCoordinate(lng, 6)
-	if trace != nil {
-		trace.Address, trace.Latitude, trace.Longitude = address, &resultLat, &resultLng
-	}
-	locationResult, err := json.Marshal(locationResultPayload{
-		Result: 1, Latitude: resultLat, Longitude: resultLng, Address: address,
-		MockData: `{"strategy":0,"probability":-1}`,
-	})
+	position, err := signPosition(activity, info, req, tight, trace)
 	if err != nil {
-		return "", fault("INTERNAL", "location payload failed")
+		return "", err
 	}
+	lat, lng, address := position.Latitude, position.Longitude, position.Address
 	pairs := []string{
 		"name", identity.Name, "address", address, "activeId", activity.ID,
-		"courseId", activity.CourseID, "uid", identity.UID, "clientip", "",
+		"courseId", activity.CourseID, "uid", identity.signUID(), "clientip", "",
 		"latitude", formatCoordinate(lat), "longitude", formatCoordinate(lng),
 		"fid", identity.FID, "appType", "15", "ifTiJiao", "1",
 	}
@@ -588,7 +566,8 @@ func (c *Client) signLocation(ctx context.Context, activity Activity, info activ
 	if req.SignEnc2 != "" {
 		pairs = append(pairs, "enc2", req.SignEnc2)
 	}
-	pairs = append(pairs, "locationResult", string(locationResult))
+	pairs = appendPositionResult(pairs, &position)
+	pairs = appendFaceParameters(pairs, req)
 	q := orderedQuery(pairs...)
 	b, err := c.get(ctx, stuSignAPI+"?"+q)
 	if err != nil {
@@ -599,47 +578,15 @@ func (c *Client) signLocation(ctx context.Context, activity Activity, info activ
 
 func (c *Client) signFace(ctx context.Context, activity Activity, info activeInfo, req SignRequest, identity signIdentity, trace *signAuditTrace) (string, error) {
 	if req.FaceEnc == "" || req.FaceObjectID == "" {
-		return "", fault("INVALID_ARGUMENT", "face sign requires an enrolled object id and face enc")
-	}
-	lat, lng := "-1", "-1"
-	if info.OtherID.value == 4 {
-		if info.LocationLat == nil || info.LocationLng == nil {
-			return "", fault("UNSUPPORTED", "face location activity has no published center")
-		}
-		if req.Latitude == nil {
-			req.Latitude, req.Longitude = info.LocationLat, info.LocationLng
-		}
-		if !validCoordinate(*req.Latitude, *req.Longitude) {
-			return "", fault("INVALID_ARGUMENT", "location is outside range")
-		}
-		jLat, jLng := jitterLocation(*req.Latitude, *req.Longitude, false)
-		lat, lng = formatCoordinate(jLat), formatCoordinate(jLng)
-		if trace != nil {
-			trace.Address = firstNonBlank(req.Address, activity.Course, "课堂位置")
-			resultLat, resultLng := roundCoordinate(jLat, 6), roundCoordinate(jLng, 6)
-			trace.Latitude, trace.Longitude = &resultLat, &resultLng
-		}
-	}
-	pairs := []string{
-		"name", identity.Name, "activeId", activity.ID, "courseId", activity.CourseID,
-		"uid", identity.UID, "clientip", "", "latitude", lat, "longitude", lng,
-		"fid", identity.FID, "appType", "15", "ifTiJiao", "1", "deviceCode", c.device.DeviceCode,
-		"currentFaceId", req.FaceObjectID, "ifCFP", "1", "faceEnc", req.FaceEnc, "faceCode", req.FaceCode,
+		return "", fault("INVALID_ARGUMENT", "face sign requires explicit image and verification material")
 	}
 	if info.OtherID.value == 4 {
-		pairs = append(pairs, "address", firstNonBlank(req.Address, activity.Course, "课堂位置"))
+		return c.signLocation(ctx, activity, info, req, identity, false, trace)
 	}
-	if req.CaptchaValidate != "" {
-		pairs = append(pairs, "validate", req.CaptchaValidate)
+	if info.OtherID.value == 0 {
+		return c.signNormal(ctx, activity, req, identity)
 	}
-	if req.SignEnc2 != "" {
-		pairs = append(pairs, "enc2", req.SignEnc2)
-	}
-	b, err := c.get(ctx, stuSignAPI+"?"+orderedQuery(pairs...))
-	if err != nil {
-		return "", err
-	}
-	return signResponseState(string(b))
+	return "", fault("UNSUPPORTED", "face combination is not supported for this sign type")
 }
 
 func roundCoordinate(value float64, digits int) float64 {
@@ -650,7 +597,7 @@ func roundCoordinate(value float64, digits int) float64 {
 func (c *Client) preSign(ctx context.Context, activity Activity, identity signIdentity) error {
 	q := orderedQuery(
 		"courseId", activity.CourseID, "classId", activity.ClassID, "activePrimaryId", activity.ID,
-		"general", "1", "sys", "1", "ls", "1", "appType", "15", "uid", identity.UID,
+		"general", "1", "sys", "1", "ls", "1", "appType", "15", "uid", identity.signUID(),
 		"isTeacherViewOpen", "0",
 	)
 	form := url.Values{"ext": {firstNonBlank(activity.Ext, "{}")}}
@@ -690,6 +637,7 @@ func (c *Client) postAnalysis(ctx context.Context, activityID string) error {
 }
 
 func signResponseState(body string) (string, error) {
+	body = strings.TrimSpace(body)
 	switch {
 	case body == "success":
 		return "signed", nil
@@ -706,6 +654,8 @@ func signResponseState(body string) (string, error) {
 		return "", fault("UNSUPPORTED", "activity requires manual verification")
 	case strings.HasPrefix(body, "errorLocation"):
 		return "", fault("SIGN_LOCATION_REJECTED", "location was rejected")
+	case strings.Contains(body, "同一设备不允许重复签到"):
+		return "", fault("SIGN_DEVICE_REJECTED", "upstream rejected reuse of this device identity")
 	default:
 		return "", fault("SIGN_REJECTED", "sign-in was not accepted")
 	}
