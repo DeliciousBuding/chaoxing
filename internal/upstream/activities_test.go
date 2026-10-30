@@ -4,10 +4,48 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestClassActivityCacheCoalescesWithoutHidingCooldown(t *testing.T) {
+	calls := 0
+	c := academicClient(t, []Course{{ID: "synthetic-course", ClassID: "class-a"}}, roundtrip(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return response(r, activityResponse(activityFixture(101, "Synthetic", 2, 1, 1, 0, 0))), nil
+	}))
+	ctx := context.Background()
+	rows, err := c.ListClassActivities(ctx, "synthetic-course", "class-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows[0].Title = "caller mutation"
+	v, err := c.Call(ctx, "list_activities", map[string]any{"course_id": "synthetic-course", "class_id": "class-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := v.(map[string]any)
+	classes := out["coverage_details"].(map[string]any)["classes"].([]any)
+	if calls != 1 || classes[0].(map[string]any)["cache_hit"] != true || out["items"].([]Activity)[0].Title != "Synthetic" {
+		t.Fatalf("cache not shared or isolated: calls=%d out=%+v", calls, out)
+	}
+	u, _ := url.Parse(activityAPI)
+	c.deferEndpoint(u, "")
+	if _, err = c.ListClassActivities(ctx, "synthetic-course", "class-a"); SafeFault(err).Code != "UPSTREAM_RATE_LIMITED" || calls != 1 {
+		t.Fatal("cache hid known cooldown")
+	}
+	if err := c.endpointSucceeded(u, []byte(`{"result":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	cached := c.classActivities["synthetic-course:class-a"]
+	cached.at = time.Now().Add(-classActivityCacheTTL)
+	c.classActivities["synthetic-course:class-a"] = cached
+	if _, err := c.ListClassActivities(ctx, "synthetic-course", "class-a"); err != nil || calls != 2 {
+		t.Fatalf("expired cache did not refresh: calls=%d err=%v", calls, err)
+	}
+}
 
 func activityFixture(id int64, name string, kind int, status int, userStatus int, start, end int64) string {
 	return fmt.Sprintf(`{"id":%d,"nameOne":%q,"nameFour":"","type":%d,"activeType":0,"status":%d,"userStatus":%d,"startTime":%d,"endTime":%d}`, id, name, kind, status, userStatus, start, end)

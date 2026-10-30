@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,44 +20,6 @@ import (
 )
 
 type signTraceKey struct{}
-
-type endpointCooldown struct {
-	Until       time.Time
-	LastLimited time.Time
-	Failures    int
-}
-
-// Cooldowns are account/endpoint scoped, shared by watcher and interactive
-// reads. A deferred read never makes another upstream request.
-func (c *Client) endpointDeferred(u *url.URL) error {
-	c.cooldownMu.Lock()
-	defer c.cooldownMu.Unlock()
-	state := c.cooldowns[u.Host+u.Path]
-	if remaining := time.Until(state.Until); remaining > 0 {
-		return &Fault{Code: "UPSTREAM_RATE_LIMITED", RetryAfterSeconds: int(math.Ceil(remaining.Seconds()))}
-	}
-	return nil
-}
-
-func (c *Client) deferEndpoint(u *url.URL) error {
-	c.cooldownMu.Lock()
-	defer c.cooldownMu.Unlock()
-	if c.cooldowns == nil {
-		c.cooldowns = make(map[string]endpointCooldown)
-	}
-	k := u.Host + u.Path
-	state := c.cooldowns[k]
-	now := time.Now()
-	if now.Sub(state.LastLimited) > 15*time.Minute {
-		state.Failures = 0
-	}
-	state.Failures++
-	seconds := 60 << min(state.Failures-1, 3)
-	seconds = min(seconds, 300)
-	state.Until, state.LastLimited = now.Add(time.Duration(seconds)*time.Second), now
-	c.cooldowns[k] = state
-	return &Fault{Code: "UPSTREAM_RATE_LIMITED", RetryAfterSeconds: seconds}
-}
 
 func upstreamRateLimited(body []byte) bool {
 	var envelope struct {

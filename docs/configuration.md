@@ -153,7 +153,7 @@ The watcher turns the class activity feed and optional course-group sign-in card
       "min_confidence": 0.82,
       "max_questions": 20
     },
-    "interval_seconds": 20,
+    "interval_seconds": 60,
     "interval_jitter_percent": 10,
     "class_poll_delay_min_ms": 750,
     "class_poll_delay_max_ms": 3000,
@@ -238,7 +238,7 @@ Bounds and behavior:
 - Each tick is panic-supervised. A panic is recovered, counted, logged and sent as a priority-9 notification; the next successful cycle resets the consecutive counter.
 - Each active class poll logs `class_poll` with its start/end timestamps, duration, status, item count and up to eight compact sign-in observations in the form `activity_id:user_state:raw_user_status:signable`. Automatic sign-in adds `sign_candidate`, `auto sign start`, `auto sign cancelled` and `auto sign result` lines. These records contain IDs and normalized states only, never URLs, cookies, sign codes, coordinates or notification credentials.
 - Private `protocol-evidence.jsonl` retains bounded request/response projections and correlated sign outcomes independently of the system log ring. It uses 0600 files, 2 MiB segments and three predecessors; old segments are removed after seven days. Raw bodies and secrets are excluded. `/readyz` reports default-account evidence-write failure counters and degrades after three consecutive failures. Details and redaction rules are in [Architecture](architecture.md#optional-activity-watcher).
-- Upstream throttling returns `UPSTREAM_RATE_LIMITED` and `retry_after_seconds`. The shared account/endpoint cooldown backs off from 60 to at most 300 seconds; polls during cooldown do not hit upstream. A short configured interval does not override it.
+- Upstream throttling returns `UPSTREAM_RATE_LIMITED` and `retry_after_seconds`. The shared account/endpoint cooldown backs off from five minutes to one hour and honors a longer valid upstream `Retry-After` (up to 24 hours). It persists in private `upstream-cooldowns.json`; neither idle time nor restart resets history. An accepted endpoint response resets it. Polls during cooldown do not hit upstream, and a short configured interval cannot override it. Invalid state fails startup. Successful class lists share a 30-second cache across watcher and interactive reads, with original fetch time in coverage details; failures and cooldowns never become cached success.
 - Process exits are supervised across procd restarts. Unexpected respawns increment `process.consecutive_crashes`, asynchronously send priority-9 alerts (priority-10 from the third consecutive crash) with three bounded retries, and a SIGTERM shutdown resets the consecutive chain.
 - `/healthz` is a minimal liveness endpoint (`ok`, `version`). `/readyz` returns 503 when a watcher is stale, a process is degraded, consecutive panics reach three, or a watcher had to quarantine corrupt state (`state_degraded:true`). The degraded flag is fail-closed for the life of the process; inspect the `.corrupt-*` file and restart after preserving it. Detailed process and per-account watcher counters remain on the authenticated Web UI status and the loopback management listener.
 - Embedded WebUI assets use content-hash ETags, immutable cache policy and gzip when the client accepts it.

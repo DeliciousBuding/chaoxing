@@ -93,7 +93,7 @@ func TestUpstreamRateLimitDefersWithoutAnotherRequest(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		_, err := c.ListClassActivities(context.Background(), "c", "k")
 		f := SafeFault(err)
-		if f.Code != "UPSTREAM_RATE_LIMITED" || !f.Retryable || f.RetryAfterSeconds < 59 {
+		if f.Code != "UPSTREAM_RATE_LIMITED" || !f.Retryable || f.RetryAfterSeconds < 299 {
 			t.Fatalf("%+v", f)
 		}
 	}

@@ -13,6 +13,15 @@ import (
 // activityAPI is the class activity feed used by the Chaoxing mobile pages.
 const activityAPI = "https://mobilelearn.chaoxing.com/v2/apis/active/student/activelist"
 
+// A short success-only cache coalesces watcher, interactive and sign-preflight
+// reads. Cached list state is still only a hint, never attendance proof.
+const classActivityCacheTTL = 30 * time.Second
+
+type cachedClassActivities struct {
+	rows []Activity
+	at   time.Time
+}
+
 // Activity is the normalized, read-only projection of one class activity.
 type Activity struct {
 	ID            string `json:"id"`
@@ -99,6 +108,7 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 	failed := 0
 	var firstErr error
 	for _, co := range selected {
+		cached := c.classActivities[co.ID+":"+co.ClassID]
 		rows, err := c.fetchActivities(ctx, co)
 		if err != nil {
 			failed++
@@ -111,7 +121,7 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 			continue
 		}
 		items = append(items, rows...)
-		classes = append(classes, map[string]any{"course_id": co.ID, "class_id": co.ClassID, "complete": true})
+		classes = append(classes, map[string]any{"course_id": co.ID, "class_id": co.ClassID, "complete": true, "cache_hit": !cached.at.IsZero() && time.Since(cached.at) < classActivityCacheTTL, "fetched_at": c.classActivities[co.ID+":"+co.ClassID].at.UTC()})
 	}
 	groupAvailable := !c.config.GroupActivities
 	var groupErr error
@@ -166,6 +176,15 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 }
 
 func (c *Client) fetchActivities(ctx context.Context, co Course) ([]Activity, error) {
+	key := co.ID + ":" + co.ClassID
+	if cached, ok := c.classActivities[key]; ok && time.Since(cached.at) < classActivityCacheTTL {
+		// Never hide a known cooldown behind cached data.
+		u, _ := url.Parse(activityAPI)
+		if err := c.endpointDeferred(u); err != nil {
+			return nil, err
+		}
+		return append([]Activity{}, cached.rows...), nil
+	}
 	q := url.Values{
 		"fid":                  {"0"},
 		"showNotStartedActive": {"0"},
@@ -204,6 +223,15 @@ func (c *Client) fetchActivities(ctx context.Context, co Course) ([]Activity, er
 		}
 		return rows[i].StartsAt.After(*rows[j].StartsAt)
 	})
+	if c.classActivities == nil {
+		c.classActivities = make(map[string]cachedClassActivities)
+	}
+	for key, cached := range c.classActivities {
+		if time.Since(cached.at) >= classActivityCacheTTL {
+			delete(c.classActivities, key)
+		}
+	}
+	c.classActivities[key] = cachedClassActivities{rows: append([]Activity{}, rows...), at: time.Now()}
 	return rows, nil
 }
 

@@ -171,6 +171,7 @@ type Client struct {
 	coursesAt           time.Time
 	assignments         []Assignment
 	assignmentsAt       time.Time
+	classActivities     map[string]cachedClassActivities
 	coverage            string
 	extraAssignments    map[string]Assignment
 	device              deviceState
@@ -228,6 +229,9 @@ func New(c Config) (*Client, error) {
 	x := &Client{config: c, http: h, saved: map[string]SavedCookies{}, queries: admission.New(1, 8)}
 	if c.SessionPath != "" {
 		x.evidence = newEvidenceWriter(c.SessionPath)
+	}
+	if e = x.loadCooldowns(); e != nil {
+		return nil, e
 	}
 	if e = x.loadDeviceState(); e != nil {
 		return nil, e
@@ -391,7 +395,7 @@ func (c *Client) rawLimit(ctx context.Context, method, rawurl string, form url.V
 		return nil, resp, fault("RESPONSE_TOO_LARGE", "upstream response exceeds limit")
 	}
 	if upstreamRateLimited(b) || resp.StatusCode == http.StatusTooManyRequests {
-		return b, resp, c.deferEndpoint(u)
+		return b, resp, c.deferEndpoint(u, resp.Header.Get("Retry-After"))
 	}
 	// Save cookies at every redirect hop in Jar but snapshot final response here.
 	if e = c.save(resp); e != nil {
@@ -400,12 +404,18 @@ func (c *Client) rawLimit(ctx context.Context, method, rawurl string, form url.V
 	if resp.StatusCode != 200 {
 		return nil, resp, httpStatusFault(resp.StatusCode, "upstream")
 	}
+	if e = c.endpointSucceeded(u, b); e != nil {
+		return nil, resp, e
+	}
 	return b, resp, nil
 }
 func (c *Client) rawWrite(ctx context.Context, method, rawurl string, body io.Reader, contentType string) ([]byte, *http.Response, error) {
 	u, e := url.Parse(rawurl)
 	if e != nil || (!safeURL(u) && u.String() != workSubmitAPI) {
 		return nil, nil, fault("INVALID_URL", "upstream URL not permitted")
+	}
+	if e = c.endpointDeferred(u); e != nil {
+		return nil, nil, e
 	}
 	r, e := http.NewRequestWithContext(c.requestContext(ctx), method, rawurl, body)
 	if e != nil {
@@ -430,11 +440,17 @@ func (c *Client) rawWrite(ctx context.Context, method, rawurl string, body io.Re
 	if len(b) > 4*1024*1024 {
 		return nil, resp, fault("RESPONSE_TOO_LARGE", "upstream response exceeds limit")
 	}
+	if upstreamRateLimited(b) || resp.StatusCode == http.StatusTooManyRequests {
+		return b, resp, c.deferEndpoint(u, resp.Header.Get("Retry-After"))
+	}
 	if e = c.save(resp); e != nil {
 		return nil, resp, fault("STATE_WRITE_FAILED", "cannot persist session")
 	}
 	if resp.StatusCode != 200 {
 		return nil, resp, httpStatusFault(resp.StatusCode, "upstream")
+	}
+	if e = c.endpointSucceeded(u, b); e != nil {
+		return nil, resp, e
 	}
 	return b, resp, nil
 }
