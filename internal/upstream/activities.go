@@ -115,6 +115,10 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 	if err != nil {
 		return nil, err
 	}
+	selectedClasses := map[string]bool{}
+	for _, co := range selected {
+		selectedClasses[co.ID+":"+co.ClassID] = true
+	}
 	items := []Activity{}
 	classes := []any{}
 	warnings := []string{}
@@ -157,6 +161,9 @@ func (c *Client) activities(ctx context.Context, args map[string]any) (any, erro
 					known[item.CourseID+":"+item.ClassID+":"+item.ID] = true
 				}
 				for _, item := range groupRows {
+					if !selectedClasses[item.CourseID+":"+item.ClassID] {
+						continue
+					}
 					if !known[item.CourseID+":"+item.ClassID+":"+item.ID] {
 						items = append(items, item)
 					}

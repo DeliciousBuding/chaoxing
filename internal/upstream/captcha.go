@@ -64,6 +64,9 @@ func (c *Client) getSignCaptcha(ctx context.Context, args map[string]any) (any, 
 	if !ok {
 		return nil, fault("NOT_FOUND", "no captcha challenge; call sign_activity first")
 	}
+	if challenge.CourseID != str(args, "course_id") || challenge.ClassID != str(args, "class_id") {
+		return nil, fault("INVALID_ARGUMENT", "captcha class does not match")
+	}
 	if time.Since(challenge.CreatedAt) > captchaChallengeTTL {
 		delete(c.captchaChallenges, activityID)
 		return nil, fault("CAPTCHA_REQUIRED", "captcha challenge expired; call sign_activity again")
@@ -82,7 +85,7 @@ func (c *Client) getSignCaptcha(ctx context.Context, args map[string]any) (any, 
 	captchaKey := md5Hex(fmt.Sprintf("%d%s", confTime, randomUUID()))
 	iv := md5Hex(captchaID + captchaType + strconv.FormatInt(time.Now().UnixMilli(), 10) + randomUUID())
 	token := md5Hex(fmt.Sprintf("%d%s%s%s", confTime, captchaID, captchaType, captchaKey)) + ":" + strconv.FormatInt(confTime+300000, 10)
-	referer := preSignReferer(challenge, identity.UID)
+	referer := preSignReferer(challenge, identity.signUID())
 	q := orderedQuery(
 		"callback", "cx_captcha_function", "captchaId", captchaID, "type", captchaType,
 		"version", captchaVersion, "captchaKey", captchaKey, "token", token,
@@ -114,6 +117,9 @@ func (c *Client) answerSignCaptcha(ctx context.Context, args map[string]any) (an
 	if !ok || challenge.ShadeImage == "" {
 		return nil, fault("NOT_FOUND", "no image captcha challenge; call get_sign_captcha first")
 	}
+	if challenge.CourseID != str(args, "course_id") || challenge.ClassID != str(args, "class_id") {
+		return nil, fault("INVALID_ARGUMENT", "captcha class does not match")
+	}
 	if time.Since(challenge.CreatedAt) > captchaChallengeTTL {
 		delete(c.captchaChallenges, activityID)
 		return nil, fault("CAPTCHA_REQUIRED", "captcha challenge expired; call sign_activity again")
@@ -130,7 +136,7 @@ func (c *Client) answerSignCaptcha(ctx context.Context, args map[string]any) (an
 		return nil, fault("INVALID_ARGUMENT", "x_position must be between -8 and 280")
 	}
 	textClickArr, _ := json.Marshal([]map[string]int{{"x": int(x)}})
-	referer := preSignReferer(challenge, identity.UID)
+	referer := preSignReferer(challenge, identity.signUID())
 	q := orderedQuery(
 		"captchaId", captchaID, "type", captchaType, "token", challenge.Token,
 		"textClickArr", string(textClickArr), "coordinate", "[]", "runEnv", "10",
@@ -265,7 +271,7 @@ func preSignReferer(challenge signCaptchaChallenge, uid string) string {
 }
 
 func decodeJSONP(body []byte, v any) error {
-	value := strings.TrimSpace(string(body))
+	value := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(string(body)), ";"))
 	if !strings.HasPrefix(value, "cx_captcha_function(") || !strings.HasSuffix(value, ")") {
 		return fmt.Errorf("not captcha JSONP")
 	}

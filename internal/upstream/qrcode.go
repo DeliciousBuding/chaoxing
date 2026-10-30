@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -27,14 +28,18 @@ func parseQRCode(rawValue string) (qrCodePayload, error) {
 			return qrCodePayload{}, fault("INVALID_ARGUMENT", "qr_payload has no enc parameter")
 		}
 		signDetail := strings.Split(content, "&enc=")[0]
+		aid, err := qrActivityID(firstQueryValue(signDetail))
+		if err != nil {
+			return qrCodePayload{}, err
+		}
 		return qrCodePayload{
-			AID:  firstQueryValue(signDetail),
+			AID:  aid,
 			Code: lastQueryValue(signDetail),
 			Enc:  enc,
 		}, nil
 	}
 	parsed, err := url.Parse(rawValue)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
 		return qrCodePayload{}, fault("INVALID_ARGUMENT", "qr_payload is not a recognized QR code")
 	}
 	q := parsed.Query()
@@ -42,11 +47,28 @@ func parseQRCode(rawValue string) (qrCodePayload, error) {
 	if enc == "" {
 		return qrCodePayload{}, fault("INVALID_ARGUMENT", "qr_payload has no enc parameter")
 	}
-	aid := firstNonBlank(q.Get("id"), q.Get("aid"))
+	aid, err := qrActivityID(firstNonBlank(q.Get("id"), q.Get("aid")))
+	if err != nil {
+		return qrCodePayload{}, err
+	}
 	return qrCodePayload{AID: aid, Code: strings.TrimSpace(q.Get("c")), Enc: enc}, nil
 }
 
+func qrActivityID(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n <= 0 {
+		return "", fault("INVALID_ARGUMENT", "QR activity id is invalid")
+	}
+	return strconv.FormatInt(n, 10), nil
+}
+
 func (c *Client) verifyQRCode(ctx context.Context, activityID string, payload qrCodePayload) error {
+	if payload.AID != "" && payload.AID != activityID {
+		return fault("INVALID_ARGUMENT", "QR activity does not match the selected activity")
+	}
 	if payload.Code == "" {
 		return nil
 	}

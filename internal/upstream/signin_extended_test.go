@@ -59,7 +59,7 @@ func photoFaceClient(t *testing.T, otherID, faceFlag int) *Client {
 			if q.Get("deviceCode") != c.device.DeviceCode {
 				t.Fatal("device code missing")
 			}
-			if q.Get("faceEnc") != "" && (q.Get("faceEnc") != "face-enc" || q.Get("currentFaceId") != "face-object" || q.Get("ifCFP") != "1") {
+			if q.Get("faceEnc") != "" && (q.Get("faceEnc") != "face-enc" || q.Get("currentFaceId") != "face-object" || q.Get("ifCFP") != "0" || q.Get("faceCode") != "") {
 				t.Fatal(r.URL.RawQuery)
 			}
 			if q.Get("objectId") != "" && q.Get("objectId") != "photo-object" {

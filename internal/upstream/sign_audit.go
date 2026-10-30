@@ -17,6 +17,9 @@ const egressProbeURL = "https://www.cloudflare.com/cdn-cgi/trace"
 func (c *Client) recordSignAudit(req SignRequest, result *SignResult, signErr error, trace *signAuditTrace) {
 	if trace != nil {
 		result.Submitted = trace.Submitted
+		if result.Method == "" {
+			result.Method = trace.Method
+		}
 	}
 	if !result.Submitted {
 		result.Method = "none"
@@ -43,7 +46,7 @@ func (c *Client) recordSignAudit(req SignRequest, result *SignResult, signErr er
 	}
 	method := result.Method
 	if method == "" {
-		method = requestedSignMethod(req)
+		method = "unknown"
 	}
 	state := result.State
 	code := ""
@@ -61,12 +64,6 @@ func (c *Client) recordSignAudit(req SignRequest, result *SignResult, signErr er
 		if latitude == nil {
 			latitude, longitude = trace.Latitude, trace.Longitude
 		}
-	}
-	if address == "" && result.Submitted {
-		address = strings.TrimSpace(req.Address)
-	}
-	if latitude == nil && req.Latitude != nil && result.Submitted {
-		latitude, longitude = req.Latitude, req.Longitude
 	}
 	result.Address, result.Latitude, result.Longitude = address, latitude, longitude
 	egressIP, egressSource := result.EgressIP, result.EgressSource
@@ -91,23 +88,6 @@ func (c *Client) recordSignAudit(req SignRequest, result *SignResult, signErr er
 	defer cancel()
 	if err := c.config.SignAudit.SaveSignAudit(ctx, record); err != nil {
 		log.Printf("sign audit write failed: %s", SafeFault(err).Code)
-	}
-}
-
-func requestedSignMethod(req SignRequest) string {
-	switch {
-	case req.FaceObjectID != "":
-		return "face"
-	case req.PhotoObjectID != "":
-		return "photo"
-	case req.QRPayload != "":
-		return "qrcode"
-	case req.SignCode != "":
-		return "code"
-	case req.Latitude != nil:
-		return "location"
-	default:
-		return "normal"
 	}
 }
 
