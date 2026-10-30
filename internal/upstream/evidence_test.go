@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,6 +107,94 @@ func TestUpstreamRateLimitDefersWithoutAnotherRequest(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "请勿频繁操作") || !strings.Contains(string(data), `"request_attempted":false`) {
 		t.Fatal("actual response/deferred read missing")
+	}
+}
+
+func TestVerificationDoesNotRequireFeedAndChecksAccountScope(t *testing.T) {
+	calls := 0
+	c := academicClient(t, []Course{{ID: "c", ClassID: "k"}}, roundtrip(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Path != "/v2/apis/sign/getAttendInfo" {
+			t.Fatalf("verification submitted or rediscovered: %s", r.URL.Path)
+		}
+		return response(r, `{"result":1,"data":{"status":1}}`), nil
+	}))
+	got, err := c.VerifySignActivity(context.Background(), SignRequest{CourseID: "c", ClassID: "k", ActivityID: "9001"})
+	if err != nil || !got.Verified || got.Submitted || got.StateSource != "attendance" || calls != 1 {
+		t.Fatalf("result=%+v err=%v calls=%d", got, err, calls)
+	}
+	if _, err := c.VerifySignActivity(context.Background(), SignRequest{CourseID: "other", ClassID: "k", ActivityID: "9001"}); SafeFault(err).Code != "NOT_FOUND" || calls != 1 {
+		t.Fatal("verification escaped enrolled class scope")
+	}
+	value, err := c.Call(context.Background(), "get_sign_status", map[string]any{"course_id": "c", "class_id": "k", "activity_id": "9001"})
+	if err != nil || !value.(map[string]any)["result"].(SignResult).Verified || calls != 2 {
+		t.Fatalf("read-only adapter failed: value=%v err=%v calls=%d", value, err, calls)
+	}
+}
+
+func TestGroupDiscoveredSignUsesOnlyFreshMatchingOwnedCard(t *testing.T) {
+	for _, tc := range []struct {
+		name, class string
+		age         time.Duration
+		cooldown    bool
+		want        string
+	}{
+		{"fresh owned", "k", 25 * time.Second, false, ""},
+		{"expired", "k", 2 * time.Minute, false, "NOT_FOUND"},
+		{"other class", "other", time.Second, false, "NOT_FOUND"},
+		{"cooldown does not cause rediscovery", "k", time.Second, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			submissions := 0
+			c := academicClient(t, []Course{{ID: "c", ClassID: "k"}}, roundtrip(func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Path {
+				case "/v2/apis/active/student/activelist":
+					if tc.cooldown {
+						t.Fatal("sign-in requested the throttled discovery endpoint")
+					}
+					return response(r, activityResponse()), nil
+				case "/v2/apis/active/getPPTActiveInfo":
+					return response(r, `{"result":1,"data":{"otherId":0,"ifphoto":0}}`), nil
+				case "/newsign/preSign":
+					return response(r, `<script>var x={"primaryAttend":{"status":0}}</script>`), nil
+				case "/pptSign/analysis":
+					return response(r, `code='+'a1b2c3'`), nil
+				case "/pptSign/analysis2":
+					return response(r, ""), nil
+				case "/pptSign/stuSignajax":
+					submissions++
+					return response(r, "success"), nil
+				case "/v2/apis/sign/getAttendInfo":
+					return response(r, `{"result":1,"data":{"status":1}}`), nil
+				default:
+					t.Fatalf("unexpected request %s", r.URL.Path)
+					return nil, nil
+				}
+			}))
+			c.identity = &signIdentity{UID: "10001", FID: "20002", Name: "Synthetic"}
+			c.config.GroupActivities = true
+			c.imActivitiesAt = time.Now().Add(-tc.age)
+			c.imActivities = []Activity{{ID: "9001", CourseID: "c", ClassID: tc.class, Kind: "signin", State: "active", Signable: true, Source: "group"}}
+			if tc.cooldown {
+				u, _ := url.Parse(activityAPI)
+				c.deferEndpoint(u, "")
+			}
+			got, err := c.SignActivity(context.Background(), SignRequest{CourseID: "c", ClassID: "k", ActivityID: "9001"})
+			if tc.want == "" {
+				if err != nil || !got.Verified || submissions != 1 {
+					t.Fatalf("result=%+v err=%v submissions=%d", got, err, submissions)
+				}
+			} else if SafeFault(err).Code != tc.want || submissions != 0 {
+				t.Fatalf("err=%v submissions=%d", err, submissions)
+			}
+		})
+	}
+}
+
+func TestExistingAttendanceResponseIsNotNewSign(t *testing.T) {
+	state, err := signResponseState("您已签到过了")
+	if err != nil || state != "already_signed" {
+		t.Fatalf("prior attendance attributed to new sign: state=%s err=%v", state, err)
 	}
 }
 

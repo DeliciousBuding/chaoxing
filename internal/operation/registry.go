@@ -76,6 +76,7 @@ var definitions = []Definition{
 	{ID: "capabilities.list", Name: "get_capabilities", Title: "Get capabilities", Description: "Use to discover verified capabilities and unsupported domains before attempting group, inbox or task-point queries."},
 	{ID: "chapters.list", Name: "list_chapters", Title: "List chapters", Description: "Use to read course chapter summaries and explicitly reported task-point counts. Does not enter learning pages or enumerate individual task cards; missing markers remain unknown.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID.", true), "class_id": text("Exact class ID.", true), "cpi": text("Exact cpi from list_courses.", true), "limit": integer("Maximum chapter summaries.", 1, 100), "offset": integer("Output offset; not upstream page number.", 0, 100000)}},
 	{ID: "activities.list", Name: "list_activities", Title: "List class activities", Description: "Use to read the current activity list of selected classes, including sign-in activities and the account's own sign-in state.", Fields: overviewFields()},
+	{ID: "activities.verify", Name: "get_sign_status", Title: "Verify attendance", Description: "Independently confirm this account's attendance for a known activity. Requires enrolled course/class IDs and an activity ID from the available feed. Never submits, even when the feed is unavailable or the activity has ended.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID.", true), "class_id": text("Exact enrolled class ID.", true), "activity_id": text("Known activity ID from the available feed.", true)}},
 	{ID: "activities.page", Name: "get_activity_page", Title: "Get activity page evidence", Description: "Follow one activity URL already present in the verified class feed and return bounded page structure: final URL, iframes, scripts, links, form field names/types and text. Hidden values and raw bytes are withheld; this is evidence collection, not submission.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact class ID from list_courses.", true), "activity_id": text("Stable activity ID from list_activities.", true)}},
 	{ID: "works.list", Name: "list_work_jobs", Title: "List work jobs", Description: "Use to discover editable answer-work cards in a course's knowledge points. Exact course/class/cpi IDs are required.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact enrolled class ID from list_courses.", true), "cpi": text("Exact cpi returned by list_courses.", true)}},
 	{ID: "works.questions", Name: "get_work_questions", Title: "Get work questions", Description: "Use to read one editable work's questions and submission form fields. This is manual-answer support only and does not submit.", Fields: map[string]Field{"course_id": text("Exact enrolled course ID from list_courses.", true), "class_id": text("Exact enrolled class ID from list_courses.", true), "job_id": text("Stable work job ID from list_work_jobs.", true)}},
@@ -334,7 +335,7 @@ func (d Definition) OutputSchema() map[string]any {
 		delete(properties, "items")
 		properties["result"] = upstreamWorkResultSchema()
 	}
-	if d.Name == "sign_activity" {
+	if d.Name == "sign_activity" || d.Name == "get_sign_status" {
 		delete(properties, "items")
 		properties["result"] = signResultSchema()
 	}
@@ -615,6 +616,6 @@ func capabilities(defs []Definition) map[string]any {
 		names = append(names, d.Name)
 		ops = append(ops, map[string]any{"id": d.ID, "name": d.Name, "title": d.Title, "description": d.Description, "scope": RequiredScope(d), "scopes": RequiredScopes(d), "input_schema": d.InputSchema(), "output_schema": d.OutputSchema()})
 	}
-	return map[string]any{"contract_version": "14", "tools": names, "operations": ops, "unsupported_domains": []string{"group_message_history", "inbox", "task_points", "folder_traversal", "classroom_practice_submission"}, "complete": true, "coverage": "verified_tool_catalog"}
+	return map[string]any{"contract_version": "15", "tools": names, "operations": ops, "unsupported_domains": []string{"group_message_history", "inbox", "task_points", "folder_traversal", "classroom_practice_submission"}, "complete": true, "coverage": "verified_tool_catalog"}
 }
 func Capabilities() map[string]any { return capabilities(All()) }

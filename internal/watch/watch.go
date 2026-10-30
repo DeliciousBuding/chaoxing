@@ -111,6 +111,10 @@ type Signer interface {
 	SignActivity(ctx context.Context, req upstream.SignRequest) (upstream.SignResult, error)
 }
 
+type SignVerifier interface {
+	VerifySignActivity(ctx context.Context, req upstream.SignRequest) (upstream.SignResult, error)
+}
+
 type AnswerActivitySource interface {
 	AnswerActivity(ctx context.Context, courseID, classID, activityID string) (upstream.SignResult, error)
 }
@@ -120,16 +124,18 @@ type ActivityPageSource interface {
 }
 
 type entry struct {
-	LastSent           time.Time `json:"last_sent"`
-	LastAttempt        time.Time `json:"last_attempt,omitempty"`
-	RetryAt            time.Time `json:"retry_at,omitempty"`
-	RetryCount         int       `json:"retry_count,omitempty"`
-	Count              int       `json:"count"`
-	Status             string    `json:"status,omitempty"`
-	Method             string    `json:"method,omitempty"`
-	Code               string    `json:"code,omitempty"`
-	AttendanceVerified bool      `json:"attendance_verified,omitempty"`
-	Submitted          bool      `json:"submitted,omitempty"`
+	LastSent           time.Time            `json:"last_sent"`
+	LastAttempt        time.Time            `json:"last_attempt,omitempty"`
+	RetryAt            time.Time            `json:"retry_at,omitempty"`
+	RetryCount         int                  `json:"retry_count,omitempty"`
+	Count              int                  `json:"count"`
+	Status             string               `json:"status,omitempty"`
+	Method             string               `json:"method,omitempty"`
+	Code               string               `json:"code,omitempty"`
+	AttendanceVerified bool                 `json:"attendance_verified,omitempty"`
+	Submitted          bool                 `json:"submitted,omitempty"`
+	PendingActivity    *upstream.Activity   `json:"pending_activity,omitempty"`
+	PendingResult      *upstream.SignResult `json:"pending_result,omitempty"`
 }
 
 // pendingAlert is a notification that could not be delivered after the
@@ -680,11 +686,12 @@ func (r *Runner) nextTickDelay(now time.Time) time.Duration {
 	if inWindow(now, r.cfg.Window) {
 		for _, class := range r.cfg.Classes {
 			if classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) {
-				return max(time.Second, delay-now.Sub(r.Metrics().LastTickStartedAt))
+				delay = max(time.Second, delay-now.Sub(r.Metrics().LastTickStartedAt))
+				break
 			}
 		}
 	}
-	return delay
+	return r.verificationDelay(now, delay)
 }
 
 func nextWindowOpen(t time.Time, spec string) time.Duration {
@@ -834,6 +841,7 @@ func (r *Runner) Tick(ctx context.Context) {
 	r.flushAlerts(ctx, now)
 	r.signDelayLeft = maxSignDelayPerTick
 	if !inWindow(now, r.cfg.Window) {
+		r.resumeVerifications(ctx, now)
 		return
 	}
 	r.resetInactiveFeedFailures(now)
@@ -887,6 +895,7 @@ func (r *Runner) Tick(ctx context.Context) {
 	// Scan in-class assignments every tick too: a classroom quiz may be
 	// published only in the assignment feed, not in the activity feed.
 	changed = r.pollAssignments(ctx, now) || changed
+	changed = r.resumeVerifications(ctx, now) || changed
 	if groupSource, ok := r.source.(GroupActivitySource); ok && polledClasses > 0 {
 		// Course-group history is a fallback for cards missing from the class
 		// feed. Scan it on a slower cadence, and only while a watched class is
@@ -1091,6 +1100,12 @@ func signAttemptDue(seen bool, e entry, now time.Time) bool {
 		// Older state entries could have trusted a class-list hint. Recheck
 		// those through preSign instead of preserving an unproven success.
 		return !e.AttendanceVerified
+	}
+	if e.Status == "verify" {
+		return false
+	}
+	if cooldownActivityCode(e.Code) && (e.Status == "retry" || e.Status == "failed") {
+		return e.RetryAt.IsZero() || !now.Before(e.RetryAt)
 	}
 	if e.Status == "retry" {
 		if e.RetryCount >= maxSignAttempts {
@@ -1315,13 +1330,27 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 	if err == nil && (!result.Verified || (!result.Submitted && result.Method != "none") || (result.Method == "none" && result.Submitted)) {
 		err = &upstream.Fault{Code: "SIGN_REJECTED", Message: "attendance was not verified"}
 	}
-	if err == nil && result.Method == "none" {
+	if err == nil && (result.Method == "none" || result.State == "already_signed") {
 		title = "✅ 学习通已签（非本次提交）"
 	}
 	if err != nil {
 		safe := upstream.SafeFault(err)
 		next.Status, next.Code = "failed", safe.Code
-		if retryableActivityError(err) {
+		if (result.State == "signed" || result.State == "already_signed") && !result.Verified {
+			if _, ok := r.signer.(SignVerifier); ok {
+				if result.FetchedAt.IsZero() {
+					result.FetchedAt = now
+				}
+				item.RawURL, item.Ext = "", ""
+				next.Status, next.Method, next.Submitted = "verify", result.Method, result.Submitted
+				next.PendingActivity, next.PendingResult = &item, &result
+				next.RetryCount = 0
+				next.RetryAt = now.Add(max(signRetryDelay(1), time.Duration(safe.RetryAfterSeconds)*time.Second))
+			}
+		} else if cooldownActivityCode(safe.Code) {
+			next.Status = "retry"
+			next.RetryAt = now.Add(max(signRetryDelay(1), time.Duration(safe.RetryAfterSeconds)*time.Second))
+		} else if retryableActivityError(err) {
 			next.RetryCount = e.RetryCount + 1
 			if next.RetryCount < maxSignAttempts {
 				next.Status = "retry"
@@ -1332,6 +1361,12 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 			}
 		}
 		title, body = "🚨 学习通自动签到失败", formatFailureBody(item, safe.Code)
+		if next.Status == "verify" {
+			title, body = "⏳ 学习通签到等待考勤确认", "活动："+item.Title+"\n提交阶段已完成，正在独立回验；不会再次提交。"
+			if !result.Submitted || result.State == "already_signed" {
+				body = "活动：" + item.Title + "\n签到页显示此前已签，等待独立考勤确认；不会提交。"
+			}
+		}
 		if result.Address != "" {
 			body += "\n地址：" + result.Address
 		}
@@ -1368,6 +1403,10 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 		started.Format(time.RFC3339Nano), completed.Format(time.RFC3339Nano), completed.Sub(started).Milliseconds(),
 	)
 	return true
+}
+
+func cooldownActivityCode(code string) bool {
+	return code == "UPSTREAM_RATE_LIMITED" || code == "RATE_LIMITED" || code == "AUTH_COOLDOWN"
 }
 
 func signInObservationSummary(items []upstream.Activity, max int) string {
@@ -1717,7 +1756,9 @@ func formatSuccessBody(a upstream.Activity, result upstream.SignResult) string {
 		"方式："+result.Method,
 		"状态：已签到并通过上游状态复核",
 	)
-	if result.Method == "none" {
+	if result.State == "already_signed" {
+		lines = append(lines, "归属：上游明确表示此前已签，本次请求没有新增签到")
+	} else if result.Method == "none" {
 		lines = append(lines, "归属：此前已签到，本次没有提交签到请求")
 	} else if result.Submitted {
 		lines = append(lines, "归属：本次已发起提交，并通过考勤接口回验")

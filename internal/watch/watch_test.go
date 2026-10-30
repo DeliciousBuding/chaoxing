@@ -86,6 +86,7 @@ func TestWatchDoesNotClaimExternalOrUnverifiedSignAsAutomaticSuccess(t *testing.
 		wantTitle string
 	}{
 		{"external", upstream.SignResult{Method: "none", State: "signed", Verified: true, StateSource: "attendance"}, "✅ 学习通已签（非本次提交）"},
+		{"manual race", upstream.SignResult{Method: "normal", State: "already_signed", Submitted: true, Verified: true, StateSource: "attendance"}, "✅ 学习通已签（非本次提交）"},
 		{"not verified", upstream.SignResult{Method: "normal", State: "signed", Submitted: true}, "🚨 学习通自动签到失败"},
 		{"not submitted", upstream.SignResult{Method: "normal", State: "signed", Verified: true}, "🚨 学习通自动签到失败"},
 	} {

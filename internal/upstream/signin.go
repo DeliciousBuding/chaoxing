@@ -155,11 +155,14 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest, trace *signA
 	if !ok {
 		return SignResult{}, fault("NOT_FOUND", "course/class is not in the accessible list")
 	}
-	rows, err := c.fetchActivities(ctx, course)
-	if err != nil {
-		return SignResult{}, err
+	activity, ok := c.recentSignActivity(course, req.ActivityID)
+	if !ok {
+		rows, err := c.fetchActivities(ctx, course)
+		if err != nil {
+			return SignResult{}, err
+		}
+		activity, ok = findActivity(rows, req.ActivityID)
 	}
-	activity, ok := findActivity(rows, req.ActivityID)
 	if !ok || activity.Kind != "signin" {
 		return SignResult{}, fault("NOT_FOUND", "activity is not in the current class feed")
 	}
@@ -232,21 +235,78 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest, trace *signA
 		return SignResult{}, fault("CAPTCHA_REQUIRED", "captcha challenge is ready")
 	}
 	delete(c.captchaChallenges, activity.ID)
-	verified, err := c.attendanceVerified(ctx, activity.ID)
-	if err != nil {
-		return SignResult{}, err
-	}
-	if !verified {
-		return SignResult{}, fault("SIGN_REJECTED", "upstream did not confirm the sign-in")
-	}
 	if !trace.Submitted {
 		method = "none"
 	}
-	return SignResult{
+	phaseSource := "submission"
+	if !trace.Submitted {
+		phaseSource = "pre_sign"
+	}
+	result := SignResult{
 		ActivityID: activity.ID, CourseID: activity.CourseID, ClassID: activity.ClassID,
-		Method: method, State: state, Verified: true, Submitted: trace.Submitted, StateSource: "attendance", Address: trace.Address,
+		Method: method, State: state, Submitted: trace.Submitted, StateSource: phaseSource, Address: trace.Address,
 		Latitude: trace.Latitude, Longitude: trace.Longitude, FetchedAt: time.Now().UTC(),
-	}, nil
+	}
+	verified, err := c.attendanceVerified(ctx, activity.ID)
+	if err != nil {
+		return result, &Fault{Code: "SIGN_VERIFICATION_PENDING", RetryAfterSeconds: SafeFault(err).RetryAfterSeconds}
+	}
+	if !verified {
+		return result, fault("SIGN_VERIFICATION_PENDING", "attendance has not confirmed the accepted sign-in")
+	}
+	result.Verified, result.StateSource = true, "attendance"
+	return result, nil
+}
+
+// Discovery and submission are separate operations. A recent owned card is
+// enough to enter the authoritative preSign flow; signing must not request a
+// throttled discovery endpoint again just to rediscover the same card.
+func (c *Client) recentSignActivity(course Course, activityID string) (Activity, bool) {
+	if cached, ok := c.classActivities[course.ID+":"+course.ClassID]; ok && time.Since(cached.at) < classActivityCacheTTL {
+		if activity, found := findActivity(cached.rows, activityID); found {
+			return activity, true
+		}
+	}
+	if c.config.GroupActivities && time.Since(c.imActivitiesAt) < time.Minute {
+		for _, activity := range c.imActivities {
+			if activity.Source == "group" && activity.ID == activityID && activity.CourseID == course.ID && activity.ClassID == course.ClassID {
+				return activity, true
+			}
+		}
+	}
+	return Activity{}, false
+}
+
+// VerifySignActivity confirms a previously accepted attempt without consulting
+// a possibly ended/disappeared feed and without ever submitting again.
+// The watcher owns the persistent attempt receipt; this boundary owns protocol
+// reads and independently rechecks the course/class account scope.
+func (c *Client) VerifySignActivity(ctx context.Context, req SignRequest) (SignResult, error) {
+	if err := c.lock(ctx); err != nil {
+		return SignResult{}, err
+	}
+	defer c.queries.Release()
+	return c.verifySignActivityLocked(ctx, req)
+}
+
+func (c *Client) verifySignActivityLocked(ctx context.Context, req SignRequest) (result SignResult, verifyErr error) {
+	defer func() { c.recordSignAudit(req, &result, verifyErr, nil) }()
+	if req.CourseID == "" || req.ClassID == "" || req.ActivityID == "" {
+		return SignResult{}, fault("INVALID_ARGUMENT", "course, class and activity IDs are required")
+	}
+	courses, err := c.fetchCourses(ctx)
+	if err != nil {
+		return SignResult{}, err
+	}
+	if _, ok := findCourseClass(courses, req.CourseID, req.ClassID); !ok {
+		return SignResult{}, fault("NOT_FOUND", "course/class is not in the accessible list")
+	}
+	verified, err := c.attendanceVerified(ctx, req.ActivityID)
+	result = SignResult{ActivityID: req.ActivityID, CourseID: req.CourseID, ClassID: req.ClassID, Method: "none", State: "signed", StateSource: "attendance", Verified: verified, FetchedAt: time.Now().UTC()}
+	if err == nil && !verified {
+		err = fault("SIGN_VERIFICATION_PENDING", "attendance has not confirmed the accepted sign-in")
+	}
+	return result, err
 }
 
 func findCourseClass(courses []Course, courseID, classID string) (Course, bool) {
@@ -634,7 +694,7 @@ func signResponseState(body string) (string, error) {
 	case body == "success":
 		return "signed", nil
 	case body == "您已签到过了":
-		return "signed", nil
+		return "already_signed", nil
 	case body == "success2":
 		return "", fault("SIGN_EXPIRED", "sign-in has ended")
 	case body == "签到失败，请重新扫描。":

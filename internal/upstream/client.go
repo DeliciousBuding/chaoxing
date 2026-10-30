@@ -94,6 +94,10 @@ func SafeFault(err error) *Fault {
 		f.Category = "upstream_state"
 		f.Message = "The sign-in submission was not accepted."
 		f.Hint = "Check the activity state and configured coordinates."
+	case "SIGN_VERIFICATION_PENDING":
+		f.Category, f.Retryable = "upstream_state", true
+		f.Message = "Attendance is not yet confirmed."
+		f.Hint = "Wait for attendance verification; do not submit again."
 	case "SIGN_EXPIRED", "SIGN_ALREADY":
 		f.Category = "upstream_state"
 		f.Message = "The sign-in activity state changed."
@@ -617,6 +621,12 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) (an
 		return c.materials(ctx, args)
 	case "list_activities":
 		return c.activities(ctx, args)
+	case "get_sign_status":
+		result, e := c.verifySignActivityLocked(ctx, SignRequest{CourseID: str(args, "course_id"), ClassID: str(args, "class_id"), ActivityID: str(args, "activity_id")})
+		if e != nil {
+			return nil, e
+		}
+		return map[string]any{"result": result, "complete": true, "coverage": "single_account_attendance", "fetched_at": result.FetchedAt}, nil
 	case "get_activity_page":
 		return c.activityPageLocked(ctx, args)
 	case "list_work_jobs":
