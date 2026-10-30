@@ -100,7 +100,7 @@ func TestWatchDoesNotClaimExternalOrUnverifiedSignAsAutomaticSuccess(t *testing.
 			}
 			r.state["c:k:1"] = entry{Status: "signed", LastAttempt: time.Now()}
 			r.Tick(context.Background())
-			if len(signer.requests) != 1 || len(sender.sent) != 1 || sender.sent[0].Title != tc.wantTitle {
+			if len(signer.requests) != 1 || len(sender.sent) != 2 || sender.sent[0].Title != tc.wantTitle || sender.sent[1].Title != "🔔 学习通签到发现提醒" {
 				t.Fatalf("requests=%d notifications=%+v", len(signer.requests), sender.sent)
 			}
 			if tc.result.Method == "none" {
@@ -393,7 +393,7 @@ func TestWatchAutoSignsOnceAndUsesPresetLocation(t *testing.T) {
 	if req.Latitude == nil || req.Longitude == nil || *req.Latitude != 31.1 || *req.Longitude != 121.2 || req.Address != "Synthetic room" {
 		t.Fatalf("%+v", req)
 	}
-	if len(snd.sent) != 1 || snd.sent[0].Title != "✅ 学习通自动签到成功" {
+	if len(snd.sent) != 2 || snd.sent[0].Title != "✅ 学习通自动签到成功" || snd.sent[1].Title != "🔔 学习通签到发现提醒" {
 		t.Fatalf("%+v", snd.sent)
 	}
 }
@@ -422,7 +422,7 @@ func TestWatchMergesGroupCardAndUsesPresetSignCode(t *testing.T) {
 	if signer.requests[0].SignCode != "1234" {
 		t.Fatalf("%+v", signer.requests[0])
 	}
-	if len(snd.sent) != 1 || !strings.Contains(snd.sent[0].Body, "Synthetic course group") {
+	if len(snd.sent) != 2 || !strings.Contains(snd.sent[0].Body, "Synthetic course group") {
 		t.Fatalf("%+v", snd.sent)
 	}
 }
@@ -566,7 +566,7 @@ func TestWatchAutoSignFailureDoesNotRetry(t *testing.T) {
 	r.Tick(context.Background())
 	now = now.Add(time.Minute)
 	r.Tick(context.Background())
-	if len(signer.requests) != 1 || len(snd.sent) != 2 {
+	if len(signer.requests) != 1 || len(snd.sent) != 3 {
 		t.Fatalf("requests=%d sent=%d", len(signer.requests), len(snd.sent))
 	}
 	if r.state[key(src.items[0])].Code != "INTERNAL" {
@@ -677,7 +677,7 @@ func TestWatchAutoSignFailureUsesHighNotificationPriority(t *testing.T) {
 	}
 	r.now = func() time.Time { return time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai) }
 	r.Tick(context.Background())
-	if len(snd.sent) != 1 || snd.sent[0].Priority != 8 {
+	if len(snd.sent) != 2 || snd.sent[0].Priority != 8 || snd.sent[1].Priority != 9 {
 		t.Fatalf("%+v", snd.sent)
 	}
 }
@@ -693,14 +693,14 @@ func TestWatchAutoSignFailureRetriesAlertDelivery(t *testing.T) {
 	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
 	r.now = func() time.Time { return now }
 	r.Tick(context.Background())
-	if len(signer.requests) != 1 || len(snd.sent) != 1 {
+	if len(signer.requests) != 1 || len(snd.sent) != 2 {
 		t.Fatalf("requests=%d sent=%d", len(signer.requests), len(snd.sent))
 	}
 	retry := &fakeSender{}
 	r.sender = retry
 	now = now.Add(31 * time.Second)
 	r.Tick(context.Background())
-	if len(signer.requests) != 1 || len(retry.sent) != 1 {
+	if len(signer.requests) != 1 || len(retry.sent) != 2 {
 		t.Fatalf("requests=%d sent=%d", len(signer.requests), len(retry.sent))
 	}
 }
@@ -719,7 +719,7 @@ func TestWatchPendingAlertSurvivesActivityDisappearing(t *testing.T) {
 	now := time.Date(2026, 10, 20, 9, 0, 0, 0, shanghai)
 	r.now = func() time.Time { return now }
 	r.Tick(context.Background())
-	if len(signer.requests) != 1 || len(r.alerts) != 1 {
+	if len(signer.requests) != 1 || len(r.alerts) != 2 {
 		t.Fatalf("requests=%d pending=%d", len(signer.requests), len(r.alerts))
 	}
 	if r.state[key(src.items[0])].Status != "signed" {
@@ -734,7 +734,7 @@ func TestWatchPendingAlertSurvivesActivityDisappearing(t *testing.T) {
 	if len(signer.requests) != 1 {
 		t.Fatalf("sign-in repeated: %d", len(signer.requests))
 	}
-	if len(retry.sent) != 1 || retry.sent[0].Title != "✅ 学习通自动签到成功" {
+	if len(retry.sent) != 2 || retry.sent[1].Title != "✅ 学习通自动签到成功" || retry.sent[0].Title != "🔔 学习通签到发现提醒" {
 		t.Fatalf("%+v", retry.sent)
 	}
 	if len(r.alerts) != 0 {
@@ -814,7 +814,7 @@ func TestWatchManualReminderQueuesOnNotifyFailure(t *testing.T) {
 	r.sender = retry
 	now = now.Add(31 * time.Second)
 	r.Tick(context.Background())
-	if len(retry.sent) != 1 || retry.sent[0].Title != "🔔 学习通签到提醒" {
+	if len(retry.sent) != 1 || retry.sent[0].Title != "🔔 学习通签到发现提醒" {
 		t.Fatalf("%+v", retry.sent)
 	}
 	if len(r.alerts) != 0 {

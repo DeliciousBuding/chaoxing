@@ -13,6 +13,7 @@ import (
 func (r *Runner) verificationDelay(now time.Time, delay time.Duration) time.Duration {
 	r.tickMu.Lock()
 	defer r.tickMu.Unlock()
+	delay = r.notificationDelay(now, delay)
 	if !r.cfg.AutoSign {
 		return delay
 	}

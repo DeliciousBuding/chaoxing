@@ -75,7 +75,8 @@ func TestAcceptedSignSurvivesRestartFeedDisappearanceAndPushFailure(t *testing.T
 		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	})
 	watchCfg := Config{Interval: time.Minute, Window: "07:30-22:30", AutoSign: true, StatePath: filepath.Join(dir, "watch.json"), Classes: []Class{{CourseID: "course-c", ClassID: "class-k"}}}
-	now := time.Date(2026, 10, 20, 22, 29, 45, 0, shanghai)
+	now := time.Now()
+	watchCfg.Window = ""
 	newRunner := func(sender *fakeSender) *Runner {
 		client, err := upstream.New(cfg)
 		if err != nil {
@@ -95,6 +96,7 @@ func TestAcceptedSignSurvivesRestartFeedDisappearanceAndPushFailure(t *testing.T
 		t.Fatalf("accepted stage lost: %+v discoveries=%d submissions=%d", e, discoveries, submissions)
 	}
 	afterRestart = true
+	watchCfg.Window = "00:00-00:01"
 	r = newRunner(&fakeSender{fail: true})
 	if delay := r.nextTickDelay(now.Add(15 * time.Second)); delay != 15*time.Second {
 		t.Fatalf("verification ignored outside-window deadline: %s", delay)

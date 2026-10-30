@@ -39,6 +39,7 @@ type Fault struct {
 	Retryable         bool   `json:"retryable"`
 	Hint              string `json:"hint,omitempty"`
 	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
+	RetryAfterSource  string `json:"retry_after_source,omitempty"`
 }
 
 func (f *Fault) Error() string     { return f.Code + ": " + f.Message }
@@ -51,6 +52,9 @@ func SafeFault(err error) *Fault {
 	if errors.As(err, &src) {
 		f.Code = src.Code
 		f.RetryAfterSeconds = src.RetryAfterSeconds
+		if src.RetryAfterSource == "upstream" || src.RetryAfterSource == "local_backoff" {
+			f.RetryAfterSource = src.RetryAfterSource
+		}
 	}
 	if errors.Is(err, operation.ErrInvalidArgument) {
 		f.Code = "INVALID_ARGUMENT"
@@ -61,7 +65,7 @@ func SafeFault(err error) *Fault {
 	switch f.Code {
 	case "UPSTREAM_RATE_LIMITED":
 		f.Category, f.Retryable = "resource", true
-		f.Message = "Upstream requested a polling cooldown."
+		f.Message = "Upstream rejected the request; a retry cooldown is active."
 		f.Hint = "Wait for retry_after_seconds; do not increase request frequency."
 	case "RATE_LIMITED":
 		f.Category = "resource"

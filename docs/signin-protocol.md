@@ -6,7 +6,7 @@ The comparison uses [ChaoxingSignFaker at aaa62a788bfb503aec95139501e7697e2feb85
 
 ## Discovery and ownership
 
-Class-list `userStatus` is a diagnostic hint. An active sign-in card enters the pre-sign check regardless of that hint. Recent class/group discoveries remain scoped to the enrolled course/class; reusing a recent owned card avoids a second discovery request immediately before signing. Pre-sign and independent attendance reads decide completion.
+Class-list `userStatus` is a diagnostic hint. An active sign-in card enters the pre-sign check regardless of that hint. Recent class/group discoveries remain scoped to the enrolled course/class; reusing an owned observation avoids a second discovery request immediately before signing. The watcher persists active observations for bounded, deadline-aware retries across restart or feed failure; explicit tools cannot supply those internal observations. Enrollment, authoritative pre-sign and independent attendance reads still decide completion. All observed sign-in states independently produce a deduplicated discovery notification, including historical/ended cards; historical discovery never authorizes submission.
 
 Course-group history supplements the class feed. A sweep reads at most six groups: groups matching recently polled classes take priority, and remaining capacity rotates through other groups. Partial coverage stays explicit. Group card numeric fields accept either JSON numbers or decimal strings; message timestamps are retained for ordering. Cards without a valid course/class binding are rejected. Results requested for one class exclude cards from other classes. Group discovery still honors the account's discovery cooldown; it does not bypass upstream throttling.
 

@@ -26,6 +26,22 @@ const (
 
 var analysisCodePattern = regexp.MustCompile(`code='\+'([a-f0-9]+)'`)
 
+type observedSignKey struct{}
+
+// SignObservedActivity resumes an internally discovered, persisted card. It is
+// not an MCP/CLI input: enrollment, authoritative preSign and every endpoint's
+// cooldown are still checked; only redundant list discovery is omitted.
+func (c *Client) SignObservedActivity(ctx context.Context, req SignRequest, item Activity, observedAt time.Time) (SignResult, error) {
+	if item.ID != req.ActivityID || item.CourseID != req.CourseID || item.ClassID != req.ClassID ||
+		item.Kind != "signin" || item.State != "active" || !item.Signable ||
+		observedAt.IsZero() || time.Since(observedAt) < -time.Minute || time.Since(observedAt) >= 24*time.Hour ||
+		(item.EndsAt != nil && !time.Now().Before(*item.EndsAt)) ||
+		(item.EndsAt == nil && time.Since(observedAt) >= 10*time.Minute) {
+		return SignResult{}, fault("INVALID_ARGUMENT", "observed sign-in is expired or mismatched")
+	}
+	return c.SignActivity(context.WithValue(ctx, observedSignKey{}, item), req)
+}
+
 // SignRequest identifies one account-owned activity. A class-level preset can
 // supply exact coordinates; the sign layer still applies the reference client's
 // small random offset before submission.
@@ -164,7 +180,10 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest, trace *signA
 	if !ok {
 		return SignResult{}, fault("NOT_FOUND", "course/class is not in the accessible list")
 	}
-	activity, ok := c.recentSignActivity(course, req.ActivityID)
+	activity, ok := ctx.Value(observedSignKey{}).(Activity)
+	if !ok {
+		activity, ok = c.recentSignActivity(course, req.ActivityID)
+	}
 	if !ok {
 		rows, err := c.fetchActivities(ctx, course)
 		if err != nil {
