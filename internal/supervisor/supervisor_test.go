@@ -112,15 +112,15 @@ func TestThirdConsecutiveCrashUsesMaximumPriority(t *testing.T) {
 	path := filepath.Join(d, "supervisor-state.json")
 	base := time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC)
 	sender := &recordingSender{}
-	var current *Supervisor
 	for i := 0; i < 4; i++ {
 		s, err := Start(Config{Path: path, Sender: sender, AlertRetryDelay: time.Millisecond, Now: fixedClock(base.Add(time.Duration(i) * time.Minute)), ProcessID: 110 + i})
 		if err != nil {
 			t.Fatal(err)
 		}
-		current = s
+		// Each simulated process must finish its asynchronous alert before
+		// the next simulated restart; waiting only for the last loses ordering.
+		waitForAlert(t, s)
 	}
-	waitForAlert(t, current)
 	if len(sender.messages) != 3 {
 		t.Fatal(sender.messages)
 	}
