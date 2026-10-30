@@ -178,3 +178,31 @@ func TestDiscoveryNotificationPrecedesAuxiliaryGroupWork(t *testing.T) {
 		t.Fatal("discovery alert waited behind group/capture work")
 	}
 }
+
+func TestHistoricalDiscoveryReceiptSurvivesWeeklyGap(t *testing.T) {
+	now := time.Now()
+	item := signIn("c", "k", "a", false)
+	item.State = "finished"
+	source, sender := &fakeSource{items: []upstream.Activity{item}}, &fakeSender{}
+	cfg := Config{Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}}, StatePath: t.TempDir() + "/watch.json"}
+	r, err := New(cfg, source, sender, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return now }
+	r.Tick(context.Background())
+	source.items = nil
+	now = now.Add(24 * time.Hour)
+	r.Tick(context.Background())
+	r, err = New(cfg, source, sender, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.items = []upstream.Activity{item}
+	now = now.Add(6 * 24 * time.Hour)
+	r.now = func() time.Time { return now }
+	r.Tick(context.Background())
+	if len(sender.sent) != 1 {
+		t.Fatal("weekly feed repeated historical notification")
+	}
+}

@@ -1115,9 +1115,18 @@ func (r *Runner) pruneInactive(active map[string]upstream.Activity, now time.Tim
 		last := maxTime(e.LastSent, e.LastAttempt, e.RetryAt, e.LastObserved)
 		// Retain discovery receipts for rows still observed, including history,
 		// so yesterday's completed cards are not announced again every day.
-		// Removed rows expire after six hours; untouched action state has a
-		// 24-hour ceiling. Only the bounded upstream feed refreshes LastObserved.
+		// Removed action state expires after six hours, with a 24-hour ceiling.
+		// A small delivered-discovery receipt lasts a semester so weekly feeds
+		// do not announce the same historical cards again every week.
 		if _, still := active[k]; (!still && now.Sub(last) > 6*time.Hour) || now.Sub(last) > 24*time.Hour {
+			if e.DiscoveryNotified && !e.LastObserved.IsZero() && now.Sub(e.LastObserved) < 180*24*time.Hour {
+				receipt := entry{DiscoveryNotified: true, LastObserved: e.LastObserved}
+				if e != receipt {
+					r.state[k] = receipt
+					changed = true
+				}
+				continue
+			}
 			delete(r.state, k)
 			delete(r.alerts, k)
 			delete(r.alerts, discoveryPrefix+k)
