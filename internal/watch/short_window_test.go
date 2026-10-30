@@ -150,3 +150,31 @@ func TestNotificationWakeDoesNotAccelerateClassPolling(t *testing.T) {
 		t.Fatalf("idle delayed notification: %s", got)
 	}
 }
+
+type noticeOrderSource struct {
+	fakeSource
+	sender              *fakeSender
+	notifiedBeforeGroup bool
+}
+
+func (s *noticeOrderSource) ListGroupActivities(context.Context) ([]upstream.Activity, error) {
+	for _, message := range s.sender.sent {
+		if message.Title == "🔔 学习通签到发现提醒" {
+			s.notifiedBeforeGroup = true
+		}
+	}
+	return nil, nil
+}
+
+func TestDiscoveryNotificationPrecedesAuxiliaryGroupWork(t *testing.T) {
+	sender := &fakeSender{}
+	source := &noticeOrderSource{fakeSource: fakeSource{items: []upstream.Activity{signIn("c", "k", "a", false)}}, sender: sender}
+	r, err := New(Config{Interval: time.Minute, Classes: []Class{{CourseID: "c", ClassID: "k"}}}, source, sender, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Tick(context.Background())
+	if !source.notifiedBeforeGroup {
+		t.Fatal("discovery alert waited behind group/capture work")
+	}
+}

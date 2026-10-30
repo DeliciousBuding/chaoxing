@@ -915,6 +915,11 @@ func (r *Runner) Tick(ctx context.Context) {
 	// group sweep. A slow page fetch or group scan must never delay a sign-in
 	// that has already been discovered.
 	changed := r.processActivities(ctx, active, classes, now)
+	// Discovery/action alerts must not wait behind assignments, group history
+	// or evidence capture. A failed push gets at most two seconds here.
+	promptCtx, cancelPrompt := context.WithTimeout(ctx, 2*time.Second)
+	r.flushAlerts(promptCtx, r.now())
+	cancelPrompt()
 	// Scan in-class assignments every tick too: a classroom quiz may be
 	// published only in the assignment feed, not in the activity feed.
 	changed = r.pollAssignments(ctx, now) || changed
@@ -947,6 +952,9 @@ func (r *Runner) Tick(ctx context.Context) {
 						}
 					}
 					changed = r.processActivities(ctx, active, classes, now) || changed
+					promptCtx, cancelPrompt := context.WithTimeout(ctx, 2*time.Second)
+					r.flushAlerts(promptCtx, r.now())
+					cancelPrompt()
 					captured = append(captured, groupRows...)
 				}
 			}
