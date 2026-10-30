@@ -115,6 +115,10 @@ type SignVerifier interface {
 	VerifySignActivity(ctx context.Context, req upstream.SignRequest) (upstream.SignResult, error)
 }
 
+type ObservedSigner interface {
+	SignObservedActivity(context.Context, upstream.SignRequest, upstream.Activity, time.Time) (upstream.SignResult, error)
+}
+
 type AnswerActivitySource interface {
 	AnswerActivity(ctx context.Context, courseID, classID, activityID string) (upstream.SignResult, error)
 }
@@ -136,6 +140,11 @@ type entry struct {
 	Submitted          bool                 `json:"submitted,omitempty"`
 	PendingActivity    *upstream.Activity   `json:"pending_activity,omitempty"`
 	PendingResult      *upstream.SignResult `json:"pending_result,omitempty"`
+	KnownActivity      *upstream.Activity   `json:"known_activity,omitempty"`
+	KnownObservedAt    time.Time            `json:"known_observed_at,omitempty"`
+	KnownScheduleKey   string               `json:"known_schedule_key,omitempty"`
+	LastObserved       time.Time            `json:"last_observed,omitempty"`
+	DiscoveryNotified  bool                 `json:"discovery_notified,omitempty"`
 }
 
 // pendingAlert is a notification that could not be delivered after the
@@ -777,6 +786,9 @@ func (r *Runner) flushAlerts(ctx context.Context, now time.Time) {
 	}
 	sort.Strings(keys)
 	attempted := 0
+	sort.SliceStable(keys, func(i, j int) bool {
+		return r.alerts[keys[i]].Priority > r.alerts[keys[j]].Priority
+	})
 	changed := false
 	flushCtx, cancel := context.WithTimeout(ctx, alertFlushBudget)
 	defer cancel()
@@ -795,7 +807,14 @@ func (r *Runner) flushAlerts(ctx context.Context, now time.Time) {
 			// A delivered retry counts as this activity's notification for
 			// rate-limiting purposes, so the next tick does not send a
 			// duplicate reminder.
-			if e, ok := r.state[k]; ok {
+			if strings.HasPrefix(k, discoveryPrefix) {
+				e := r.state[strings.TrimPrefix(k, discoveryPrefix)]
+				e.DiscoveryNotified = true
+				if !r.cfg.AutoSign || e.KnownActivity == nil || !autoSignType(*e.KnownActivity, Class{}) {
+					e.LastSent, e.Count = now, e.Count+1
+				}
+				r.state[strings.TrimPrefix(k, discoveryPrefix)] = e
+			} else if e, ok := r.state[k]; ok {
 				e.LastSent, e.Count = now, e.Count+1
 				r.state[k] = e
 			}
@@ -839,7 +858,9 @@ func (r *Runner) Tick(ctx context.Context) {
 	defer r.tickMu.Unlock()
 	now := r.now()
 	r.flushAlerts(ctx, now)
+	defer func() { r.flushAlerts(ctx, r.now()) }()
 	r.signDelayLeft = maxSignDelayPerTick
+	r.resumeSignIns(ctx, now)
 	if !inWindow(now, r.cfg.Window) {
 		r.resumeVerifications(ctx, now)
 		return
@@ -875,11 +896,13 @@ func (r *Runner) Tick(ctx context.Context) {
 			pollCompleted.Sub(pollStarted).Milliseconds(), pollStatus, len(items), signInObservationSummary(items, 8), upstream.SafeFault(err).RetryAfterSeconds,
 		)
 		r.recordFeed("activities:"+class.CourseID+":"+class.ClassID, now, err == nil)
+		r.reportDiscoveryFailure(class, now, err)
 		if err != nil {
 			log.Printf("activity watch: class %s: %s", class.ClassID, upstream.SafeFault(err).Code)
 			continue
 		}
 		captured = append(captured, items...)
+		r.rememberSignIns(items, class, now)
 		for _, item := range items {
 			if item.CourseID == class.CourseID && item.ClassID == class.ClassID && (item.Signable || item.Answerable || answerReviewable(item)) {
 				k := key(item)
@@ -892,6 +915,11 @@ func (r *Runner) Tick(ctx context.Context) {
 	// group sweep. A slow page fetch or group scan must never delay a sign-in
 	// that has already been discovered.
 	changed := r.processActivities(ctx, active, classes, now)
+	// Discovery/action alerts must not wait behind assignments, group history
+	// or evidence capture. A failed push gets at most two seconds here.
+	promptCtx, cancelPrompt := context.WithTimeout(ctx, 2*time.Second)
+	r.flushAlerts(promptCtx, r.now())
+	cancelPrompt()
 	// Scan in-class assignments every tick too: a classroom quiz may be
 	// published only in the assignment feed, not in the activity feed.
 	changed = r.pollAssignments(ctx, now) || changed
@@ -911,6 +939,9 @@ func (r *Runner) Tick(ctx context.Context) {
 					r.lastGroupScan = now
 					for _, item := range groupRows {
 						class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
+						if ok && classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) {
+							r.rememberSignIns([]upstream.Activity{item}, class, now)
+						}
 						if !ok || !classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) || !(item.Signable || item.Answerable || answerReviewable(item)) {
 							continue
 						}
@@ -921,6 +952,9 @@ func (r *Runner) Tick(ctx context.Context) {
 						}
 					}
 					changed = r.processActivities(ctx, active, classes, now) || changed
+					promptCtx, cancelPrompt := context.WithTimeout(ctx, 2*time.Second)
+					r.flushAlerts(promptCtx, r.now())
+					cancelPrompt()
 					captured = append(captured, groupRows...)
 				}
 			}
@@ -1036,6 +1070,11 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 		if seen && e.Status == "signed" {
 			continue
 		}
+		// The independent discovery receipt is the first manual reminder;
+		// do not send an identical actionable reminder in the same tick.
+		if _, pending := r.alerts[discoveryPrefix+k]; pending && !e.DiscoveryNotified {
+			continue
+		}
 		if seen && e.Count >= r.cfg.MaxRepeats {
 			continue
 		}
@@ -1062,10 +1101,8 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 			r.queueAlert(k, message, now, err)
 			continue
 		}
-		r.state[k] = entry{
-			LastSent: now, Count: e.Count + 1, Status: e.Status, Method: e.Method, Code: e.Code,
-			LastAttempt: e.LastAttempt, RetryAt: e.RetryAt, RetryCount: e.RetryCount,
-		}
+		e.LastSent, e.Count = now, e.Count+1
+		r.state[k] = e
 		changed = true
 		log.Printf("activity watch: alerted %s (attempt %d)", item.ID, e.Count+1)
 	}
@@ -1075,14 +1112,24 @@ func (r *Runner) processActivities(ctx context.Context, active map[string]upstre
 func (r *Runner) pruneInactive(active map[string]upstream.Activity, now time.Time) bool {
 	changed := false
 	for k, e := range r.state {
-		last := maxTime(e.LastSent, e.LastAttempt, e.RetryAt)
-		// Drop rows that disappeared from the feed after six hours, and keep a
-		// hard 24-hour ceiling for activities that somehow remain in the feed.
-		// Without the second bound a permanently returned row would keep the
-		// private state file growing until its write limit is reached.
+		last := maxTime(e.LastSent, e.LastAttempt, e.RetryAt, e.LastObserved)
+		// Retain discovery receipts for rows still observed, including history,
+		// so yesterday's completed cards are not announced again every day.
+		// Removed action state expires after six hours, with a 24-hour ceiling.
+		// A small delivered-discovery receipt lasts a semester so weekly feeds
+		// do not announce the same historical cards again every week.
 		if _, still := active[k]; (!still && now.Sub(last) > 6*time.Hour) || now.Sub(last) > 24*time.Hour {
+			if e.DiscoveryNotified && !e.LastObserved.IsZero() && now.Sub(e.LastObserved) < 180*24*time.Hour {
+				receipt := entry{DiscoveryNotified: true, LastObserved: e.LastObserved}
+				if e != receipt {
+					r.state[k] = receipt
+					changed = true
+				}
+				continue
+			}
 			delete(r.state, k)
 			delete(r.alerts, k)
+			delete(r.alerts, discoveryPrefix+k)
 			changed = true
 		}
 	}
@@ -1279,6 +1326,17 @@ func (r *Runner) recordAnswerReview(ctx context.Context, item upstream.Activity,
 func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activity, e entry, scheduleKey string) bool {
 	started := r.now().UTC()
 	delay := r.autoSignDelay()
+	if item.EndsAt != nil {
+		remaining := item.EndsAt.Sub(started)
+		if remaining <= 0 {
+			return r.closeSignWindow(item, e, "SIGN_WINDOW_ENDED")
+		}
+		if remaining <= 2*time.Minute {
+			delay = 0
+		} else {
+			delay = min(delay, max(time.Duration(0), remaining-signActionTimeout-5*time.Second))
+		}
+	}
 	log.Printf(
 		"activity watch: auto sign start activity=%s class=%s user_state=%s delay_ms=%d schedule=%s started_at=%s",
 		item.ID, item.ClassID, item.UserState, delay.Milliseconds(), scheduleKey, started.Format(time.RFC3339Nano),
@@ -1289,15 +1347,18 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 	}
 	actionCtx, cancel := context.WithTimeout(ctx, signActionTimeout)
 	defer cancel()
+	if item.EndsAt != nil {
+		var deadlineCancel context.CancelFunc
+		actionCtx, deadlineCancel = context.WithDeadline(actionCtx, *item.EndsAt)
+		defer deadlineCancel()
+	}
 	req := upstream.SignRequest{CourseID: item.CourseID, ClassID: item.ClassID, ActivityID: item.ID}
 	if r.cfg.LocationResolver != nil {
 		loc, resolveErr := r.cfg.LocationResolver.Resolve(actionCtx, item.CourseID, item.ClassID, scheduleKey)
 		if resolveErr != nil {
 			now := r.now()
-			next := entry{
-				LastAttempt: now, RetryAt: e.RetryAt, RetryCount: e.RetryCount,
-				Count: e.Count, LastSent: e.LastSent, Status: "failed", Code: "LOCATION_RESOLVE_FAILED",
-			}
+			next := e
+			next.LastAttempt, next.Status, next.Code = now, "failed", "LOCATION_RESOLVE_FAILED"
 			r.state[key(item)] = next
 			r.persistState()
 			message := notify.Message{Title: "🚨 学习通位置解析失败", Body: formatFailureBody(item, "LOCATION_RESOLVE_FAILED"), Priority: r.activityPriority(item, now, 8)}
@@ -1319,13 +1380,18 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 	if class.SignCode != nil {
 		req.SignCode = class.SignCode.Code
 	}
-	result, err := r.signer.SignActivity(actionCtx, req)
+	var result upstream.SignResult
+	var err error
+	if observed, ok := r.signer.(ObservedSigner); ok && !e.KnownObservedAt.IsZero() {
+		result, err = observed.SignObservedActivity(actionCtx, req, item, e.KnownObservedAt)
+	} else {
+		result, err = r.signer.SignActivity(actionCtx, req)
+	}
 	now := r.now()
 	k := key(item)
-	next := entry{
-		LastAttempt: now, RetryAt: e.RetryAt, RetryCount: e.RetryCount,
-		Count: e.Count, LastSent: e.LastSent, Status: e.Status, Method: e.Method, Code: e.Code,
-	}
+	next := e
+	next.LastAttempt = now
+	next.Submitted, next.AttendanceVerified = false, false
 	title, body := "✅ 学习通自动签到成功", formatSuccessBody(item, result)
 	if err == nil && (!result.Verified || (!result.Submitted && result.Method != "none") || (result.Method == "none" && result.Submitted)) {
 		err = &upstream.Fault{Code: "SIGN_REJECTED", Message: "attendance was not verified"}
@@ -1366,6 +1432,13 @@ func (r *Runner) autoSign(ctx context.Context, class Class, item upstream.Activi
 			if !result.Submitted || result.State == "already_signed" {
 				body = "活动：" + item.Title + "\n签到页显示此前已签，等待独立考勤确认；不会提交。"
 			}
+		} else if next.Status == "retry" {
+			body = fmt.Sprintf("课程：%s\n活动：%s\n错误：%s\n暂未完成，下一次允许尝试：%s\n如签到即将结束，请立即人工检查。", firstNonBlank(item.Course, item.CourseID), firstNonBlank(item.Title, item.ID), next.Code, next.RetryAt.In(shanghai).Format("15:04:05"))
+		}
+		if next.Status == "retry" && item.EndsAt != nil && !next.RetryAt.Before(*item.EndsAt) {
+			next.Status, next.Code, next.RetryAt = "blocked_deadline", "SIGN_DEADLINE_BLOCKED", time.Time{}
+			title = "🚨 学习通签到等待将超过截止提醒"
+			body = formatFailureBody(item, next.Code) + "\n规定的等待时间已跨过签到截止，请立即人工检查；系统不会提前重试。"
 		}
 		if result.Address != "" {
 			body += "\n地址：" + result.Address

@@ -176,6 +176,7 @@ func (c *Client) observeResponse(ctx context.Context, method string, u *url.URL,
 	}
 	if requestErr != nil {
 		event["retry_after_seconds"] = SafeFault(requestErr).RetryAfterSeconds
+		event["retry_after_source"] = SafeFault(requestErr).RetryAfterSource
 	}
 	if trace, ok := ctx.Value(signTraceKey{}).(*signAuditTrace); ok && trace != nil {
 		event["submission_attempted"] = trace.Submitted

@@ -13,9 +13,9 @@ import (
 func TestCooldownEscalatesAcrossIdleAndRestart(t *testing.T) {
 	u, _ := url.Parse(activityAPI)
 	c := testClient(t)
-	for _, want := range []int{300, 600, 1200, 2400, 3600, 3600} {
+	for _, want := range []int{60, 120, 300, 900, 3600, 3600} {
 		got := SafeFault(c.deferEndpoint(u, ""))
-		if got.Code != "UPSTREAM_RATE_LIMITED" || got.RetryAfterSeconds != want {
+		if got.Code != "UPSTREAM_RATE_LIMITED" || got.RetryAfterSeconds != want || got.RetryAfterSource != "local_backoff" {
 			t.Fatalf("got %+v want %d", got, want)
 		}
 		restarted, err := New(c.config)
@@ -47,7 +47,7 @@ func TestCooldownEscalatesAcrossIdleAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(restarted.cooldowns) != 0 || SafeFault(restarted.deferEndpoint(u, "")).RetryAfterSeconds != 300 {
+	if len(restarted.cooldowns) != 0 || SafeFault(restarted.deferEndpoint(u, "")).RetryAfterSeconds != 60 {
 		t.Fatal("real success did not reset durable history")
 	}
 }
@@ -89,7 +89,7 @@ func TestRawReadAndWriteShareDurableCooldown(t *testing.T) {
 					_, _, err = c.raw(context.Background(), http.MethodGet, activityAPI+"?classId=a", nil)
 				}
 				f := SafeFault(err)
-				if f.Code != "UPSTREAM_RATE_LIMITED" || f.RetryAfterSeconds < 7199 {
+				if f.Code != "UPSTREAM_RATE_LIMITED" || f.RetryAfterSeconds < 7199 || f.RetryAfterSource != "upstream" {
 					t.Fatalf("%+v", f)
 				}
 			}

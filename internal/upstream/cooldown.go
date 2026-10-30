@@ -18,6 +18,7 @@ import (
 type endpointCooldown struct {
 	Until    time.Time `json:"until"`
 	Failures int       `json:"failures"`
+	Source   string    `json:"source,omitempty"`
 }
 
 type cooldownState struct {
@@ -89,7 +90,7 @@ func (c *Client) endpointDeferred(u *url.URL) error {
 	defer c.cooldownMu.Unlock()
 	state := c.cooldowns[u.Host+u.Path]
 	if remaining := time.Until(state.Until); remaining > 0 {
-		return &Fault{Code: "UPSTREAM_RATE_LIMITED", RetryAfterSeconds: int(math.Ceil(remaining.Seconds()))}
+		return &Fault{Code: "UPSTREAM_RATE_LIMITED", RetryAfterSeconds: int(math.Ceil(remaining.Seconds())), RetryAfterSource: state.Source}
 	}
 	return nil
 }
@@ -118,14 +119,20 @@ func (c *Client) deferEndpoint(u *url.URL, retryAfter string) error {
 	state := c.cooldowns[k]
 	now := time.Now()
 	state.Failures = min(state.Failures+1, 5)
-	seconds := min(300<<uint(state.Failures-1), 3600)
-	seconds = max(seconds, retryAfterSeconds(retryAfter, now))
+	// No published wait means a bounded recovery probe, not an invented
+	// five-minute platform ban. Repeated refusals still escalate durably.
+	seconds := [...]int{60, 120, 300, 900, 3600}[state.Failures-1]
+	state.Source = "local_backoff"
+	if serverSeconds := retryAfterSeconds(retryAfter, now); serverSeconds >= seconds {
+		seconds = serverSeconds
+		state.Source = "upstream"
+	}
 	state.Until = now.Add(time.Duration(seconds) * time.Second)
 	c.cooldowns[k] = state
 	if err := c.saveCooldownsLocked(); err != nil {
 		return err
 	}
-	return &Fault{Code: "UPSTREAM_RATE_LIMITED", RetryAfterSeconds: seconds}
+	return &Fault{Code: "UPSTREAM_RATE_LIMITED", RetryAfterSeconds: seconds, RetryAfterSource: state.Source}
 }
 
 // Only a real accepted response resets rejection history; merely waiting or
