@@ -486,9 +486,15 @@ func highRiskScope(scope string) bool {
 
 func (s *Server) page(w http.ResponseWriter, d pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Consent is persisted by this server and the callback redirect is issued
-	// with a server-side 303, so the form never needs an external form-action.
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	formAction := "'self'"
+	if d.Consent {
+		// Chromium also checks form-action on the POST's 303 redirect. authorize
+		// has matched Callback exactly to a registered redirect URI; allow only
+		// its origin, never its path/query or the client's other callbacks.
+		callback, _ := url.Parse(d.Callback)
+		formAction += " " + callback.Scheme + "://" + callback.Host
+	}
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; form-action "+formAction+"; frame-ancestors 'none'; base-uri 'none'")
 	_ = pageTemplate.Execute(w, d)
 }
 func safeNext(raw string) string {
