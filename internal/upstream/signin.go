@@ -89,6 +89,7 @@ type signAuditTrace struct {
 }
 
 type activeInfo struct {
+	Status        flexInt  `json:"status"`
 	OtherID       flexInt  `json:"otherId"`
 	IfPhoto       flexInt  `json:"ifphoto"`
 	IfOpenAddress flexInt  `json:"ifopenAddress"`
@@ -200,6 +201,9 @@ func (c *Client) signActivity(ctx context.Context, req SignRequest, trace *signA
 	info, err := c.fetchActiveInfo(ctx, activity.ID)
 	if err != nil {
 		return SignResult{}, err
+	}
+	if info.Status.ok && info.Status.value == 2 {
+		return SignResult{}, fault("SIGN_EXPIRED", "sign-in has ended")
 	}
 	if !info.OtherID.ok {
 		return SignResult{}, fault("UPSTREAM_SCHEMA", "activity sign type is missing")
