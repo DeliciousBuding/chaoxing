@@ -867,6 +867,7 @@ func (r *Runner) Tick(ctx context.Context) {
 	}
 	r.resetInactiveFeedFailures(now)
 	active := map[string]upstream.Activity{}
+	classCards := map[string]bool{}
 	classes := map[string]Class{}
 	byCourseClass := map[string]Class{}
 	captured := []upstream.Activity{}
@@ -904,6 +905,9 @@ func (r *Runner) Tick(ctx context.Context) {
 		captured = append(captured, items...)
 		r.rememberSignIns(items, class, now)
 		for _, item := range items {
+			if item.CourseID == class.CourseID && item.ClassID == class.ClassID {
+				classCards[key(item)] = true
+			}
 			if item.CourseID == class.CourseID && item.ClassID == class.ClassID && (item.Signable || item.Answerable || answerReviewable(item)) {
 				k := key(item)
 				active[k] = item
@@ -938,6 +942,11 @@ func (r *Runner) Tick(ctx context.Context) {
 				} else {
 					r.lastGroupScan = now
 					for _, item := range groupRows {
+						// Group history has no live end state. A class card,
+						// including a finished one, takes precedence over it.
+						if classCards[key(item)] {
+							continue
+						}
 						class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
 						if ok && classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) {
 							r.rememberSignIns([]upstream.Activity{item}, class, now)

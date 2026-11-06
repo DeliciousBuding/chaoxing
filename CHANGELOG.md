@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0-rc.50 — 2026-11-06
+
+- Keep class-feed cards authoritative when merging course-group history, so an ended card cannot become an automatic sign-in candidate again.
+- Accept empty and numeric-string published coordinates while preserving configured location presets and range validation.
+- Reject an ended activity reported by the detail endpoint before pre-sign or submission.
+
 ## 0.5.0-rc.39 — 2026-10-23
 
 - Remove the Motion and resizable-panel runtime from the management console. Route content and request errors are now always visible without an animated opacity/transform gate, and the desktop shell uses a fixed 224px sidebar.
