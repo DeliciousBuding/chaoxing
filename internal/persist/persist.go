@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 )
 
@@ -43,14 +44,16 @@ func Write(path string, data []byte, perm fs.FileMode) error {
 		return fmt.Errorf("state file replace failed: %w", err)
 	}
 	// Persist the directory entry so a power loss cannot leave the rename
-	// visible in memory but absent after reboot. Some filesystems do not
-	// support directory fsync; those are safe to treat as best effort.
-	d, err := os.Open(dir)
-	if err == nil {
-		syncErr := d.Sync()
-		_ = d.Close()
-		if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) && !errors.Is(syncErr, syscall.ENOTSUP) {
-			return fmt.Errorf("state directory sync failed: %w", syncErr)
+	// visible in memory but absent after reboot. Windows and some filesystems do
+	// not support directory fsync; those are safe to treat as best effort.
+	if runtime.GOOS != "windows" {
+		d, err := os.Open(dir)
+		if err == nil {
+			syncErr := d.Sync()
+			_ = d.Close()
+			if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) && !errors.Is(syncErr, syscall.ENOTSUP) {
+				return fmt.Errorf("state directory sync failed: %w", syncErr)
+			}
 		}
 	}
 	return nil
