@@ -141,11 +141,11 @@ func TestIdleScanDoesNotPollOutsideDailyWindow(t *testing.T) {
 }
 
 type perClassFlakySource struct {
-	errByClass  map[string]error
-	itemsByCls  map[string][]upstream.Activity
-	callsByCls  map[string]int
-	groupItems  []upstream.Activity
-	groupCalls  int
+	errByClass map[string]error
+	itemsByCls map[string][]upstream.Activity
+	callsByCls map[string]int
+	groupItems []upstream.Activity
+	groupCalls int
 }
 
 func (s *perClassFlakySource) ListClassActivities(_ context.Context, _, classID string) ([]upstream.Activity, error) {

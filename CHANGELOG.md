@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0-rc.52 — 2026-11-26
+## 0.5.0-rc.53 — 2026-11-26
 
 - Isolate `activelist` rate-limit cooldowns per `(courseId, classId)` so hitting one class's daily quota never blocks unrelated classes or triggers cooldown-reset oscillation across classes.
 - Skip off-schedule idle sweeps for classes already inside an active rate-limit cooldown, extend `idle_scan_seconds` up to 3600s, and downgrade off-schedule discovery failure alerts to priority 5 while keeping in-class failures at priority 9.
