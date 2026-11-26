@@ -128,13 +128,29 @@ func (c *Client) groupActivities(ctx context.Context, groups []imGroup) ([]Activ
 }
 
 func (c *Client) selectIMGroups(groups []imGroup) []imGroup {
+	pinned := make(map[string]bool, len(c.config.PriorityCourseClasses))
+	for _, key := range c.config.PriorityCourseClasses {
+		if key = strings.TrimSpace(key); key != "" {
+			pinned[key] = true
+		}
+	}
 	priority, other := []imGroup{}, []imGroup{}
 	for _, group := range groups {
 		active := false
-		for key, cached := range c.classActivities {
-			if time.Since(cached.at) < classActivityCacheTTL && group.CourseID != "" && (key == group.CourseID+":"+group.ClassID || (group.ClassID == "" && strings.HasPrefix(key, group.CourseID+":"))) {
-				active = true
-				break
+		if group.CourseID != "" {
+			for key := range pinned {
+				if key == group.CourseID+":"+group.ClassID || (group.ClassID == "" && strings.HasPrefix(key, group.CourseID+":")) {
+					active = true
+					break
+				}
+			}
+			if !active {
+				for key, cached := range c.classActivities {
+					if time.Since(cached.at) < classActivityCacheTTL && (key == group.CourseID+":"+group.ClassID || (group.ClassID == "" && strings.HasPrefix(key, group.CourseID+":"))) {
+						active = true
+						break
+					}
+				}
 			}
 		}
 		if active {

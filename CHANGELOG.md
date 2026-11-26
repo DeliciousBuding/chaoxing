@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0-rc.54 — 2026-11-26
+
+- Pin configured watched classes into the Easemob course-group sweep priority set so off-schedule group probes always cover watched courses on every tick even when the account has more than six joined groups.
+
 ## 0.5.0-rc.53 — 2026-11-26
 
 - Isolate `activelist` rate-limit cooldowns per `(courseId, classId)` so hitting one class's daily quota never blocks unrelated classes or triggers cooldown-reset oscillation across classes.

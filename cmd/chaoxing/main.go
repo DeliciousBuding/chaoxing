@@ -468,6 +468,19 @@ func (c config) client() (*upstream.Client, error) {
 	return upstream.New(cfg)
 }
 
+func priorityCourseClasses(w *watchConfig) []string {
+	if w == nil || len(w.Classes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(w.Classes))
+	for _, class := range w.Classes {
+		if class.CourseID != "" && class.ClassID != "" {
+			out = append(out, class.CourseID+":"+class.ClassID)
+		}
+	}
+	return out
+}
+
 func (c config) upstreamConfig() (upstream.Config, error) {
 	cfg := upstream.Config{
 		CredentialsPath:  filepath.Join(c.StateDir, "credentials.sealed"),
@@ -480,6 +493,7 @@ func (c config) upstreamConfig() (upstream.Config, error) {
 		cfg.DeviceCode, cfg.UserAgent, cfg.PackageName = c.Device.Code, c.Device.UserAgent, c.Device.PackageName
 	}
 	cfg.GroupActivities = c.GroupActivities
+	cfg.PriorityCourseClasses = priorityCourseClasses(c.Watch)
 	interval, jitter, err := c.RequestPacing.settings()
 	if err != nil {
 		return cfg, err
@@ -505,6 +519,7 @@ func (c tenantConfig) upstreamConfig() (upstream.Config, error) {
 		cfg.DeviceCode, cfg.UserAgent, cfg.PackageName = c.Device.Code, c.Device.UserAgent, c.Device.PackageName
 	}
 	cfg.GroupActivities = c.GroupActivities
+	cfg.PriorityCourseClasses = priorityCourseClasses(c.Watch)
 	interval, jitter, err := c.RequestPacing.settings()
 	if err != nil {
 		return cfg, err

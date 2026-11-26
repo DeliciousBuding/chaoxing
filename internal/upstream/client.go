@@ -152,6 +152,7 @@ type Config struct {
 	RequestMinInterval                    time.Duration
 	RequestJitterPercent                  int
 	GroupActivities                       bool
+	PriorityCourseClasses                 []string
 	Transport                             http.RoundTripper
 	CaptchaSolver                         CaptchaSolver
 	SignAudit                             signaudit.Store

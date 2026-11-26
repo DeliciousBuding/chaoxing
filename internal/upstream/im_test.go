@@ -137,6 +137,35 @@ func TestGroupActivitiesCachePreservesPartialCoverage(t *testing.T) {
 	}
 }
 
+func TestSelectIMGroupsPinsPriorityWatchedClasses(t *testing.T) {
+	c := testClient(t)
+	c.config.PriorityCourseClasses = []string{"course-w1:class-w1", "course-w2:class-w2"}
+	groups := []imGroup{
+		{ID: "g1", CourseID: "old-1", ClassID: "k1"},
+		{ID: "g2", CourseID: "old-2", ClassID: "k2"},
+		{ID: "g3", CourseID: "old-3", ClassID: "k3"},
+		{ID: "g4", CourseID: "old-4", ClassID: "k4"},
+		{ID: "g5", CourseID: "old-5", ClassID: "k5"},
+		{ID: "g6", CourseID: "old-6", ClassID: "k6"},
+		{ID: "g7", CourseID: "old-7", ClassID: "k7"},
+		{ID: "gw1", CourseID: "course-w1", ClassID: "class-w1"},
+		{ID: "gw2", CourseID: "course-w2", ClassID: ""},
+	}
+	for round := 0; round < 3; round++ {
+		got := c.selectIMGroups(groups)
+		if len(got) != maxIMGroupsPerSweep {
+			t.Fatalf("round %d: len=%d want %d", round, len(got), maxIMGroupsPerSweep)
+		}
+		seen := map[string]bool{}
+		for _, g := range got {
+			seen[g.ID] = true
+		}
+		if !seen["gw1"] || !seen["gw2"] {
+			t.Fatalf("round %d: pinned watched groups missing: %+v", round, got)
+		}
+	}
+}
+
 func encryptIMPasswordForTest(t *testing.T, value string) string {
 	t.Helper()
 	block, err := des.NewCipher([]byte(imPasswordDESK))
