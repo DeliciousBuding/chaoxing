@@ -33,6 +33,67 @@ func (c *Client) cooldownPath() string {
 	return filepath.Join(filepath.Dir(c.config.SessionPath), "upstream-cooldowns.json")
 }
 
+func isSafeCooldownID(v string) bool {
+	if v == "" || len(v) > 64 {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// cooldownKey scopes activelist rate limits per (courseId, classId) when both
+// identifiers are present, because Chaoxing enforces a daily per-class quota on
+// /v2/apis/active/student/activelist. Other endpoints remain account/endpoint
+// scoped.
+func cooldownKey(u *url.URL) string {
+	base := u.Host + u.Path
+	if u.Path == "/v2/apis/active/student/activelist" {
+		courseID := strings.TrimSpace(u.Query().Get("courseId"))
+		classID := strings.TrimSpace(u.Query().Get("classId"))
+		if isSafeCooldownID(courseID) && isSafeCooldownID(classID) {
+			return base + "#course=" + courseID + "&class=" + classID
+		}
+	}
+	return base
+}
+
+func validCooldownKey(key string) bool {
+	base, scope, hasScope := strings.Cut(key, "#")
+	u, err := url.Parse("https://" + base)
+	if err != nil || !safeURL(u) || u.Host+u.Path != base {
+		return false
+	}
+	if !hasScope {
+		return true
+	}
+	if u.Path != "/v2/apis/active/student/activelist" {
+		return false
+	}
+	vals, err := url.ParseQuery(scope)
+	if err != nil || len(vals) != 2 {
+		return false
+	}
+	courseID, classID := vals.Get("course"), vals.Get("class")
+	if !isSafeCooldownID(courseID) || !isSafeCooldownID(classID) {
+		return false
+	}
+	return scope == "course="+courseID+"&class="+classID
+}
+
+func activityClassURL(courseID, classID string) *url.URL {
+	u, _ := url.Parse(activityAPI)
+	if isSafeCooldownID(courseID) && isSafeCooldownID(classID) {
+		q := url.Values{"courseId": {courseID}, "classId": {classID}}
+		u.RawQuery = q.Encode()
+	}
+	return u
+}
+
 func (c *Client) loadCooldowns() error {
 	path := c.cooldownPath()
 	if path == "" {
@@ -57,8 +118,7 @@ func (c *Client) loadCooldowns() error {
 		return fault("STATE_INVALID", "invalid cooldown state")
 	}
 	for key, entry := range state.Endpoints {
-		u, err := url.Parse("https://" + key)
-		if err != nil || !safeURL(u) || u.Host+u.Path != key || entry.Failures < 1 || entry.Failures > 5 || entry.Until.IsZero() {
+		if !validCooldownKey(key) || entry.Failures < 1 || entry.Failures > 5 || entry.Until.IsZero() {
 			return fault("STATE_INVALID", "invalid cooldown endpoint")
 		}
 	}
@@ -83,14 +143,25 @@ func (c *Client) saveCooldownsLocked() error {
 	return nil
 }
 
-// Account/endpoint scoped, not course scoped. A different class or adapter
-// cannot bypass a throttle, and expiry permits one normal request, not a retry loop.
+// endpointDeferred checks the exact cooldown key (including per-class scope on
+// activelist) as well as any broader endpoint-level cooldown. Expiry permits
+// one normal request, not a retry loop.
 func (c *Client) endpointDeferred(u *url.URL) error {
 	c.cooldownMu.Lock()
 	defer c.cooldownMu.Unlock()
-	state := c.cooldowns[u.Host+u.Path]
-	if remaining := time.Until(state.Until); remaining > 0 {
-		return &Fault{Code: "UPSTREAM_RATE_LIMITED", RetryAfterSeconds: int(math.Ceil(remaining.Seconds())), RetryAfterSource: state.Source}
+	base := u.Host + u.Path
+	key := cooldownKey(u)
+	var bestRemaining time.Duration
+	var bestSource string
+	for _, k := range []string{key, base} {
+		state := c.cooldowns[k]
+		if remaining := time.Until(state.Until); remaining > bestRemaining {
+			bestRemaining = remaining
+			bestSource = state.Source
+		}
+	}
+	if bestRemaining > 0 {
+		return &Fault{Code: "UPSTREAM_RATE_LIMITED", RetryAfterSeconds: int(math.Ceil(bestRemaining.Seconds())), RetryAfterSource: bestSource}
 	}
 	return nil
 }
@@ -115,7 +186,7 @@ func (c *Client) deferEndpoint(u *url.URL, retryAfter string) error {
 	if c.cooldowns == nil {
 		c.cooldowns = make(map[string]endpointCooldown)
 	}
-	k := u.Host + u.Path
+	k := cooldownKey(u)
 	state := c.cooldowns[k]
 	now := time.Now()
 	state.Failures = min(state.Failures+1, 5)
@@ -149,10 +220,21 @@ func (c *Client) endpointSucceeded(u *url.URL, body []byte) error {
 	}
 	c.cooldownMu.Lock()
 	defer c.cooldownMu.Unlock()
-	k := u.Host + u.Path
-	if _, ok := c.cooldowns[k]; !ok {
+	k := cooldownKey(u)
+	base := u.Host + u.Path
+	deleted := false
+	if _, ok := c.cooldowns[k]; ok {
+		delete(c.cooldowns, k)
+		deleted = true
+	}
+	if k != base {
+		if state, ok := c.cooldowns[base]; ok && !time.Now().Before(state.Until) {
+			delete(c.cooldowns, base)
+			deleted = true
+		}
+	}
+	if !deleted {
 		return nil
 	}
-	delete(c.cooldowns, k)
 	return c.saveCooldownsLocked()
 }

@@ -238,6 +238,11 @@ const (
 	// A pending alert retry must never delay the discovery/sign-in path for
 	// long; a black-holed push endpoint is bounded by this shared budget.
 	alertFlushBudget = 6 * time.Second
+	// promptAlertFlushBudget bounds the mid-tick flush for newly discovered
+	// sign-ins and failures. Two seconds was tight enough over Tailnet that a
+	// server-accepted Gotify POST could time out client-side and retry into a
+	// duplicate push.
+	promptAlertFlushBudget = 5 * time.Second
 	// A sign-in burst must not spend the whole tick budget sleeping. The
 	// jitter stays, but all automatic sign-ins in one tick share this cap.
 	maxSignDelayPerTick  = 30 * time.Second
@@ -292,8 +297,8 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 	if cfg.GroupScanInterval < time.Minute || cfg.GroupScanInterval > 30*time.Minute {
 		return nil, errors.New("watch group scan interval must be between 1 and 30 minutes")
 	}
-	if cfg.IdleScanInterval != 0 && (cfg.IdleScanInterval < 30*time.Second || cfg.IdleScanInterval > 30*time.Minute) {
-		return nil, errors.New("watch idle scan interval must be 0 or between 30 seconds and 30 minutes")
+	if cfg.IdleScanInterval != 0 && (cfg.IdleScanInterval < 30*time.Second || cfg.IdleScanInterval > 60*time.Minute) {
+		return nil, errors.New("watch idle scan interval must be 0 or between 30 seconds and 60 minutes")
 	}
 	before, after, err := Padding(cfg.PollBefore, cfg.PollAfter, cfg.Lead)
 	if err != nil {
@@ -694,8 +699,9 @@ func (r *Runner) nextDelay(now time.Time) time.Duration {
 		delay = next
 	}
 	// While no class is inside its window, still wake in time for the slow
-	// baseline sweep so an off-schedule sign-in is discovered within its
-	// validity instead of waiting for the next scheduled class.
+	// baseline sweep (and, when group history is enabled, the low-cost Easemob
+	// probe) so an off-schedule sign-in is discovered within its validity
+	// instead of waiting for the next scheduled class.
 	if r.cfg.IdleScanInterval > 0 {
 		idle := r.cfg.IdleScanInterval
 		if !r.lastIdleScan.IsZero() {
@@ -706,6 +712,18 @@ func (r *Runner) nextDelay(now time.Time) time.Duration {
 		}
 		if idle < delay {
 			delay = idle
+		}
+		if _, ok := r.source.(GroupActivitySource); ok && r.cfg.GroupScanInterval > 0 {
+			groupDue := r.cfg.GroupScanInterval
+			if !r.lastGroupScan.IsZero() {
+				groupDue = r.cfg.GroupScanInterval - now.Sub(r.lastGroupScan)
+			}
+			if groupDue < time.Second {
+				groupDue = time.Second
+			}
+			if groupDue < delay {
+				delay = groupDue
+			}
 		}
 	}
 	return delay
@@ -830,7 +848,8 @@ func (r *Runner) flushAlerts(ctx context.Context, now time.Time) {
 			delete(r.alerts, k)
 			// A delivered retry counts as this activity's notification for
 			// rate-limiting purposes, so the next tick does not send a
-			// duplicate reminder.
+			// duplicate reminder. Feed failure entries track consecutive failed
+			// polls in Count rather than reminder sends, so do not inflate them.
 			if strings.HasPrefix(k, discoveryPrefix) {
 				e := r.state[strings.TrimPrefix(k, discoveryPrefix)]
 				e.DiscoveryNotified = true
@@ -838,6 +857,11 @@ func (r *Runner) flushAlerts(ctx context.Context, now time.Time) {
 					e.LastSent, e.Count = now, e.Count+1
 				}
 				r.state[strings.TrimPrefix(k, discoveryPrefix)] = e
+			} else if strings.HasPrefix(k, "feed:") {
+				if e, ok := r.state[k]; ok {
+					e.LastSent = now
+					r.state[k] = e
+				}
 			} else if e, ok := r.state[k]; ok {
 				e.LastSent, e.Count = now, e.Count+1
 				r.state[k] = e
@@ -909,22 +933,26 @@ func (r *Runner) Tick(ctx context.Context) {
 			break
 		}
 		polledClasses++
-		r.pollClassActivities(pollCtx, class, now, active, classes, classCards, &captured)
+		r.pollClassActivities(pollCtx, class, now, true, active, classes, classCards, &captured)
 	}
 	// No scheduled class is in session, but a sign-in can still be opened off
 	// the timetable (make-up, early/late open, unlisted course). Run a slow
 	// baseline sweep so it is not invisible: poll every watched class at the
-	// configured idle cadence, bounded by the shared poll budget.
+	// configured idle cadence, bounded by the shared poll budget. Classes
+	// already inside an active rate-limit cooldown are skipped until expiry.
 	if polledClasses == 0 && r.cfg.IdleScanInterval > 0 &&
 		(r.lastIdleScan.IsZero() || now.Sub(r.lastIdleScan) >= r.cfg.IdleScanInterval) {
 		r.lastIdleScan = now
 		swept := 0
 		for _, class := range r.cfg.Classes {
+			if r.idlePollCooling(class, now) {
+				continue
+			}
 			if swept > 0 && !r.wait(pollCtx, r.classPollDelay()) {
 				break
 			}
 			swept++
-			r.pollClassActivities(pollCtx, class, now, active, classes, classCards, &captured)
+			r.pollClassActivities(pollCtx, class, now, false, active, classes, classCards, &captured)
 		}
 	}
 	// Act on the primary class feed before any evidence capture or fallback
@@ -932,18 +960,20 @@ func (r *Runner) Tick(ctx context.Context) {
 	// that has already been discovered.
 	changed := r.processActivities(ctx, active, classes, now)
 	// Discovery/action alerts must not wait behind assignments, group history
-	// or evidence capture. A failed push gets at most two seconds here.
-	promptCtx, cancelPrompt := context.WithTimeout(ctx, 2*time.Second)
+	// or evidence capture. A failed push is bounded by promptAlertFlushBudget.
+	promptCtx, cancelPrompt := context.WithTimeout(ctx, promptAlertFlushBudget)
 	r.flushAlerts(promptCtx, r.now())
 	cancelPrompt()
 	// Scan in-class assignments every tick too: a classroom quiz may be
 	// published only in the assignment feed, not in the activity feed.
 	changed = r.pollAssignments(ctx, now) || changed
 	changed = r.resumeVerifications(ctx, now) || changed
-	if groupSource, ok := r.source.(GroupActivitySource); ok && polledClasses > 0 {
-		// Course-group history is a fallback for cards missing from the class
-		// feed. Scan it on a slower cadence, and only while a watched class is
-		// active, so the primary sign-in loop stays fast and predictable.
+	if groupSource, ok := r.source.(GroupActivitySource); ok && (polledClasses > 0 || r.cfg.IdleScanInterval > 0) {
+		// Course-group history runs on Easemob and does not consume Chaoxing's
+		// daily per-class activelist quota. In class it supplements the class
+		// feed; off-schedule (when IdleScanInterval is enabled) it acts as a
+		// low-cost probe that verifies unseen sign-in cards against the exact
+		// class feed before acting.
 		if r.lastGroupScan.IsZero() || now.Sub(r.lastGroupScan) >= r.cfg.GroupScanInterval {
 			groupCtx, cancelGroup := context.WithTimeout(ctx, groupScanBudget)
 			if r.wait(groupCtx, r.classPollDelay()) {
@@ -953,27 +983,64 @@ func (r *Runner) Tick(ctx context.Context) {
 					r.lastGroupScan = now.Add(-r.cfg.GroupScanInterval + 30*time.Second)
 				} else {
 					r.lastGroupScan = now
-					for _, item := range groupRows {
-						// Group history has no live end state. A class card,
-						// including a finished one, takes precedence over it.
-						if classCards[key(item)] {
-							continue
+					if polledClasses > 0 {
+						for _, item := range groupRows {
+							// Group history has no live end state. A class card,
+							// including a finished one, takes precedence over it.
+							if classCards[key(item)] {
+								continue
+							}
+							class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
+							if ok && classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) {
+								r.rememberSignIns([]upstream.Activity{item}, class, now)
+							}
+							if !ok || !classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) || !(item.Signable || item.Answerable || answerReviewable(item)) {
+								continue
+							}
+							k := key(item)
+							if _, exists := active[k]; !exists {
+								active[k] = item
+								classes[k] = class
+							}
 						}
-						class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
-						if ok && classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) {
-							r.rememberSignIns([]upstream.Activity{item}, class, now)
+					} else {
+						// Off-schedule: group history carries no live end state,
+						// so never act on historical cards directly. Instead, an
+						// unseen watched-class card triggers an on-demand class
+						// feed read for that exact class, letting authoritative
+						// class state decide whether it is active or historical.
+						verifyClasses := map[string]Class{}
+						for _, item := range groupRows {
+							if item.Kind != "signin" && !item.Answerable && !answerReviewable(item) {
+								continue
+							}
+							class, ok := byCourseClass[item.CourseID+":"+item.ClassID]
+							if !ok {
+								continue
+							}
+							k := key(item)
+							if classCards[k] {
+								continue
+							}
+							if prev, seen := r.state[k]; seen && (prev.DiscoveryNotified || prev.Status != "") {
+								continue
+							}
+							verifyClasses[class.CourseID+":"+class.ClassID] = class
 						}
-						if !ok || !classActive(now, class, r.cfg.PollBefore, r.cfg.PollAfter, r.cfg.TermStart) || !(item.Signable || item.Answerable || answerReviewable(item)) {
-							continue
-						}
-						k := key(item)
-						if _, exists := active[k]; !exists {
-							active[k] = item
-							classes[k] = class
+						verified := 0
+						for _, class := range verifyClasses {
+							if r.idlePollCooling(class, now) {
+								continue
+							}
+							if verified > 0 && !r.wait(pollCtx, r.classPollDelay()) {
+								break
+							}
+							verified++
+							r.pollClassActivities(pollCtx, class, now, false, active, classes, classCards, &captured)
 						}
 					}
 					changed = r.processActivities(ctx, active, classes, now) || changed
-					promptCtx, cancelPrompt := context.WithTimeout(ctx, 2*time.Second)
+					promptCtx, cancelPrompt := context.WithTimeout(ctx, promptAlertFlushBudget)
 					r.flushAlerts(promptCtx, r.now())
 					cancelPrompt()
 					captured = append(captured, groupRows...)
@@ -1010,7 +1077,7 @@ func (r *Runner) Tick(ctx context.Context) {
 // feed health, reports discovery failures, remembers sign-in cards and merges
 // actionable items into the tick's action maps. It is shared by the normal
 // in-class polling loop and the off-schedule idle baseline sweep.
-func (r *Runner) pollClassActivities(ctx context.Context, class Class, now time.Time, active map[string]upstream.Activity, classes map[string]Class, classCards map[string]bool, captured *[]upstream.Activity) {
+func (r *Runner) pollClassActivities(ctx context.Context, class Class, now time.Time, inClass bool, active map[string]upstream.Activity, classes map[string]Class, classCards map[string]bool, captured *[]upstream.Activity) {
 	r.activePolls.Add(1)
 	pollStarted := r.now().UTC()
 	items, err := r.source.ListClassActivities(ctx, class.CourseID, class.ClassID)
@@ -1025,7 +1092,7 @@ func (r *Runner) pollClassActivities(ctx context.Context, class Class, now time.
 		pollCompleted.Sub(pollStarted).Milliseconds(), pollStatus, len(items), signInObservationSummary(items, 8), upstream.SafeFault(err).RetryAfterSeconds,
 	)
 	r.recordFeed("activities:"+class.CourseID+":"+class.ClassID, now, err == nil)
-	r.reportDiscoveryFailure(class, now, err)
+	r.reportDiscoveryFailure(class, now, err, inClass)
 	if err != nil {
 		log.Printf("activity watch: class %s: %s", class.ClassID, upstream.SafeFault(err).Code)
 		return

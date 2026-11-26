@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0-rc.52 — 2026-11-26
+
+- Isolate `activelist` rate-limit cooldowns per `(courseId, classId)` so hitting one class's daily quota never blocks unrelated classes or triggers cooldown-reset oscillation across classes.
+- Skip off-schedule idle sweeps for classes already inside an active rate-limit cooldown, extend `idle_scan_seconds` up to 3600s, and downgrade off-schedule discovery failure alerts to priority 5 while keeping in-class failures at priority 9.
+- When both `idle_scan_seconds` and `group_activities` are enabled, run the low-cost course-group probe off-schedule every `group_scan_seconds` and verify unseen cards via an on-demand class-feed read, giving fast off-schedule discovery without exhausting per-class `activelist` quotas.
+- Raise mid-tick alert flush budget to 5 seconds and stop alert delivery from inflating feed failure counters.
+
 ## 0.5.0-rc.51 — 2026-11-26
 
 - Warn about a class-feed discovery failure only after two consecutive failed ticks, so a single transient upstream timeout no longer raises a false "sign-in discovery" alarm. A one-time recovery notice closes the episode once the feed is healthy again.

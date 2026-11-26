@@ -371,7 +371,7 @@ func (c *Client) ListClassActivities(ctx context.Context, courseID, classID stri
 }
 
 func (c *Client) listClassActivities(ctx context.Context, courseID, classID string) ([]Activity, error) {
-	if err := c.activityDeferred(ctx); err != nil {
+	if err := c.activityDeferred(ctx, courseID, classID); err != nil {
 		return nil, err
 	}
 	courses, err := c.fetchCourses(ctx)

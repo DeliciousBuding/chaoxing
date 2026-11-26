@@ -139,7 +139,12 @@ func (r *Runner) closeSignWindow(item upstream.Activity, e entry, code string) b
 // consecutive tick, so a transient timeout does not raise a false alarm. One
 // receipt per failure episode avoids repeating the warning every tick, and a
 // recovery message closes the episode once the feed is healthy again.
-func (r *Runner) reportDiscoveryFailure(class Class, now time.Time, err error) {
+//
+// In-class failures raise priority 9 because a live sign-in could be missed.
+// Off-schedule idle-scan failures stay quieter (priority 5), and a class that
+// is already in a local rate-limit cooldown skips repeat idle probes until the
+// cooldown expires so a daily per-class quota never floods alerts or retries.
+func (r *Runner) reportDiscoveryFailure(class Class, now time.Time, err error, inClass bool) {
 	k := "feed:activities:" + class.CourseID + ":" + class.ClassID
 	if err == nil {
 		prev, had := r.state[k]
@@ -161,23 +166,45 @@ func (r *Runner) reportDiscoveryFailure(class Class, now time.Time, err error) {
 	f := upstream.SafeFault(err)
 	e := r.state[k]
 	e.Status, e.Code, e.LastObserved = "feed_degraded", f.Code, now
+	if f.Code == "UPSTREAM_RATE_LIMITED" && f.RetryAfterSeconds > 0 {
+		e.RetryAt = now.Add(time.Duration(f.RetryAfterSeconds) * time.Second)
+	} else {
+		e.RetryAt = time.Time{}
+	}
 	e.Count++
 	r.state[k] = e
 	if e.Count != discoveryFailuresBeforeAlert {
 		// Below the threshold: keep counting silently. Above it: the episode
 		// was already warned, so stay quiet until it recovers.
+		r.persistState()
 		return
 	}
+	priority := 9
+	title := "🚨 学习通签到发现异常提醒"
 	body := fmt.Sprintf("班级：%s\n活动发现连续失败：%s\n新签到可能暂时无法自动发现，系统会持续重试；如持续请打开学习通核对。", class.ClassID, f.Code)
+	if !inClass {
+		priority = 5
+		title = "⚠️ 学习通课外巡检异常"
+		body = fmt.Sprintf("班级：%s\n课外巡检连续失败：%s\n当前不在正课时间窗，系统会在冷却后重试，不影响其他班级。", class.ClassID, f.Code)
+	}
 	if f.RetryAfterSeconds > 0 {
 		body += fmt.Sprintf("\n下一次允许探测：%s\n等待来源：%s", now.Add(time.Duration(f.RetryAfterSeconds)*time.Second).In(shanghai).Format("15:04:05"), firstNonBlank(f.RetryAfterSource, "unspecified"))
 	}
-	r.queueAlert(k, notify.Message{Title: "🚨 学习通签到发现异常提醒", Body: body, Priority: 9}, now, nil)
+	r.queueAlert(k, notify.Message{Title: title, Body: body, Priority: priority}, now, nil)
 	if alert, ok := r.alerts[k]; ok {
 		alert.NextAt = now
 		r.alerts[k] = alert
 	}
 	r.persistState()
+}
+
+// idlePollCooling reports whether a class is already known to be in an active
+// upstream rate-limit cooldown so the off-schedule idle sweep can skip probing
+// it until the cooldown expires.
+func (r *Runner) idlePollCooling(class Class, now time.Time) bool {
+	k := "feed:activities:" + class.CourseID + ":" + class.ClassID
+	e, ok := r.state[k]
+	return ok && e.Code == "UPSTREAM_RATE_LIMITED" && now.Before(e.RetryAt)
 }
 
 // Notification work shares the existing bounded outbox, not a new scheduler.

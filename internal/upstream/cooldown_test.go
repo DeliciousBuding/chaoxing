@@ -133,3 +133,72 @@ func TestCooldownRejectsCorruptAndSymlinkState(t *testing.T) {
 		t.Fatal("failed persistence erased in-memory cooldown")
 	}
 }
+
+func TestActivityListCooldownIsolatesPerClassAndPersists(t *testing.T) {
+	calls := map[string]int{}
+	c := academicClient(t, []Course{
+		{ID: "course-a", ClassID: "class-1"},
+		{ID: "course-b", ClassID: "class-2"},
+	}, roundtrip(func(r *http.Request) (*http.Response, error) {
+		cls := r.URL.Query().Get("classId")
+		calls[cls]++
+		if cls == "class-1" {
+			return response(r, `{"result":0,"errorMsg":"请勿频繁操作"}`), nil
+		}
+		return response(r, activityResponse()), nil
+	}))
+
+	// Class 1 hits the per-class daily quota.
+	if _, err := c.ListClassActivities(context.Background(), "course-a", "class-1"); SafeFault(err).Code != "UPSTREAM_RATE_LIMITED" {
+		t.Fatalf("expected rate limit for class-1, got %v", err)
+	}
+	if calls["class-1"] != 1 {
+		t.Fatalf("class-1 calls=%d want 1", calls["class-1"])
+	}
+
+	// Class 1 stays deferred on retry without hitting upstream again.
+	if _, err := c.ListClassActivities(context.Background(), "course-a", "class-1"); SafeFault(err).Code != "UPSTREAM_RATE_LIMITED" || calls["class-1"] != 1 {
+		t.Fatalf("class-1 cooldown bypassed: calls=%d", calls["class-1"])
+	}
+
+	// Class 2 is unaffected and succeeds, without clearing class-1's cooldown.
+	if _, err := c.ListClassActivities(context.Background(), "course-b", "class-2"); err != nil {
+		t.Fatalf("class-2 should not inherit class-1 cooldown: %v", err)
+	}
+	if calls["class-2"] != 1 {
+		t.Fatalf("class-2 calls=%d want 1", calls["class-2"])
+	}
+
+	// Restarting preserves class-1's per-class cooldown.
+	restarted, err := New(c.config)
+	if err != nil {
+		t.Fatalf("reload per-class cooldown state failed: %v", err)
+	}
+	u1 := activityClassURL("course-a", "class-1")
+	u2 := activityClassURL("course-b", "class-2")
+	if SafeFault(restarted.endpointDeferred(u1)).Code != "UPSTREAM_RATE_LIMITED" {
+		t.Fatal("class-1 cooldown lost after class-2 success or restart")
+	}
+	if err := restarted.endpointDeferred(u2); err != nil {
+		t.Fatalf("class-2 unexpectedly deferred after restart: %v", err)
+	}
+}
+
+func TestCooldownRejectsInvalidScopedKeys(t *testing.T) {
+	c := testClient(t)
+	path := c.cooldownPath()
+	for _, key := range []string{
+		"mobilelearn.chaoxing.com/v2/apis/active/student/activelist#course=a",
+		"mobilelearn.chaoxing.com/v2/apis/active/student/activelist#class=b&course=a",
+		"mobilelearn.chaoxing.com/v2/apis/active/student/activelist#course=../x&class=b",
+		"mobilelearn.chaoxing.com/pptSign/stuSignajax#course=a&class=b",
+	} {
+		body := `{"version":1,"endpoints":{"` + key + `":{"failures":1,"until":"2099-01-01T00:00:00Z"}}}`
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(c.config); SafeFault(err).Code != "STATE_INVALID" {
+			t.Fatalf("invalid scoped key %q accepted: %v", key, err)
+		}
+	}
+}

@@ -23,8 +23,8 @@ type cachedClassActivities struct {
 	at   time.Time
 }
 
-func (c *Client) activityDeferred(ctx context.Context) error {
-	u, _ := url.Parse(activityAPI)
+func (c *Client) activityDeferred(ctx context.Context, courseID, classID string) error {
+	u := activityClassURL(courseID, classID)
 	err := c.endpointDeferred(u)
 	if err != nil {
 		c.observeResponse(ctx, http.MethodGet, u, time.Now(), nil, nil, err)
@@ -97,7 +97,7 @@ type rawActivity struct {
 }
 
 func (c *Client) activities(ctx context.Context, args map[string]any) (any, error) {
-	if err := c.activityDeferred(ctx); err != nil {
+	if err := c.activityDeferred(ctx, str(args, "course_id"), str(args, "class_id")); err != nil {
 		return nil, err
 	}
 	limit := number(args, "limit", 50)
@@ -199,7 +199,7 @@ func (c *Client) fetchActivities(ctx context.Context, co Course) ([]Activity, er
 	key := co.ID + ":" + co.ClassID
 	if cached, ok := c.classActivities[key]; ok && time.Since(cached.at) < classActivityCacheTTL {
 		// Never hide a known cooldown behind cached data.
-		u, _ := url.Parse(activityAPI)
+		u := activityClassURL(co.ID, co.ClassID)
 		if err := c.endpointDeferred(u); err != nil {
 			return nil, err
 		}
