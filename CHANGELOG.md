@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0-rc.51 — 2026-11-26
+
+- Warn about a class-feed discovery failure only after two consecutive failed ticks, so a single transient upstream timeout no longer raises a false "sign-in discovery" alarm. A one-time recovery notice closes the episode once the feed is healthy again.
+- Add optional `idle_scan_seconds`: while no watched class is inside its scheduled window, sweep every watched class's activity feed on a slow cadence so a sign-in opened off the timetable is discovered within its validity instead of waiting for the next scheduled class.
+
 ## 0.5.0-rc.50 — 2026-11-06
 
 - Keep class-feed cards authoritative when merging course-group history, so an ended card cannot become an automatic sign-in candidate again.

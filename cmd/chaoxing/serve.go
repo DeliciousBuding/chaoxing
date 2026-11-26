@@ -413,6 +413,7 @@ func watchCoreConfig(c watchConfig, stateDir string) (watch.Config, error) {
 		PollBefore:            time.Duration(c.PollBeforeMinutes) * time.Minute,
 		PollAfter:             time.Duration(c.PollAfterMinutes) * time.Minute,
 		GroupScanInterval:     time.Duration(c.GroupScanSeconds) * time.Second,
+		IdleScanInterval:      time.Duration(c.IdleScanSeconds) * time.Second,
 		TermStart:             termStart,
 		AutoSign:              c.AutoSign,
 		AutoAnswer:            c.AutoAnswer,

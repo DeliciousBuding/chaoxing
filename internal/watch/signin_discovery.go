@@ -13,6 +13,12 @@ import (
 
 const discoveryPrefix = "discovery:"
 
+// discoveryFailuresBeforeAlert is how many consecutive class-feed failures are
+// tolerated before the operator is warned. A single transient hiccup (for
+// example a 20-second upstream timeout) recovers on the next tick and must not
+// ring the phone; a sustained outage still warns while there is time to act.
+const discoveryFailuresBeforeAlert = 2
+
 // Discovery receipts are separate from action results: signed, finished,
 // unknown and unsupported cards must not disappear behind auto-sign filters.
 func (r *Runner) rememberSignIns(items []upstream.Activity, class Class, now time.Time) {
@@ -129,21 +135,40 @@ func (r *Runner) closeSignWindow(item upstream.Activity, e entry, code string) b
 	return true
 }
 
-// Alert on the first failed discovery, not only after readiness has degraded.
-// One receipt per failure episode avoids repeating the warning every tick.
+// Warn only when a class feed has failed discovery for more than one
+// consecutive tick, so a transient timeout does not raise a false alarm. One
+// receipt per failure episode avoids repeating the warning every tick, and a
+// recovery message closes the episode once the feed is healthy again.
 func (r *Runner) reportDiscoveryFailure(class Class, now time.Time, err error) {
 	k := "feed:activities:" + class.CourseID + ":" + class.ClassID
 	if err == nil {
+		prev, had := r.state[k]
 		delete(r.state, k)
 		delete(r.alerts, k)
-		return
-	}
-	if _, warned := r.state[k]; warned {
+		if had && prev.Count >= discoveryFailuresBeforeAlert {
+			recoveryKey := k + ":recovered"
+			r.queueAlert(recoveryKey, notify.Message{
+				Title: "✅ 学习通数据源已恢复",
+				Body:  fmt.Sprintf("班级：%s\n活动发现已恢复正常轮询，之前的发现异常已解除。", class.ClassID), Priority: 6,
+			}, now, nil)
+			if alert, ok := r.alerts[recoveryKey]; ok {
+				alert.NextAt = now
+				r.alerts[recoveryKey] = alert
+			}
+		}
 		return
 	}
 	f := upstream.SafeFault(err)
-	r.state[k] = entry{Status: "feed_degraded", Code: f.Code, LastObserved: now}
-	body := fmt.Sprintf("班级：%s\n活动发现失败：%s\n新签到可能暂时无法自动发现，请立即打开学习通检查。", class.ClassID, f.Code)
+	e := r.state[k]
+	e.Status, e.Code, e.LastObserved = "feed_degraded", f.Code, now
+	e.Count++
+	r.state[k] = e
+	if e.Count != discoveryFailuresBeforeAlert {
+		// Below the threshold: keep counting silently. Above it: the episode
+		// was already warned, so stay quiet until it recovers.
+		return
+	}
+	body := fmt.Sprintf("班级：%s\n活动发现连续失败：%s\n新签到可能暂时无法自动发现，系统会持续重试；如持续请打开学习通核对。", class.ClassID, f.Code)
 	if f.RetryAfterSeconds > 0 {
 		body += fmt.Sprintf("\n下一次允许探测：%s\n等待来源：%s", now.Add(time.Duration(f.RetryAfterSeconds)*time.Second).In(shanghai).Format("15:04:05"), firstNonBlank(f.RetryAfterSource, "unspecified"))
 	}

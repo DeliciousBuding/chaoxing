@@ -73,6 +73,7 @@ type watchConfig struct {
 	PollBeforeMinutes     int                   `json:"poll_before_minutes,omitempty"`
 	PollAfterMinutes      int                   `json:"poll_after_minutes,omitempty"`
 	GroupScanSeconds      int                   `json:"group_scan_seconds,omitempty"`
+	IdleScanSeconds       int                   `json:"idle_scan_seconds,omitempty"`
 	TermStart             string                `json:"term_start,omitempty"`
 	Window                string                `json:"window,omitempty"`
 	Classes               []watch.Class         `json:"classes"`

@@ -76,6 +76,13 @@ type Config struct {
 	// GroupScanInterval bounds the optional Easemob course-group fallback.
 	// The class feed remains the primary, every-tick source.
 	GroupScanInterval time.Duration
+	// IdleScanInterval enables a slow baseline sweep of every watched class's
+	// activity feed while no class is inside its scheduled window. It bounds the
+	// worst-case discovery latency for a sign-in that appears outside the
+	// timetable (make-up class, early/late open, an unlisted course), which the
+	// normal every-tick polling only covers inside class windows. Zero keeps the
+	// historical behaviour of not polling activities outside class windows.
+	IdleScanInterval time.Duration
 	// TermStart is the first day of teaching week 1; required once any
 	// schedule carries a Weeks restriction.
 	TermStart            time.Time
@@ -198,6 +205,7 @@ type Runner struct {
 	wait             func(context.Context, time.Duration) bool
 	lastCapturePrune time.Time
 	lastGroupScan    time.Time
+	lastIdleScan     time.Time
 	metrics          Metrics
 	metricsMu        sync.RWMutex
 	ticks            atomic.Uint64
@@ -283,6 +291,9 @@ func New(cfg Config, source ActivitySource, sender notify.Sender, signer Signer,
 	}
 	if cfg.GroupScanInterval < time.Minute || cfg.GroupScanInterval > 30*time.Minute {
 		return nil, errors.New("watch group scan interval must be between 1 and 30 minutes")
+	}
+	if cfg.IdleScanInterval != 0 && (cfg.IdleScanInterval < 30*time.Second || cfg.IdleScanInterval > 30*time.Minute) {
+		return nil, errors.New("watch idle scan interval must be 0 or between 30 seconds and 30 minutes")
 	}
 	before, after, err := Padding(cfg.PollBefore, cfg.PollAfter, cfg.Lead)
 	if err != nil {
@@ -678,13 +689,26 @@ func (r *Runner) nextDelay(now time.Time) time.Duration {
 		}
 	}
 	next := nextClassStart(now, r.cfg.Classes, r.cfg.PollBefore, r.cfg.TermStart)
-	if next <= 0 {
-		return 5 * time.Minute
+	delay := 5 * time.Minute
+	if next > 0 && next < delay {
+		delay = next
 	}
-	if next < 5*time.Minute {
-		return next
+	// While no class is inside its window, still wake in time for the slow
+	// baseline sweep so an off-schedule sign-in is discovered within its
+	// validity instead of waiting for the next scheduled class.
+	if r.cfg.IdleScanInterval > 0 {
+		idle := r.cfg.IdleScanInterval
+		if !r.lastIdleScan.IsZero() {
+			idle = r.cfg.IdleScanInterval - now.Sub(r.lastIdleScan)
+		}
+		if idle < time.Second {
+			idle = time.Second
+		}
+		if idle < delay {
+			delay = idle
+		}
 	}
-	return 5 * time.Minute
+	return delay
 }
 
 // A course interval is start-to-start, not an extra sleep after upstream work.
@@ -851,8 +875,10 @@ func truncateAlertError(text string) string {
 	return text
 }
 
-// Tick polls only classes whose course schedule is active, attempts each new
+// Tick polls classes whose course schedule is active, attempts each new
 // signable activity at most once, and falls back to alerts for manual types.
+// When no class is in session it can run a slow off-schedule baseline sweep
+// (IdleScanInterval) so a sign-in opened outside the timetable is still seen.
 func (r *Runner) Tick(ctx context.Context) {
 	r.tickMu.Lock()
 	defer r.tickMu.Unlock()
@@ -883,36 +909,22 @@ func (r *Runner) Tick(ctx context.Context) {
 			break
 		}
 		polledClasses++
-		r.activePolls.Add(1)
-		pollStarted := r.now().UTC()
-		items, err := r.source.ListClassActivities(pollCtx, class.CourseID, class.ClassID)
-		pollCompleted := r.now().UTC()
-		pollStatus := "ok"
-		if err != nil {
-			pollStatus = upstream.SafeFault(err).Code
-		}
-		log.Printf(
-			"activity watch: class_poll class=%s started_at=%s completed_at=%s duration_ms=%d status=%s items=%d observed=%s retry_after_seconds=%d",
-			class.ClassID, pollStarted.Format(time.RFC3339Nano), pollCompleted.Format(time.RFC3339Nano),
-			pollCompleted.Sub(pollStarted).Milliseconds(), pollStatus, len(items), signInObservationSummary(items, 8), upstream.SafeFault(err).RetryAfterSeconds,
-		)
-		r.recordFeed("activities:"+class.CourseID+":"+class.ClassID, now, err == nil)
-		r.reportDiscoveryFailure(class, now, err)
-		if err != nil {
-			log.Printf("activity watch: class %s: %s", class.ClassID, upstream.SafeFault(err).Code)
-			continue
-		}
-		captured = append(captured, items...)
-		r.rememberSignIns(items, class, now)
-		for _, item := range items {
-			if item.CourseID == class.CourseID && item.ClassID == class.ClassID {
-				classCards[key(item)] = true
+		r.pollClassActivities(pollCtx, class, now, active, classes, classCards, &captured)
+	}
+	// No scheduled class is in session, but a sign-in can still be opened off
+	// the timetable (make-up, early/late open, unlisted course). Run a slow
+	// baseline sweep so it is not invisible: poll every watched class at the
+	// configured idle cadence, bounded by the shared poll budget.
+	if polledClasses == 0 && r.cfg.IdleScanInterval > 0 &&
+		(r.lastIdleScan.IsZero() || now.Sub(r.lastIdleScan) >= r.cfg.IdleScanInterval) {
+		r.lastIdleScan = now
+		swept := 0
+		for _, class := range r.cfg.Classes {
+			if swept > 0 && !r.wait(pollCtx, r.classPollDelay()) {
+				break
 			}
-			if item.CourseID == class.CourseID && item.ClassID == class.ClassID && (item.Signable || item.Answerable || answerReviewable(item)) {
-				k := key(item)
-				active[k] = item
-				classes[k] = class
-			}
+			swept++
+			r.pollClassActivities(pollCtx, class, now, active, classes, classCards, &captured)
 		}
 	}
 	// Act on the primary class feed before any evidence capture or fallback
@@ -990,6 +1002,44 @@ func (r *Runner) Tick(ctx context.Context) {
 			r.metricsMu.Lock()
 			r.metrics.StateDegraded = true
 			r.metricsMu.Unlock()
+		}
+	}
+}
+
+// pollClassActivities fetches one class's activity feed, records its timing and
+// feed health, reports discovery failures, remembers sign-in cards and merges
+// actionable items into the tick's action maps. It is shared by the normal
+// in-class polling loop and the off-schedule idle baseline sweep.
+func (r *Runner) pollClassActivities(ctx context.Context, class Class, now time.Time, active map[string]upstream.Activity, classes map[string]Class, classCards map[string]bool, captured *[]upstream.Activity) {
+	r.activePolls.Add(1)
+	pollStarted := r.now().UTC()
+	items, err := r.source.ListClassActivities(ctx, class.CourseID, class.ClassID)
+	pollCompleted := r.now().UTC()
+	pollStatus := "ok"
+	if err != nil {
+		pollStatus = upstream.SafeFault(err).Code
+	}
+	log.Printf(
+		"activity watch: class_poll class=%s started_at=%s completed_at=%s duration_ms=%d status=%s items=%d observed=%s retry_after_seconds=%d",
+		class.ClassID, pollStarted.Format(time.RFC3339Nano), pollCompleted.Format(time.RFC3339Nano),
+		pollCompleted.Sub(pollStarted).Milliseconds(), pollStatus, len(items), signInObservationSummary(items, 8), upstream.SafeFault(err).RetryAfterSeconds,
+	)
+	r.recordFeed("activities:"+class.CourseID+":"+class.ClassID, now, err == nil)
+	r.reportDiscoveryFailure(class, now, err)
+	if err != nil {
+		log.Printf("activity watch: class %s: %s", class.ClassID, upstream.SafeFault(err).Code)
+		return
+	}
+	*captured = append(*captured, items...)
+	r.rememberSignIns(items, class, now)
+	for _, item := range items {
+		if item.CourseID == class.CourseID && item.ClassID == class.ClassID {
+			classCards[key(item)] = true
+		}
+		if item.CourseID == class.CourseID && item.ClassID == class.ClassID && (item.Signable || item.Answerable || answerReviewable(item)) {
+			k := key(item)
+			active[k] = item
+			classes[k] = class
 		}
 	}
 }
