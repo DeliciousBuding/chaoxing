@@ -207,3 +207,33 @@ func TestInvalidStateDegradesInsteadOfBlockingStartup(t *testing.T) {
 		t.Fatalf("replacement marker was not persisted: %d", got)
 	}
 }
+
+func TestQuietPriorityDowngradesCrashAlertIncludingThirdCrash(t *testing.T) {
+	d := t.TempDir()
+	path := filepath.Join(d, "supervisor-state.json")
+	base := time.Date(2026, 10, 21, 18, 0, 0, 0, time.UTC) // 02:00 Asia/Shanghai
+	sender := &recordingSender{}
+	quiet := func(time.Time) bool { return true }
+	for i := 0; i < 4; i++ {
+		s, err := Start(Config{
+			Path:            path,
+			Sender:          sender,
+			AlertRetryDelay: time.Millisecond,
+			Now:             fixedClock(base.Add(time.Duration(i) * time.Minute)),
+			ProcessID:       150 + i,
+			QuietPriorityAt: quiet,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitForAlert(t, s)
+	}
+	if len(sender.messages) != 3 {
+		t.Fatalf("expected 3 crash alerts, got %+v", sender.messages)
+	}
+	for i, msg := range sender.messages {
+		if msg.Priority != 5 {
+			t.Fatalf("crash %d priority = %d, want 5 during quiet hours", i+1, msg.Priority)
+		}
+	}
+}

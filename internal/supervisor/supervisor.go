@@ -60,19 +60,24 @@ type Config struct {
 	AlertRetryDelay time.Duration
 	// ProcessID is used by tests; zero means the current process.
 	ProcessID int
+	// QuietPriorityAt optionally lowers crash alert priority when returning true
+	// for the crash timestamp (for example outside the daily watch window so an
+	// overnight respawn does not wake the operator while still logging in inbox).
+	QuietPriorityAt func(time.Time) bool
 }
 
 type Supervisor struct {
-	mu            sync.Mutex
-	path          string
-	sender        notify.Sender
-	now           func() time.Time
-	notifyTimeout time.Duration
-	state         stateFile
-	alertDone     chan struct{}
-	degraded      bool
-	lastAlertAt   time.Time
-	lastAlertErr  string
+	mu              sync.Mutex
+	path            string
+	sender          notify.Sender
+	now             func() time.Time
+	notifyTimeout   time.Duration
+	quietPriorityAt func(time.Time) bool
+	state           stateFile
+	alertDone       chan struct{}
+	degraded        bool
+	lastAlertAt     time.Time
+	lastAlertErr    string
 }
 
 func Start(cfg Config) (*Supervisor, error) {
@@ -126,7 +131,8 @@ func Start(cfg Config) (*Supervisor, error) {
 		sender = notify.Retry{Sender: sender, Attempts: 3, Delay: delay}
 	}
 	s := &Supervisor{
-		path: cfg.Path, sender: sender, now: now, notifyTimeout: timeout, state: state,
+		path: cfg.Path, sender: sender, now: now, notifyTimeout: timeout,
+		quietPriorityAt: cfg.QuietPriorityAt, state: state,
 		degraded: degraded,
 	}
 	if state.ConsecutiveCrashes > 0 {
@@ -233,6 +239,9 @@ func (s *Supervisor) sendCrashAlert(state stateFile) {
 	priority := 9
 	if state.ConsecutiveCrashes >= 3 {
 		priority = 10
+	}
+	if s.quietPriorityAt != nil && s.quietPriorityAt(state.UpdatedAt) {
+		priority = 5
 	}
 	message := notify.Message{
 		Title: "🚨 学习通进程异常退出后重启",

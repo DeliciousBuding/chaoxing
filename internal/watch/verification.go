@@ -75,11 +75,11 @@ func (r *Runner) resumeVerifications(ctx context.Context, now time.Time) bool {
 			}
 		}
 		result := *e.PendingResult
-		message := notify.Message{Priority: 8, Title: "🚨 学习通考勤未确认", Body: formatFailureBody(item, e.Code)}
+		message := notify.Message{Priority: r.windowPriority(e.LastAttempt, 8, 5), Title: "🚨 学习通考勤未确认", Body: formatFailureBody(item, e.Code)}
 		if err == nil {
 			result.Verified, result.StateSource, result.FetchedAt = true, "attendance", proof.FetchedAt
 			e.Status, e.AttendanceVerified, e.Code = "signed", true, ""
-			message = notify.Message{Priority: 6, Title: "✅ 学习通自动签到成功", Body: formatSuccessBody(item, result)}
+			message = notify.Message{Priority: r.windowPriority(e.LastAttempt, 6, 5), Title: "✅ 学习通自动签到成功", Body: formatSuccessBody(item, result)}
 			if !result.Submitted || result.State == "already_signed" {
 				message.Title = "✅ 学习通已签（非本次提交）"
 			}

@@ -645,7 +645,7 @@ func (r *Runner) recordPanic(value any) {
 		"连续 panic：%d\n最近类型：%s\nlast_tick：%s\nTick 已恢复，进程未退出；如持续增加请立即检查。",
 		count, kind, now.Format(time.RFC3339),
 	)
-	message := notify.Message{Title: "🚨 学习通 Watcher panic 已恢复", Body: body, Priority: 9}
+	message := notify.Message{Title: "🚨 学习通 Watcher panic 已恢复", Body: body, Priority: r.windowPriority(now, 9, 5)}
 	if r.runStarted.Load() {
 		select {
 		case r.panicAlerts <- message:
@@ -843,7 +843,8 @@ func (r *Runner) flushAlerts(ctx context.Context, now time.Time) {
 			continue
 		}
 		attempted++
-		err := r.notify(flushCtx, notify.Message{Title: alert.Title, Body: alert.Body, Priority: alert.Priority})
+		priority := r.windowPriority(now, alert.Priority, 5)
+		err := r.notify(flushCtx, notify.Message{Title: alert.Title, Body: alert.Body, Priority: priority})
 		if err == nil {
 			delete(r.alerts, k)
 			// A delivered retry counts as this activity's notification for
@@ -1677,7 +1678,7 @@ func (r *Runner) classroomPriority(class Class, now time.Time, ordinary int) int
 	if r.classroomActive(class, now) && ordinary < 9 {
 		return 9
 	}
-	return ordinary
+	return r.windowPriority(now, ordinary, 5)
 }
 
 func (r *Runner) activityPriority(item upstream.Activity, now time.Time, ordinary int) int {
@@ -1686,7 +1687,23 @@ func (r *Runner) activityPriority(item upstream.Activity, now time.Time, ordinar
 			return r.classroomPriority(class, now, ordinary)
 		}
 	}
-	return ordinary
+	return r.windowPriority(now, ordinary, 5)
+}
+
+// windowPriority caps notification urgency while outside the configured daily
+// watch window so overnight retries, verification failures or panic recoveries
+// remain logged in the client inbox without waking the operator.
+func (r *Runner) windowPriority(now time.Time, inside, outsideCap int) int {
+	if !inWindow(now, r.cfg.Window) && inside > outsideCap {
+		return outsideCap
+	}
+	return inside
+}
+
+// InWindow reports whether t falls inside the daily HH:MM-HH:MM window spec in
+// Asia/Shanghai. An empty or malformed spec imposes no restriction.
+func InWindow(t time.Time, spec string) bool {
+	return inWindow(t, spec)
 }
 
 func autoSignType(item upstream.Activity, class Class) bool {

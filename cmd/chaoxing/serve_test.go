@@ -134,6 +134,20 @@ func TestWatchCoreConfigPreservesAutomationFlags(t *testing.T) {
 	}
 }
 
+func TestSupervisorQuietAtHonorsWatchWindow(t *testing.T) {
+	if supervisorQuietAt("") != nil {
+		t.Fatal("empty window must not mark any time quiet")
+	}
+	quiet := supervisorQuietAt("07:30-22:30")
+	shanghai := time.FixedZone("CST", 8*3600)
+	if quiet(time.Date(2026, 11, 28, 9, 0, 0, 0, shanghai)) {
+		t.Fatal("09:00 should be active, not quiet")
+	}
+	if !quiet(time.Date(2026, 11, 28, 2, 0, 0, 0, shanghai)) {
+		t.Fatal("02:00 should be quiet")
+	}
+}
+
 func tenantFixture(t *testing.T) (config, *upstream.Client, *access.Server) {
 	t.Helper()
 	d := t.TempDir()

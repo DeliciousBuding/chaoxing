@@ -276,3 +276,77 @@ func TestIdleGroupProbeVerifiesUnseenCardViaClassFeedWithoutActingOnHistory(t *t
 		t.Fatalf("tick3 should verify & sign unseen group card: calls=%v groupCalls=%d signs=%+v", src.callsByCls, src.groupCalls, signer.requests)
 	}
 }
+
+func TestOutsideWindowCapsPriorityForPanicVerificationCloseAndPendingFlush(t *testing.T) {
+	now := time.Date(2026, 11, 28, 2, 30, 0, 0, shanghai) // 02:30, outside 07:30-22:30
+	sender := &fakeSender{}
+	r, err := New(Config{
+		Interval: time.Minute, RepeatEvery: time.Minute, MaxRepeats: 3,
+		Window:   "07:30-22:30",
+		AutoSign: true,
+		Classes:  []Class{{CourseID: "c1", ClassID: "k1", Schedule: []Schedule{{Days: []string{"Wed"}, Start: "09:00", End: "10:00"}}}},
+	}, &fakeSource{}, sender, &fakeSigner{err: &upstream.Fault{Code: "UPSTREAM_UNAVAILABLE"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return now }
+
+	// 1. Panic outside window is capped to priority 5.
+	r.recordPanic("boom")
+	if len(sender.sent) != 1 || sender.sent[0].Priority != 5 {
+		t.Fatalf("overnight panic should be priority 5, got %+v", sender.sent)
+	}
+
+	// 2. Expired sign-in window outside daily window is capped to priority 5.
+	item := signIn("c1", "k1", "act-exp", true)
+	r.closeSignWindow(item, entry{}, "SIGN_WINDOW_ENDED")
+	r.flushAlerts(context.Background(), now)
+	if len(sender.sent) != 2 || sender.sent[1].Priority != 5 {
+		t.Fatalf("overnight closeSignWindow should be priority 5, got %+v", sender.sent)
+	}
+
+	// 3. Previously queued P9 alert flushed outside window is capped to priority 5.
+	r.alerts["queued-p9"] = pendingAlert{Title: "delayed", Body: "body", Priority: 9, NextAt: now}
+	r.flushAlerts(context.Background(), now)
+	if len(sender.sent) != 3 || sender.sent[2].Priority != 5 {
+		t.Fatalf("overnight flushed alert should be priority 5, got %+v", sender.sent)
+	}
+
+	// 4. Inside daily window (off-schedule daytime), active sign-in discovery still uses priority 9.
+	daytime := time.Date(2026, 11, 28, 12, 0, 0, 0, shanghai)
+	r.now = func() time.Time { return daytime }
+	live := signIn("c1", "k1", "act-live", true)
+	r.rememberSignIns([]upstream.Activity{live}, r.cfg.Classes[0], daytime)
+	r.flushAlerts(context.Background(), daytime)
+	if len(sender.sent) != 4 || sender.sent[3].Priority != 9 {
+		t.Fatalf("daytime off-schedule active signin discovery should stay priority 9, got %+v", sender.sent)
+	}
+
+	// 5. Inside daily window, panic keeps priority 9.
+	r.recordPanic("daytime-boom")
+	if len(sender.sent) != 5 || sender.sent[4].Priority != 9 {
+		t.Fatalf("daytime panic should stay priority 9, got %+v", sender.sent)
+	}
+}
+
+func TestVerificationFailureOutsideWindowCapsPriority(t *testing.T) {
+	now := time.Date(2026, 11, 28, 3, 0, 0, 0, shanghai) // 03:00, outside 07:30-22:30
+	sender := &fakeSender{}
+	signer := &verificationStub{}
+	r, err := New(Config{
+		Interval: time.Minute, Window: "07:30-22:30", AutoSign: true,
+		StatePath: filepath.Join(t.TempDir(), "state.json"),
+		Classes:   []Class{{CourseID: "c1", ClassID: "k1"}},
+	}, &fakeSource{}, sender, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.now = func() time.Time { return now }
+	item := signIn("c1", "k1", "act-verify", true)
+	result := upstream.SignResult{ActivityID: item.ID, CourseID: "c1", ClassID: "k1", State: "signed", Submitted: true, FetchedAt: now.Add(-25 * time.Hour)}
+	r.state[key(item)] = entry{Status: "verify", PendingActivity: &item, PendingResult: &result, Submitted: true}
+	r.Tick(context.Background())
+	if len(sender.sent) != 1 || sender.sent[0].Priority != 5 || sender.sent[0].Title != "🚨 学习通考勤未确认" {
+		t.Fatalf("overnight verification failure should be capped to priority 5, got %+v", sender.sent)
+	}
+}

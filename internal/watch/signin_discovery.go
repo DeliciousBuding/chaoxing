@@ -123,13 +123,14 @@ func (r *Runner) resumeSignIns(ctx context.Context, now time.Time) {
 }
 
 func (r *Runner) closeSignWindow(item upstream.Activity, e entry, code string) bool {
+	now := r.now()
 	e.Status, e.Code, e.RetryAt, e.KnownActivity = "expired", code, time.Time{}, nil
-	e.LastAttempt = r.now()
+	e.LastAttempt = now
 	r.state[key(item)] = e
 	r.persistState()
-	r.queueAlert(key(item), notify.Message{Title: "🚨 学习通签到窗口已结束提醒", Body: formatFailureBody(item, code), Priority: 9}, r.now(), nil)
+	r.queueAlert(key(item), notify.Message{Title: "🚨 学习通签到窗口已结束提醒", Body: formatFailureBody(item, code), Priority: r.windowPriority(now, 9, 5)}, now, nil)
 	if alert, ok := r.alerts[key(item)]; ok {
-		alert.NextAt = r.now()
+		alert.NextAt = now
 		r.alerts[key(item)] = alert
 	}
 	return true

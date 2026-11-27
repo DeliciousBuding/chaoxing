@@ -471,16 +471,27 @@ func watchCaptureEnabled(w *watchConfig) bool {
 	return w != nil && w.Capture != nil && w.Capture.Enabled
 }
 
-func supervisorNotifier(c config) (notify.Sender, error) {
+func supervisorNotifier(c config) (notify.Sender, string, error) {
 	if c.Watch != nil && c.Watch.Enabled {
-		return watchSender(*c.Watch)
+		sender, err := watchSender(*c.Watch)
+		return sender, c.Watch.Window, err
 	}
 	for _, tenant := range c.Tenants {
 		if tenant.Watch != nil && tenant.Watch.Enabled {
-			return watchSender(*tenant.Watch)
+			sender, err := watchSender(*tenant.Watch)
+			return sender, tenant.Watch.Window, err
 		}
 	}
-	return nil, nil
+	return nil, "", nil
+}
+
+func supervisorQuietAt(window string) func(time.Time) bool {
+	if strings.TrimSpace(window) == "" {
+		return nil
+	}
+	return func(t time.Time) bool {
+		return !watch.InWindow(t, window)
+	}
 }
 
 func stateStoreNeeded(_ config) bool {
@@ -537,13 +548,14 @@ func serve() error {
 	}()
 	// Process supervision starts before any network service so a procd respawn
 	// can distinguish an unexpected exit from a SIGTERM-initiated restart.
-	supervisorSender, senderErr := supervisorNotifier(c)
+	supervisorSender, supervisorWindow, senderErr := supervisorNotifier(c)
 	if senderErr != nil {
 		return senderErr
 	}
 	sup, e := supervisor.Start(supervisor.Config{
-		Path:   filepath.Join(c.StateDir, "supervisor-state.json"),
-		Sender: supervisorSender,
+		Path:            filepath.Join(c.StateDir, "supervisor-state.json"),
+		Sender:          supervisorSender,
+		QuietPriorityAt: supervisorQuietAt(supervisorWindow),
 	})
 	if e != nil {
 		return e

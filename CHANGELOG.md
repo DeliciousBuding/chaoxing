@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0-rc.55 — 2026-11-28
+
+- Cap process-supervisor crash alerts (including the third consecutive crash), watcher panic alerts, overnight verification/window-ended notices and delayed pending-alert flushes at priority 5 outside the configured daily `watch.window`, so overnight network or restart noise stays in the inbox without triggering high-priority alarms while daytime off-schedule active sign-in discoveries keep priority 9.
+
 ## 0.5.0-rc.54 — 2026-11-26
 
 - Pin configured watched classes into the Easemob course-group sweep priority set so off-schedule group probes always cover watched courses on every tick even when the account has more than six joined groups.
